@@ -7,7 +7,9 @@
 
 import { BrowserWindow, ipcMain } from "electron";
 import { IPC } from "../../shared/ipc-channels";
-import { VolcanoAsrStream, getAsrConfig } from "../asr/volcano-asr-engine";
+import { getAsrConfig } from "../asr/volcano-asr-engine";
+import { createAsrSession, requireAsrConfig } from "../asr/asr-service";
+import type { AsrConfig, AsrSession } from "../asr/types";
 import { synthesizeByEngine } from "../tts/tts-dispatcher";
 import type { TtsEngine } from "../../shared/tts-types";
 import { runFunctionCallingLoop } from "../orchestrator";
@@ -16,13 +18,14 @@ import type { ChatMessage } from "../orchestrator/vendors/types";
 
 const LOG_PREFIX = "[CallManager]";
 
-export type CallState = "IDLE" | "LISTENING" | "THINKING" | "SPEAKING" | "ERROR" | "ENDED";
+export type CallState = "IDLE" | "LISTENING" | "ASR" | "THINKING" | "SPEAKING" | "ERROR" | "ENDED";
 
 let callWindow: BrowserWindow | null = null;
-let asrStream: VolcanoAsrStream | null = null;
+let asrStream: AsrSession | null = null;
 let currentState: CallState = "IDLE";
 let finalText = "";
 let active = false;
+let callGeneration = 0;
 
 /** 通话上下文：保留最近 N 轮对话历史（每轮 = user + assistant 一对）。
  * 主聊天窗口（src/main/index.ts:1276 normalizeChatMessages）默认保留 24 条（12 轮）。
@@ -120,46 +123,71 @@ function sendTtsAudio(base64: string): void {
 }
 
 /** 开始通话：初始化 ASR 流，进入 LISTENING。 */
-export function startCall(): void {
+export async function startCall(): Promise<void> {
   if (active) return;
-  const cfg = getAsrConfig();
-  if (!cfg || cfg.engine !== "aliyun" || !cfg.appKey || !cfg.accessKeyId || !cfg.accessKeySecret) {
-    sendError("ASR 未配置：请在设置→ASR 中配置阿里云 AppKey 和 AccessKey");
+  let cfg: AsrConfig;
+  try {
+    cfg = requireAsrConfig();
+  } catch (error) {
+    sendError(error instanceof Error ? error.message : String(error));
     sendState("ERROR");
     return;
   }
 
   active = true;
+  const generation = ++callGeneration;
   finalText = "";
   callHistory.length = 0;
   console.log(LOG_PREFIX, "startCall 重置: finalText 清空, history 清空");
-  startAsrStream(cfg);
-  sendState("LISTENING");
+  sendState("ASR");
+  try {
+    await startAsrStream(cfg);
+    if (active && generation === callGeneration) sendState("LISTENING");
+  } catch (error) {
+    if (!active || generation !== callGeneration) return;
+    sendError(`ASR 启动失败：${error instanceof Error ? error.message : String(error)}`);
+    active = false;
+    sendState("ERROR");
+  }
 }
 
 /** 创建并启动一个 ASR 流。 */
-function startAsrStream(cfg: { appKey: string; accessKeyId: string; accessKeySecret: string; language: string }): void {
-  asrStream = new VolcanoAsrStream(
-    (text) => sendAsrResult(text, undefined),
-    (text) => { finalText = text; sendAsrResult(undefined, text); },
-  );
-  asrStream.start(cfg.appKey, cfg.accessKeyId, cfg.accessKeySecret, cfg.language);
+async function startAsrStream(cfg: AsrConfig): Promise<void> {
+  asrStream?.dispose();
+  const session = createAsrSession({
+    onPartial: (text) => sendAsrResult(text, undefined),
+    onFinal: (text) => { finalText = text; sendAsrResult(undefined, text); },
+    onError: (error) => sendError(`ASR 错误：${error.message}`),
+  }, cfg);
+  asrStream = session;
+  await session.start();
 }
 
 /** 结束本轮（VAD 静默）：停 ASR → 跑 agent → TTS → 播放。 */
 export async function endTurn(): Promise<void> {
   console.log(LOG_PREFIX, "endTurn 入口: active=", active, "state=", currentState, "finalText.length=", finalText.length);
   if (!active || currentState !== "LISTENING") return;
-
-  if (asrStream) asrStream.stop();
-
-  const text = finalText.trim();
+  // 先离开 LISTENING，保证重复的 VAD turnEnd 不会启动第二次推理。
+  sendState("ASR");
+  const generation = callGeneration;
+  const session = asrStream;
+  asrStream = null;
+  let text = "";
+  try {
+    text = (await session?.finish() ?? "").trim();
+  } catch (error) {
+    if (!active || generation !== callGeneration) return;
+    sendError(`ASR 识别失败：${error instanceof Error ? error.message : String(error)}`);
+    await restartAsr();
+    return;
+  }
+  if (!active || generation !== callGeneration) return;
   finalText = "";
 
   if (!text) {
     // 空文本，直接重启 ASR 回 LISTENING
     console.log(LOG_PREFIX, "endTurn 空文本，直接重启 ASR");
-    restartAsr();
+    await restartAsr();
     return;
   }
 
@@ -172,8 +200,7 @@ export async function endTurn(): Promise<void> {
     console.log(LOG_PREFIX, "runAgentTurn 结果: reply.length=", reply?.length ?? "null");
     if (!reply) {
       sendError("未收到 agent 回复");
-      sendState("LISTENING");
-      restartAsr();
+      await restartAsr();
       return;
     }
 
@@ -181,34 +208,29 @@ export async function endTurn(): Promise<void> {
     const tts = ttsSettingsGetter?.();
     if (!tts || tts.ttsEngine === "off") {
       sendError("TTS 未配置：请在设置中启用 TTS 引擎");
-      sendState("LISTENING");
-      restartAsr();
+      await restartAsr();
       return;
     }
 
     // 引擎配置完整性检查
     if (tts.ttsEngine === "minimax" && (!tts.ttsMinimaxKey || !tts.ttsMinimaxVoiceId)) {
       sendError("TTS 未配置：请在设置中配置 MiniMax API Key 和音色 ID");
-      sendState("LISTENING");
-      restartAsr();
+      await restartAsr();
       return;
     }
     if (tts.ttsEngine === "gptsovits" && (!tts.ttsGptsovitsBaseUrl || !tts.ttsGptsovitsRefAudioPath || !tts.ttsGptsovitsPromptText)) {
       sendError("TTS 未配置：请在设置中配置 GPT-SoVITS baseUrl、参考音频和文本");
-      sendState("LISTENING");
-      restartAsr();
+      await restartAsr();
       return;
     }
     if (tts.ttsEngine === "custom-cloud" && !tts.ttsCustomCloudEndpointUrl) {
       sendError("TTS 未配置：请在设置中配置自定义云端 Endpoint URL");
-      sendState("LISTENING");
-      restartAsr();
+      await restartAsr();
       return;
     }
     if (tts.ttsEngine === "mimo" && (!tts.ttsMimoKey || !tts.ttsMimoVoiceAudioPath)) {
       sendError("TTS 未配置：请在设置中配置小米 MiMo API Key 和昔涟克隆音频");
-      sendState("LISTENING");
-      restartAsr();
+      await restartAsr();
       return;
     }
 
@@ -247,39 +269,46 @@ export async function endTurn(): Promise<void> {
     } catch (ttsErr) {
       const msg = ttsErr instanceof Error ? ttsErr.message : String(ttsErr);
       sendError("TTS 合成失败：" + msg);
-      sendState("LISTENING");
-      restartAsr();
+      await restartAsr();
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     sendError("通话出错：" + msg);
-    sendState("LISTENING");
-    restartAsr();
+    await restartAsr();
   }
 }
 
 /** TTS 播完后恢复 LISTENING，重新开始 ASR。 */
 export function onTtsDone(): void {
   if (!active) return;
-  sendState("LISTENING");
-  restartAsr();
+  void restartAsr();
 }
 
 /** 重新开始一轮 ASR 识别。 */
-function restartAsr(): void {
+async function restartAsr(): Promise<void> {
   const cfg = getAsrConfig();
-  if (!cfg) return;
-  if (asrStream) asrStream.stop();
+  if (!cfg || cfg.engine === "off" || !active) return;
+  asrStream?.dispose();
+  asrStream = null;
   finalText = "";
-  startAsrStream(cfg);
+  sendState("ASR");
+  try {
+    await startAsrStream(cfg);
+    if (active) sendState("LISTENING");
+  } catch (error) {
+    if (!active) return;
+    sendError(`ASR 重启失败：${error instanceof Error ? error.message : String(error)}`);
+    sendState("ERROR");
+  }
 }
 
 /** 挂断：清理一切。 */
 export function stopCall(): void {
   active = false;
+  callGeneration += 1;
   callHistory.length = 0;
   if (asrStream) {
-    asrStream.stop();
+    asrStream.dispose();
     asrStream = null;
   }
   sendState("ENDED");
@@ -373,7 +402,7 @@ async function runAgentTurn(userText: string): Promise<string | null> {
 
 /** 注册通话 IPC handlers（main 启动时调一次）。 */
 export function registerCallIpc(): void {
-  ipcMain.on(IPC.CALL_START, () => startCall());
+  ipcMain.on(IPC.CALL_START, () => void startCall());
   ipcMain.on(IPC.CALL_AUDIO_FRAME, (_event, frame: ArrayBuffer) => handleAudioFrame(Buffer.from(frame)));
   ipcMain.on(IPC.CALL_TURN_END, () => void endTurn());
   ipcMain.on(IPC.CALL_TTS_DONE, () => onTtsDone());

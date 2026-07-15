@@ -44,6 +44,34 @@ async function loadRerankerPipeline(modelDir: string): Promise<any> {
   }
 }
 
+/**
+ * Transformers.js' text-classification pipeline only accepts plain text and
+ * does not forward `text_pair` to the tokenizer. Cross-encoders require paired
+ * query/document input, so invoke the pipeline's tokenizer and model directly.
+ */
+async function scoreTextPairs(pipe: any, query: string, documents: string[]): Promise<number[]> {
+  const modelInputs = pipe.tokenizer(documents.map(() => query), {
+    text_pair: documents,
+    padding: true,
+    truncation: true,
+  });
+  const outputs = await pipe.model(modelInputs);
+  const scores: number[] = [];
+  for (const batch of outputs.logits) {
+    const logits = Array.from(batch.data as ArrayLike<number>, Number);
+    if (logits.length <= 1) {
+      const raw = logits[0] ?? 0;
+      scores.push(1 / (1 + Math.exp(-raw)));
+      continue;
+    }
+    const maxLogit = Math.max(...logits);
+    const exps = logits.map((value) => Math.exp(value - maxLogit));
+    const total = exps.reduce((sum, value) => sum + value, 0);
+    scores.push(exps[exps.length - 1] / total);
+  }
+  return scores;
+}
+
 // ── Lightweight reranker (ms-marco-MiniLM-L6-v2, ~23MB) ──
 export async function createLightReranker(): Promise<RerankerProvider> {
   if (!lightPipeline) {
@@ -59,13 +87,11 @@ export async function createLightReranker(): Promise<RerankerProvider> {
 
       const start = Date.now();
 
-      // Cross-encoder: each input is [query, doc] pair
-      const inputs = documents.map((doc) => [query, doc]);
-      const outputs = await lightPipeline(inputs);
+      const scores = await scoreTextPairs(lightPipeline, query, documents);
 
       const results = documents.map((text, i) => ({
         text,
-        score: outputs[i]?.score ?? 0,
+        score: scores[i] ?? 0,
       }));
 
       results.sort((a, b) => b.score - a.score);
@@ -91,12 +117,11 @@ export async function createStandardReranker(): Promise<RerankerProvider> {
 
       const start = Date.now();
 
-      const inputs = documents.map((doc) => [query, doc]);
-      const outputs = await standardPipeline(inputs);
+      const scores = await scoreTextPairs(standardPipeline, query, documents);
 
       const results = documents.map((text, i) => ({
         text,
-        score: outputs[i]?.score ?? 0,
+        score: scores[i] ?? 0,
       }));
 
       results.sort((a, b) => b.score - a.score);

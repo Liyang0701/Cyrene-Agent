@@ -67,6 +67,8 @@ export const IPC = {
   SETTINGS_PICK_UI_FONT: "settings:pick-ui-font",
   SETTINGS_IMPORT_UI_FONT: "settings:import-ui-font",
   SETTINGS_RESET_UI_FONT: "settings:reset-ui-font",
+  ASR_LOCAL_STATUS: "asr-local:status",
+  ASR_LOCAL_TEST: "asr-local:test",
   SETTINGS_OPEN_SIDEBAR: "settings:open-sidebar",
   SETTINGS_CLOSE_SIDEBAR: "settings:close-sidebar",
   SETTINGS_OPEN_TASKS: "settings:open-tasks",
@@ -269,4 +271,3 @@ export const IPC = {
   CHANNELS_LOG_GET: "channels:log:get",
   CHANNELS_LOG_CLEAR: "channels:log:clear",
 } as const;
-

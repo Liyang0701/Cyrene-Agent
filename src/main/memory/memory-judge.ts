@@ -21,6 +21,14 @@ const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   apiKey: "",
 };
 
+// Local models can need substantially longer than hosted APIs for the
+// structured memory pass. Keep the budget configurable while retaining a
+// bounded default that works on Apple Silicon.
+const parsedMemoryLlmTimeoutMs = Number.parseInt(process.env.CYRENE_MEMORY_LLM_TIMEOUT_MS ?? "", 10)
+const MEMORY_LLM_TIMEOUT_MS = Number.isFinite(parsedMemoryLlmTimeoutMs)
+  ? Math.max(30_000, Math.min(600_000, parsedMemoryLlmTimeoutMs))
+  : 120_000
+
 function getSettingsPath(): string {
   return path.join(app.getPath("userData"), "model-settings.json")
 }
@@ -347,7 +355,7 @@ export class MemoryJudge {
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        30000,
+        MEMORY_LLM_TIMEOUT_MS,
         "MemoryJudge",
       )
 

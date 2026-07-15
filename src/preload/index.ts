@@ -553,6 +553,8 @@ const ttsApi = {
   },
   saveSettings: (tts: Record<string, unknown>) => ipcRenderer.invoke(IPC.TTS_SAVE_SETTINGS, tts),
   loadSettings: () => ipcRenderer.invoke(IPC.TTS_LOAD_SETTINGS),
+  getLocalAsrStatus: (startWorker = false) => ipcRenderer.invoke(IPC.ASR_LOCAL_STATUS, startWorker),
+  testLocalAsr: () => ipcRenderer.invoke(IPC.ASR_LOCAL_TEST),
 };
 contextBridge.exposeInMainWorld("tts", ttsApi);
 
@@ -572,4 +574,3 @@ const gameBotApi = {
   },
 };
 contextBridge.exposeInMainWorld("gameBot", gameBotApi);
-

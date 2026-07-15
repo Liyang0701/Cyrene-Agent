@@ -49,6 +49,11 @@ function ensureFakeDir(...parts: string[]): string {
   return dir;
 }
 
+/** macOS resolves /tmp to /private/tmp when process.cwd() is read back. */
+function canonicalIsolatedRoot(): string {
+  return fs.realpathSync(ISOLATED_ROOT);
+}
+
 /** Create a directory but only some of the required files (incomplete install). */
 function ensurePartialFakeDir(...parts: string[]): string {
   const dir = path.join(ISOLATED_ROOT, ...parts);
@@ -97,7 +102,7 @@ afterEach(() => {
 describe("model-status: getProjectModelsDirCandidates priority", () => {
   it("returns cwd/models and app.getAppPath()/models in priority order", () => {
     const dirs = getProjectModelsDirCandidates();
-    const merged = path.join(ISOLATED_ROOT, "models");
+    const merged = path.join(canonicalIsolatedRoot(), "models");
     expect(dirs).toContain(merged);
     expect(dirs.indexOf(merged)).toBe(0);
   });
@@ -126,8 +131,8 @@ describe("model-status: project-side detection", () => {
     const detail = getModelInstallStatusDetail("embedding", "bgem3");
     expect(detail.installed).toBe(true);
     expect(detail.source).toBe("project");
-    expect(detail.matchedAt).toBe(path.join(ISOLATED_ROOT, "models", "Xenova", "bge-m3"));
-    expect(detail.existingProjectDir).toBe(path.join(ISOLATED_ROOT, "models", "Xenova", "bge-m3"));
+    expect(detail.matchedAt).toBe(path.join(canonicalIsolatedRoot(), "models", "Xenova", "bge-m3"));
+    expect(detail.existingProjectDir).toBe(path.join(canonicalIsolatedRoot(), "models", "Xenova", "bge-m3"));
     expect(detail.missingFiles).toEqual([]);
   });
 
@@ -146,7 +151,7 @@ describe("model-status: project-side detection", () => {
     const detail = getModelInstallStatusDetail("embedding", "minilm");
     expect(detail.installed).toBe(true);
     expect(detail.source).toBe("project");
-    expect(detail.matchedAt).toBe(path.join(ISOLATED_ROOT, "models", "Xenova", "all-MiniLM-L6-v2"));
+    expect(detail.matchedAt).toBe(path.join(canonicalIsolatedRoot(), "models", "Xenova", "all-MiniLM-L6-v2"));
   });
 
   it("reranker-light is detected when models/ms-marco-MiniLM-L-6-v2 is installed", () => {
@@ -186,7 +191,7 @@ describe("model-status: HF cache fallback semantics", () => {
     expect(detail.installed).toBe(false);
     expect(detail.source).toBeNull();
     expect(detail.matchedAt).toBeNull();
-    expect(detail.existingProjectDir).toBe(path.join(ISOLATED_ROOT, "models", "Xenova", "bge-m3"));
+    expect(detail.existingProjectDir).toBe(path.join(canonicalIsolatedRoot(), "models", "Xenova", "bge-m3"));
     expect(detail.missingFiles).toContain("config.json");
     expect(detail.missingFiles).toContain("onnx/model_quantized.onnx");
     expect(detail.missingFiles).not.toContain("tokenizer.json");
@@ -223,7 +228,7 @@ describe("model-status: HF cache fallback semantics", () => {
 
     const detail = getModelInstallStatusDetail("embedding", "bgem3");
     expect(detail.source).toBe("project");
-    expect(detail.matchedAt).toBe(path.join(ISOLATED_ROOT, "models", "Xenova", "bge-m3"));
+    expect(detail.matchedAt).toBe(path.join(canonicalIsolatedRoot(), "models", "Xenova", "bge-m3"));
   });
 });
 

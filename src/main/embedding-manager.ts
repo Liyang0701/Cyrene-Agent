@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { getModelInstallStatusDetail } from "./rag/model-status";
 
 // --- Model definitions ---
 
@@ -12,8 +13,8 @@ interface ModelInfo {
 }
 
 const MODELS: ModelInfo[] = [
-  { key: "minilm", name: "Xenova/all-MiniLM-L6-v2", dir: "Xenova\\all-MiniLM-L6-v2", onnx: "onnx\\model_quantized.onnx" },
-  { key: "bgem3", name: "Xenova/bge-m3", dir: "Xenova\\bge-m3", onnx: "onnx\\model_quantized.onnx" },
+  { key: "minilm", name: "Xenova/all-MiniLM-L6-v2", dir: "Xenova/all-MiniLM-L6-v2", onnx: "onnx/model_quantized.onnx" },
+  { key: "bgem3", name: "Xenova/bge-m3", dir: "Xenova/bge-m3", onnx: "onnx/model_quantized.onnx" },
 ];
 
 function getCacheDir(): string {
@@ -23,13 +24,13 @@ function getCacheDir(): string {
 // --- Status check ---
 
 export function getEmbeddingStatus(): Record<string, { installed: boolean; sizeBytes: number }> {
-  const cacheDir = getCacheDir();
   const result: Record<string, { installed: boolean; sizeBytes: number }> = {};
   for (const m of MODELS) {
-    const onnxPath = path.join(cacheDir, m.dir, m.onnx);
-    const installed = fs.existsSync(onnxPath);
+    const detail = getModelInstallStatusDetail("embedding", m.key);
+    const onnxPath = detail.matchedAt ? path.join(detail.matchedAt, "onnx", "model_quantized.onnx") : null;
+    const installed = detail.installed;
     let sizeBytes = 0;
-    if (installed) {
+    if (installed && onnxPath) {
       try { sizeBytes = fs.statSync(onnxPath).size; } catch {}
     }
     result[m.key] = { installed, sizeBytes };
@@ -75,7 +76,7 @@ export function deleteEmbeddingModel(modelKey: string): void {
   const model = MODELS.find((m) => m.key === modelKey);
   if (!model) throw new Error("Unknown model: " + modelKey);
   const cacheDir = getCacheDir();
-  const modelDir = path.join(cacheDir, model.dir);
+  const modelDir = path.join(cacheDir, ...model.dir.split("/"));
   if (fs.existsSync(modelDir)) {
     fs.rmSync(modelDir, { recursive: true, force: true });
   }

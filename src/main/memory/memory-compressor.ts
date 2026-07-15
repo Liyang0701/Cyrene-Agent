@@ -29,6 +29,11 @@ interface ModelSettings {
   explicitTransport?: "openai" | "anthropic" | "auto";
 }
 
+const parsedMemoryLlmTimeoutMs = Number.parseInt(process.env.CYRENE_MEMORY_LLM_TIMEOUT_MS ?? "", 10);
+const MEMORY_LLM_TIMEOUT_MS = Number.isFinite(parsedMemoryLlmTimeoutMs)
+  ? Math.max(30_000, Math.min(600_000, parsedMemoryLlmTimeoutMs))
+  : 120_000;
+
 function loadModelSettings(): ModelSettings {
   const defaults = { provider: "DeepSeek（深度求索）", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-pro", apiKey: "" };
   try {
@@ -55,7 +60,7 @@ async function callLLM(messages: Array<{ role: "system" | "user"; content: strin
   if (!settings.apiKey) throw new Error("missing api key");
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
+  const timer = setTimeout(() => controller.abort(), MEMORY_LLM_TIMEOUT_MS);
 
   const cfg = {
     provider: settings.provider,
