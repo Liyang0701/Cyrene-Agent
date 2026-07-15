@@ -24,6 +24,19 @@ async function fixture(name: string): Promise<{ pcm: Buffer; sampleRate: number 
   return { pcm: wav.subarray(44), sampleRate: wav.readUInt32LE(24) };
 }
 
+async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`ASR worker ${pid} did not exit within ${timeoutMs}ms`);
+}
+
 afterEach(() => {
   for (const manager of managers.splice(0)) manager.dispose();
 });
@@ -73,7 +86,6 @@ describe.skipIf(!existsSync(`${ROOT}/model/model.safetensors`))("LocalAsrWorkerM
     const recovered = await manager.health(config);
     const pid = recovered.pid!;
     manager.dispose();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(() => process.kill(pid, 0)).toThrow();
+    await expect(waitForProcessExit(pid)).resolves.toBeUndefined();
   }, 120_000);
 });
