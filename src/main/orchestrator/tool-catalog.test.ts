@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "./tool-registry";
-import { buildToolCatalog } from "./tool-catalog";
+import { buildToolCatalog, scopeToolSystemRules } from "./tool-catalog";
 
 function makeTool(overrides: Partial<ToolDefinition> & { id: string }): ToolDefinition {
   return {
@@ -106,5 +106,17 @@ describe("buildToolCatalog", () => {
     expect(idxA).toBeGreaterThanOrEqual(0);
     expect(idxB).toBeGreaterThan(idxA);
     expect(idxC).toBeGreaterThan(idxB);
+  });
+});
+
+describe("scopeToolSystemRules", () => {
+  const base = "# 通用规则\n\n---\n\n## Live2D 动作\n\n只在明确要求动作时调用。";
+
+  it("候选集合没有 play_live2d_action 时移除动作专属规则", () => {
+    expect(scopeToolSystemRules(base, [makeTool({ id: "weather" })])).toBe("# 通用规则");
+  });
+
+  it("候选集合包含 play_live2d_action 时保留动作专属规则", () => {
+    expect(scopeToolSystemRules(base, [makeTool({ id: "play_live2d_action" })])).toBe(base);
   });
 });

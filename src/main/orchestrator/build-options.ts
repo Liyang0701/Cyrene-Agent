@@ -24,6 +24,7 @@ import type { CyreneRunOptions, CyreneRunResult } from "./cyrene-agent";
 import type { ToolDefinition } from "./tool-registry";
 import type { ChatMessage, OpenAIContentBlock } from "./vendors/types";
 import type { AguiRunInput } from "../agui-bridge";
+import { isLoopbackModelUrl } from "../channels/channel-model-endpoint";
 import { IPC } from "../../shared/ipc-channels";
 import type { RelationshipChannel, RelationshipTurnInput } from "../relationship/relationship-log";
 import { validateCaptionImagePath } from "../chat/image-caption";
@@ -349,17 +350,21 @@ export async function buildAgentRunOptions(
   // Soul 阶段基础 system：人设 + 环境/记忆/关系/附件/渠道（这些是"表达"所需）。
   // 工具结果（role: tool 消息）已在 conversation 中携带，本字段不重复注入；
   // FC 循环 Soul 阶段执行前会按需动态追加 soulToolResultsSummary。
-  const soulSystemBaseContent =
+  const soulSystemStableContent = deps.buildSoulSystemBasePrompt(styleFile);
+  const soulSystemDynamicContent =
     (environmentContext ? environmentContext + "\n\n" : "") +
     (conversationTimeContext ? conversationTimeContext + "\n\n---\n\n" : "") +
     (channelSystem ? channelSystem + "\n\n" : "") +
-    deps.buildSoulSystemBasePrompt(styleFile) +
     (skillCatalog ? "\n\n---\n\n" + skillCatalog : "") +
     skillActivation +
     toneInjection +
     (alwaysOnContext ? "\n\n" + alwaysOnContext + "\n\n" : "") +
     (relationshipContext ? "\n\n" + relationshipContext + "\n\n" : "") +
     attachmentContext;
+  const soulSystemBaseContent = [soulSystemStableContent, soulSystemDynamicContent]
+    .filter(Boolean)
+    .join("\n\n");
+  const useStableSoulPrefix = input.channel === "wechat" && !isLoopbackModelUrl(settings.baseUrl);
 
   deps.logWorldbookInjection(alwaysOnContext, systemContent);
 
@@ -380,6 +385,7 @@ export async function buildAgentRunOptions(
       timeoutMs: deps.chatRequestTimeoutMs,
       toolSystemContent,
       soulSystemBaseContent,
+      ...(useStableSoulPrefix ? { soulSystemStableContent, soulSystemDynamicContent } : {}),
       ...(imageCaptionFallback ? { imageCaptionFallback } : {}),
       ...(isTalkMode ? { tools: [] as ToolDefinition[] } : {}),
     },

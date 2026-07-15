@@ -47,6 +47,20 @@ export interface CyreneRunOptions {
   toolSystemContent: string;
   /** Soul 阶段使用的基础 system prompt（人设 + 环境/记忆/关系/附件）。 */
   soulSystemBaseContent: string;
+  /** 固定 Soul 原文；作为云端上下文缓存的稳定请求前缀。 */
+  soulSystemStableContent?: string;
+  /** 时间、环境、记忆、关系、附件等每轮动态 system 后缀。 */
+  soulSystemDynamicContent?: string;
+  /** 已确认纯聊天时跳过工具阶段；默认走完整两阶段。 */
+  executionMode?: "two-phase" | "soul-only";
+  /** Qwen 原生软 no-think；只作用于请求副本。 */
+  softNoThink?: boolean;
+  /** 单次终结查询在首批工具执行后直接进入 Soul。 */
+  finishAfterFirstToolBatch?: boolean;
+  /** 云端失败时的本地模型配置。 */
+  fallbackSettings?: AgentLoopSettings;
+  fallbackSoftNoThink?: boolean;
+  fallbackAfterMs?: number;
 }
 
 /** FC 循环最终结果（供桥层做副作用用）。 */
@@ -54,7 +68,7 @@ export interface CyreneRunResult {
   reply: string;
   toolResults: ToolCallResult[];
   totalUsage?: { input: number; output: number };
-  soulPhaseReason?: "no_tool" | "max_rounds" | "timeout" | "tool_error";
+  soulPhaseReason?: "soul_only" | "no_tool" | "tool_complete" | "max_rounds" | "timeout" | "tool_error";
 }
 
 const LOG_PREFIX = "[CyreneAgent]";
@@ -62,8 +76,11 @@ const LOG_PREFIX = "[CyreneAgent]";
 /**
  * 把 TwoPhaseEvent 包装成 AG-UI BaseEvent。
  */
-function toAguiEvent(event: TwoPhaseEvent): BaseEvent {
+function toAguiEvent(event: TwoPhaseEvent): BaseEvent | null {
   switch (event.type) {
+    case "llm_phase_metrics":
+      // 诊断指标只写主进程日志，不作为聊天事件发送给用户界面或渠道。
+      return null;
     case "step_started":
       return { type: EventType.STEP_STARTED, stepName: event.stepName };
     case "step_finished":
@@ -176,6 +193,9 @@ export class CyreneAgent extends AbstractAgent {
           subscriber.next({ type: EventType.RUN_STARTED, threadId, runId });
 
           const adapter = getAdapterForConfig(options.settings);
+          const fallbackAdapter = options.fallbackSettings
+            ? getAdapterForConfig(options.fallbackSettings)
+            : undefined;
 
           const result: TwoPhaseFcResult = await runTwoPhaseFcLoop({
             settings: options.settings,
@@ -184,12 +204,26 @@ export class CyreneAgent extends AbstractAgent {
             tools: options.tools ?? toolRegistry.getEnabledTools(),
             toolSystemContent: options.toolSystemContent,
             soulSystemBaseContent: options.soulSystemBaseContent,
+            soulSystemStableContent: options.soulSystemStableContent,
+            soulSystemDynamicContent: options.soulSystemDynamicContent,
             timeoutMs: options.timeoutMs,
+            executionMode: options.executionMode,
+            softNoThink: options.softNoThink,
+            finishAfterFirstToolBatch: options.finishAfterFirstToolBatch,
+            ...(options.fallbackSettings && fallbackAdapter ? {
+              fallback: {
+                settings: options.fallbackSettings,
+                adapter: fallbackAdapter,
+                softNoThink: options.fallbackSoftNoThink,
+                activateAfterMs: options.fallbackAfterMs,
+              },
+            } : {}),
             imageCaptionFallback: options.imageCaptionFallback,
             executeTool: (tc, runnableToolIds) => executeToolCall(tc, runnableToolIds),
             onEvent: (event) => {
               if (cancelled) return;
-              subscriber.next(toAguiEvent(event));
+              const aguiEvent = toAguiEvent(event);
+              if (aguiEvent) subscriber.next(aguiEvent);
             },
             signal: abortController.signal,
           });

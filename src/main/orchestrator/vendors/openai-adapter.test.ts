@@ -130,6 +130,39 @@ describe("OpenAICompatAdapter", () => {
     expect(resp.finishReason).toBe("stop");
   });
 
+  test("parseResponse: 兼容 MLX-VLM 的 input_tokens / output_tokens 用量字段", () => {
+    const adapter = new OpenAICompatAdapter("test-openai", capability);
+    const resp = adapter.parseResponse({
+      choices: [{
+        message: { role: "assistant", content: "抱抱你" },
+        finish_reason: "stop",
+      }],
+      usage: {
+        input_tokens: 9492,
+        output_tokens: 30,
+        total_tokens: 9522,
+        prompt_tps: 481.2,
+        generation_tps: 12.8,
+      },
+    });
+
+    expect(resp.usage).toEqual({ input: 9492, output: 30 });
+  });
+
+  test("parseResponse: 暴露 DashScope 隐式缓存命中 token", () => {
+    const adapter = new OpenAICompatAdapter("test-openai", capability);
+    const resp = adapter.parseResponse({
+      choices: [{ message: { role: "assistant", content: "好" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 7729,
+        completion_tokens: 44,
+        prompt_tokens_details: { cached_tokens: 6144 },
+      },
+    });
+
+    expect(resp.usage).toEqual({ input: 7729, output: 44, cachedInput: 6144 });
+  });
+
   test("parseResponse: tool_calls 多轮字段映射正确", () => {
     const adapter = new OpenAICompatAdapter("test-openai", capability);
     const resp = adapter.parseResponse({

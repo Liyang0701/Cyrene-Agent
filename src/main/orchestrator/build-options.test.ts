@@ -99,6 +99,40 @@ describe("build-options", () => {
     expect(result.options.soulSystemBaseContent).toContain("SOUL_SYSTEM_BASE")
   })
 
+  it("固定 Soul 原文作为稳定前缀，动态上下文完整放在后缀", async () => {
+    const result = await buildAgentRunOptions({
+      messages: [{ role: "user", content: "你好" }],
+      style: "01_default.md",
+      channel: "wechat",
+    }, createBuildDeps())
+
+    expect(result.options.soulSystemStableContent).toBe("SOUL_SYSTEM_BASE")
+    expect(result.options.soulSystemDynamicContent).toContain("ENV")
+    expect(result.options.soulSystemDynamicContent).toContain("你正在通过微信回复用户")
+    expect(result.options.soulSystemDynamicContent).toContain("ALWAYS")
+    expect(result.options.soulSystemDynamicContent).toContain("RELATIONSHIP")
+
+    const combined = [
+      result.options.soulSystemStableContent,
+      result.options.soulSystemDynamicContent,
+    ].filter(Boolean).join("\n\n")
+    for (const marker of ["SOUL_SYSTEM_BASE", "ENV", "ALWAYS", "RELATIONSHIP"]) {
+      expect(combined.match(new RegExp(marker, "g"))).toHaveLength(1)
+    }
+  })
+
+  it("桌面入口保持单一 Soul system，不改变提示消息边界", async () => {
+    const result = await buildAgentRunOptions({
+      messages: [{ role: "user", content: "你好" }],
+      style: "01_default.md",
+    }, createBuildDeps())
+
+    expect(result.options.soulSystemStableContent).toBeUndefined()
+    expect(result.options.soulSystemDynamicContent).toBeUndefined()
+    expect(result.options.soulSystemBaseContent).toContain("SOUL_SYSTEM_BASE")
+    expect(result.options.soulSystemBaseContent).toContain("ENV")
+  })
+
   it("attaches direct image content blocks to the latest user message", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cyrene-image-direct-"))
     const imagePath = path.join(dir, "图 像.png")

@@ -146,7 +146,14 @@ export class OpenAICompatAdapter implements ChatVendorAdapter {
         };
         finish_reason?: string;
       }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        input_tokens?: number;
+        output_tokens?: number;
+        total_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+      };
     };
     const choice = data.choices?.[0];
     const msg = choice?.message;
@@ -166,9 +173,15 @@ export class OpenAICompatAdapter implements ChatVendorAdapter {
       ...(thinking ? { thinking } : {}),
     };
 
-    // 提取 token 用量（OpenAI 协议: prompt_tokens/completion_tokens）
+    // 提取 token 用量：标准 OpenAI 使用 prompt/completion，MLX-VLM 使用 input/output。
     const usage = data.usage
-      ? { input: data.usage.prompt_tokens ?? 0, output: data.usage.completion_tokens ?? 0 }
+      ? {
+          input: data.usage.prompt_tokens ?? data.usage.input_tokens ?? 0,
+          output: data.usage.completion_tokens ?? data.usage.output_tokens ?? 0,
+          ...(typeof data.usage.prompt_tokens_details?.cached_tokens === "number"
+            ? { cachedInput: data.usage.prompt_tokens_details.cached_tokens }
+            : {}),
+        }
       : undefined;
 
     return {

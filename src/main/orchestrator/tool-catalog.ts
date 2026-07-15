@@ -34,3 +34,17 @@ export function buildToolCatalog(tools: ReadonlyArray<ToolDefinition>): string {
     })
     .join("\n");
 }
+
+/**
+ * 工具候选缩小时，同步移除仅属于缺席工具的固定规则。
+ * 当前 tools_system.md 的 Live2D 专属章节位于末尾，因此可安全按章节边界裁掉。
+ */
+export function scopeToolSystemRules(
+  base: string,
+  tools: ReadonlyArray<ToolDefinition>,
+): string {
+  if (tools.some((tool) => tool.id === "play_live2d_action")) return base;
+  const marker = "\n\n---\n\n## Live2D 动作";
+  const sectionStart = base.indexOf(marker);
+  return sectionStart >= 0 ? base.slice(0, sectionStart).trim() : base;
+}

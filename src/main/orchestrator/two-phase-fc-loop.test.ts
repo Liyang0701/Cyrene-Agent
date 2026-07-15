@@ -38,7 +38,7 @@ class FakeAdapter implements ChatVendorAdapter {
 
   /** 控制台返回的脚本：每次 fetch 调用消耗一个 script 元素。 */
   private scripts: Array<
-    | { kind: "text"; text: string }
+    | { kind: "text"; text: string; usage?: { input: number; output: number } }
     | { kind: "tool"; toolCalls: ToolCall[] }
     | { kind: "error"; message: string }
   > = [];
@@ -46,8 +46,10 @@ class FakeAdapter implements ChatVendorAdapter {
   /** 记录所有发出的请求体，便于断言。 */
   readonly requests: ChatRequest[] = [];
 
-  enqueueText(text: string) {
-    this.scripts.push({ kind: "text", text });
+  constructor(private readonly url = "https://fake/") {}
+
+  enqueueText(text: string, usage?: { input: number; output: number }) {
+    this.scripts.push({ kind: "text", text, usage });
   }
   enqueueToolCalls(toolCalls: ToolCall[]) {
     this.scripts.push({ kind: "tool", toolCalls });
@@ -59,7 +61,7 @@ class FakeAdapter implements ChatVendorAdapter {
   buildRequest(req: ChatRequest): HttpRequest {
     this.requests.push(req);
     return {
-      url: "https://fake/",
+      url: this.url,
       method: "POST",
       headers: {},
       body: JSON.stringify({}),
@@ -83,6 +85,7 @@ class FakeAdapter implements ChatVendorAdapter {
       toolCalls,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       raw: {},
+      ...(script.kind === "text" && script.usage ? { usage: script.usage } : {}),
     };
   }
   appendToolResults(messages: ChatMessage[], results: ToolExecutionResult[]): ChatMessage[] {
@@ -144,6 +147,307 @@ afterEach(() => {
 });
 
 describe("runTwoPhaseFcLoop", () => {
+  it("soul-only 模式跳过工具阶段，只发出一次不带 tools 的 Soul 请求", async () => {
+    const adapter = new FakeAdapter();
+    adapter.enqueueText("来啦，抱紧你～");
+
+    const result = await runTwoPhaseFcLoop({
+      ...baseOptions,
+      executionMode: "soul-only",
+      settings: {
+        provider: "test",
+        baseUrl: "https://test",
+        model: "m",
+        apiKey: "k",
+      },
+      adapter,
+      executeTool: async () => {
+        throw new Error("soul-only 不应执行工具");
+      },
+    });
+
+    expect(result.reply).toBe("来啦，抱紧你～");
+    expect(result.soulPhaseReason).toBe("soul_only");
+    expect(adapter.requests).toHaveLength(1);
+    expect(adapter.requests[0].messages[0].content).toBe("SOUL_SYSTEM_BASE");
+    expect(adapter.requests[0].tools).toBeUndefined();
+  });
+
+  it("Soul 请求按稳定前缀、动态后缀、会话顺序发送，且不删除原文", async () => {
+    const adapter = new FakeAdapter();
+    adapter.enqueueText("好呀");
+
+    await runTwoPhaseFcLoop({
+      ...baseOptions,
+      executionMode: "soul-only",
+      soulSystemStableContent: "STABLE_SOUL",
+      soulSystemDynamicContent: "DYNAMIC_CONTEXT",
+      settings: {
+        provider: "test",
+        baseUrl: "https://test",
+        model: "m",
+        apiKey: "k",
+      },
+      adapter,
+      executeTool: async () => "unused",
+    });
+
+    expect(adapter.requests[0].messages.slice(0, 3)).toEqual([
+      { role: "system", content: "STABLE_SOUL" },
+      { role: "system", content: "DYNAMIC_CONTEXT" },
+      { role: "user", content: "你好" },
+    ]);
+  });
+
+  it("softNoThink 只修改请求副本的最后一条 user，不污染原始消息", async () => {
+    const adapter = new FakeAdapter();
+    adapter.enqueueText("来啦～");
+    const messages: ChatMessage[] = [
+      { role: "user", content: "上一问" },
+      { role: "assistant", content: "上一答" },
+      { role: "user", content: "抱抱我" },
+    ];
+
+    await runTwoPhaseFcLoop({
+      ...baseOptions,
+      messages,
+      executionMode: "soul-only",
+      softNoThink: true,
+      settings: {
+        provider: "test",
+        baseUrl: "https://test",
+        model: "m",
+        apiKey: "k",
+      },
+      adapter,
+      executeTool: async () => "unused",
+    });
+
+    expect(adapter.requests[0].messages[1].content).toBe("上一问");
+    expect(adapter.requests[0].messages[3].content).toBe("抱抱我 /no_think");
+    expect(messages[2].content).toBe("抱抱我");
+  });
+
+  it("softNoThink 不重复追加已经存在的 /no_think", async () => {
+    const adapter = new FakeAdapter();
+    adapter.enqueueText("好");
+
+    await runTwoPhaseFcLoop({
+      ...baseOptions,
+      messages: [{ role: "user", content: "简短回答 /no_think" }],
+      executionMode: "soul-only",
+      softNoThink: true,
+      settings: {
+        provider: "test",
+        baseUrl: "https://test",
+        model: "m",
+        apiKey: "k",
+      },
+      adapter,
+      executeTool: async () => "unused",
+    });
+
+    expect(adapter.requests[0].messages[1].content).toBe("简短回答 /no_think");
+  });
+
+  it("云端 503 时切换本地并为本地 Qwen 请求副本追加 /no_think", async () => {
+    const primary = new FakeAdapter("https://cloud.test/");
+    const fallback = new FakeAdapter("http://127.0.0.1:8080/");
+    fallback.enqueueText("本地接住你啦");
+    globalThis.fetch = vi.fn(async (url) => {
+      return String(url).includes("cloud.test")
+        ? new Response("service unavailable", { status: 503 })
+        : new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await runTwoPhaseFcLoop({
+      ...baseOptions,
+      executionMode: "soul-only",
+      settings: { provider: "cloud", baseUrl: "https://cloud.test", model: "qwen-plus", apiKey: "cloud" },
+      adapter: primary,
+      fallback: {
+        settings: { provider: "local", baseUrl: "http://127.0.0.1:8080/v1", model: "local-qwen3", apiKey: "" },
+        adapter: fallback,
+        softNoThink: true,
+        activateAfterMs: 15_000,
+      },
+      executeTool: async () => "unused",
+    });
+
+    expect(result.reply).toBe("本地接住你啦");
+    expect(primary.requests).toHaveLength(1);
+    expect(fallback.requests).toHaveLength(1);
+    expect(fallback.requests[0].model).toBe("local-qwen3");
+    expect(fallback.requests[0].messages.at(-1)?.content).toBe("你好 /no_think");
+  });
+
+  it("云端 400 请求错误不自动回退，避免掩盖协议或内容问题", async () => {
+    const primary = new FakeAdapter("https://cloud.test/");
+    const fallback = new FakeAdapter("http://127.0.0.1:8080/");
+    globalThis.fetch = vi.fn(async () => new Response("bad request", { status: 400 })) as unknown as typeof fetch;
+
+    const result = await runTwoPhaseFcLoop({
+      ...baseOptions,
+      executionMode: "soul-only",
+      settings: { provider: "cloud", baseUrl: "https://cloud.test", model: "qwen-plus", apiKey: "cloud" },
+      adapter: primary,
+      fallback: {
+        settings: { provider: "local", baseUrl: "http://127.0.0.1:8080/v1", model: "local-qwen3", apiKey: "" },
+        adapter: fallback,
+        softNoThink: true,
+      },
+      executeTool: async () => "unused",
+    });
+
+    expect(result.reply).toContain("HTTP 400");
+    expect(fallback.requests).toHaveLength(0);
+  });
+
+  it("外部取消会终止正在进入的 Soul 请求，且不会误触发本地回退", async () => {
+    const primary = new FakeAdapter("https://cloud.test/");
+    const fallback = new FakeAdapter("http://127.0.0.1:8080/");
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runTwoPhaseFcLoop({
+      ...baseOptions,
+      executionMode: "soul-only",
+      signal: controller.signal,
+      settings: { provider: "cloud", baseUrl: "https://cloud.test", model: "qwen-plus", apiKey: "cloud" },
+      adapter: primary,
+      fallback: {
+        settings: { provider: "local", baseUrl: "http://127.0.0.1:8080/v1", model: "local-qwen3", apiKey: "" },
+        adapter: fallback,
+      },
+      executeTool: async () => "unused",
+    })).rejects.toThrow("run cancelled");
+
+    expect(primary.requests).toHaveLength(0);
+    expect(fallback.requests).toHaveLength(0);
+  });
+
+  it("工具执行后云端总结失败只切换本地总结，不重复执行工具", async () => {
+    const primary = new FakeAdapter("https://cloud.test/");
+    const fallback = new FakeAdapter("http://127.0.0.1:8080/");
+    primary.enqueueToolCalls([{ id: "weather-1", name: "weather", arguments: "{\"city\":\"上海\"}" }]);
+    fallback.enqueueText("本地总结：上海明天晴");
+    let cloudCalls = 0;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes("cloud.test")) {
+        cloudCalls++;
+        return cloudCalls === 1
+          ? new Response("{}", { status: 200 })
+          : new Response("service unavailable", { status: 503 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const executeTool = vi.fn(async () => "上海明天晴");
+
+    const result = await runTwoPhaseFcLoop({
+      ...baseOptions,
+      finishAfterFirstToolBatch: true,
+      settings: { provider: "cloud", baseUrl: "https://cloud.test", model: "qwen-plus", apiKey: "cloud" },
+      adapter: primary,
+      fallback: {
+        settings: { provider: "local", baseUrl: "http://127.0.0.1:8080/v1", model: "local-qwen3", apiKey: "" },
+        adapter: fallback,
+        softNoThink: true,
+      },
+      executeTool,
+    });
+
+    expect(result.reply).toBe("本地总结：上海明天晴");
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(fallback.requests[0].messages.some((message) => message.role === "tool")).toBe(true);
+  });
+
+  it("跨模型回退时按工具名和规范化参数去重副作用工具", async () => {
+    const primary = new FakeAdapter("https://cloud.test/");
+    const fallback = new FakeAdapter("http://127.0.0.1:8080/");
+    primary.enqueueToolCalls([{
+      id: "send-primary",
+      name: "send_email",
+      arguments: '{"to":"friend@example.com","subject":"问候"}',
+    }]);
+    fallback.enqueueToolCalls([{
+      id: "send-fallback",
+      name: "send_email",
+      arguments: '{"subject":"问候","to":"friend@example.com"}',
+    }]);
+    fallback.enqueueText("");
+    fallback.enqueueText("邮件只发送了一次。");
+
+    let cloudCalls = 0;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes("cloud.test")) {
+        cloudCalls++;
+        return cloudCalls === 1
+          ? new Response("{}", { status: 200 })
+          : new Response("service unavailable", { status: 503 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const executeTool = vi.fn(async () => "发送成功");
+
+    const result = await runTwoPhaseFcLoop({
+      ...baseOptions,
+      tools: [makeTool("send_email")],
+      settings: { provider: "cloud", baseUrl: "https://cloud.test", model: "qwen-plus", apiKey: "cloud" },
+      adapter: primary,
+      fallback: {
+        settings: { provider: "local", baseUrl: "http://127.0.0.1:8080/v1", model: "local-qwen3", apiKey: "" },
+        adapter: fallback,
+      },
+      executeTool,
+    });
+
+    expect(result.reply).toBe("邮件只发送了一次。");
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(result.toolResults).toHaveLength(2);
+    expect(result.toolResults[1].output).toBe("发送成功");
+  });
+
+  it("通过公共事件分别暴露 Tool 与 Soul 阶段的耗时、用量和请求规模", async () => {
+    const adapter = new FakeAdapter();
+    adapter.enqueueText("", { input: 9492, output: 30 });
+    adapter.enqueueText("抱抱你", { input: 5290, output: 84 });
+
+    const metrics: Array<Extract<Parameters<NonNullable<Parameters<typeof runTwoPhaseFcLoop>[0]["onEvent"]>>[0], { type: "llm_phase_metrics" }>> = [];
+    await runTwoPhaseFcLoop({
+      ...baseOptions,
+      settings: {
+        provider: "test",
+        baseUrl: "https://test",
+        model: "m",
+        apiKey: "k",
+      },
+      adapter,
+      executeTool: async () => "unused",
+      recordUsage: () => {},
+      onEvent: (event) => {
+        if (event.type === "llm_phase_metrics") metrics.push(event);
+      },
+    });
+
+    expect(metrics).toHaveLength(2);
+    expect(metrics[0]).toMatchObject({
+      phase: "tool",
+      round: 1,
+      inputTokens: 9492,
+      outputTokens: 30,
+      messageCount: 2,
+      toolCount: 1,
+    });
+    expect(metrics[1]).toMatchObject({
+      phase: "soul",
+      inputTokens: 5290,
+      outputTokens: 84,
+      messageCount: 2,
+      toolCount: 0,
+    });
+    expect(metrics.every((metric) => metric.elapsedMs >= 0)).toBe(true);
+  });
+
   it("模型无 tool_calls → 切 SOUL_PHASE，工具阶段自由文本不写入 conversation", async () => {
     const adapter = new FakeAdapter();
     // TOOL_PHASE: 模型生成自由文本（这个文本不应进入 soul 的 conversation）
@@ -290,6 +594,34 @@ describe("runTwoPhaseFcLoop", () => {
 
     expect(result.soulPhaseReason).toBe("max_rounds");
     expect(result.reply).toBe("抱歉，已经循环太多次了");
+  });
+
+  it("单次终结工具在首批结果后直接进入 Soul，不再发第二轮工具判断", async () => {
+    const adapter = new FakeAdapter();
+    adapter.enqueueToolCalls([
+      { id: "tc-weather", name: "weather", arguments: "{\"city\":\"上海\"}" },
+    ]);
+    adapter.enqueueText("上海明天多云，记得带伞。", { input: 5500, output: 20 });
+
+    const result = await runTwoPhaseFcLoop({
+      ...baseOptions,
+      settings: {
+        provider: "test",
+        baseUrl: "https://test",
+        model: "m",
+        apiKey: "k",
+      },
+      adapter,
+      finishAfterFirstToolBatch: true,
+      executeTool: async () => "上海明天多云，18-24℃",
+      recordUsage: () => {},
+    });
+
+    expect(result.soulPhaseReason).toBe("tool_complete");
+    expect(adapter.requests).toHaveLength(2);
+    expect(adapter.requests[0].tools).toHaveLength(1);
+    expect(adapter.requests[1].tools).toBeUndefined();
+    expect(adapter.requests[1].messages.some((message) => message.role === "tool")).toBe(true);
   });
 
   it("工具执行异常不影响主流程，结果带 [工具执行失败] 前缀", async () => {

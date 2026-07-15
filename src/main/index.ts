@@ -50,7 +50,7 @@ import type { VendorConfig } from "./orchestrator/vendors";
 import { getCapability, getCapabilityOrOpenAI } from "./orchestrator/vendors/capabilities";
 import type { VisionConfig } from "./orchestrator/vision-captioner";
 import { toolRegistry, type ToolDefinition } from "./orchestrator/tool-registry";
-import { buildToolCatalog } from "./orchestrator/tool-catalog";
+import { buildToolCatalog, scopeToolSystemRules } from "./orchestrator/tool-catalog";
 import type { ToolRiskLevel } from "./permission";
 import { loadChannelsSettings } from "./channels/settings-store";
 import { channelManager } from "./channels/manager";
@@ -115,6 +115,10 @@ import { initSkills, skillRegistry, buildSkillCatalog, parseSlashCommand, setSki
 import { initGameBot } from "./game-bot";
 import { initChannels, shutdownChannels, setChannelsConversationLifecycle } from "./channels/init";
 import { buildChannelAttachmentInputs } from "./channels/agent-input";
+import { planChannelExecution } from "./channels/channel-execution-plan";
+import { selectChannelHistoryContext } from "./channels/channel-history-context";
+import { shouldUseWechatQwenSoftNoThink } from "./channels/channel-model-policy";
+import { resolveWechatLocalModelFallback } from "./channels/channel-model-fallback";
 import { setDispatcherBuildAndRunAgent, setDispatcherSynthesizeTts, setDispatcherBroadcastChat, setDispatcherLoadGeneralSettings, setDispatcherLoadRecentHistory } from "./channels/dispatcher";
 import { createWindowLifecycleTracker } from "./electron-window-lifecycle";
 import {
@@ -2118,7 +2122,7 @@ function initializeProactiveChatService(): void {
  * 不放任何人格 / 环境 / 记忆，避免人设污染工具决策。
  */
 function buildToolSystemPrompt(enabledTools: ReadonlyArray<ToolDefinition>): string {
-  const base = loadPromptFile("tools_system.md");
+  const base = scopeToolSystemRules(loadPromptFile("tools_system.md"), enabledTools);
   const catalog = buildToolCatalog(enabledTools as ToolDefinition[]);
   return [
     base,
@@ -4487,7 +4491,8 @@ app.whenReady().then(async () => {
 
     // Phase A：拼接历史 (同桌面端 buildModelMessages 行为: 上滑窗最近 N 条).
     // history-log 统一存 role: "user"|"assistant", 直接用即可.
-    const historyMessages = (priorMessages ?? [])
+    const selectedHistory = selectChannelHistoryContext(priorMessages ?? [], msg.text);
+    const historyMessages = selectedHistory
       .filter((m) => typeof m.content === "string" && m.content.trim().length > 0)
       .map((m) => ({
         role: m.role as "user" | "assistant" | "system",
@@ -4539,8 +4544,47 @@ app.whenReady().then(async () => {
       },
       buildOptionsDeps,
     );
-    // 把过滤后的 tools 注入 options（覆盖默认的 getEnabledTools）
-    options.tools = filteredTools;
+    const executionPlan = planChannelExecution({
+      text: msg.text,
+      attachments: msg.attachments,
+      enabledToolIds: filteredTools.map((tool) => tool.id),
+    });
+    options.executionMode = executionPlan.mode === "soul-only" ? "soul-only" : "two-phase";
+    options.softNoThink = shouldUseWechatQwenSoftNoThink({
+      channel: msg.channel,
+      baseUrl: channelModelSettings.baseUrl,
+      model: channelModelSettings.model,
+    });
+    options.finishAfterFirstToolBatch = executionPlan.finishAfterFirstToolBatch;
+    const localFallback = resolveWechatLocalModelFallback({
+      channel: msg.channel,
+      primaryBaseUrl: channelModelSettings.baseUrl,
+      perProvider: channelModelSettings.perProvider,
+    });
+    if (localFallback) {
+      options.fallbackSettings = localFallback;
+      options.fallbackSoftNoThink = shouldUseWechatQwenSoftNoThink({
+        channel: msg.channel,
+        baseUrl: localFallback.baseUrl,
+        model: localFallback.model,
+      });
+      options.fallbackAfterMs = 15_000;
+    }
+    const selectedTools = executionPlan.mode === "soul-only"
+      ? []
+      : executionPlan.mode === "tool-loop"
+        ? filteredTools.filter((tool) => executionPlan.candidateToolIds?.includes(tool.id))
+        : filteredTools;
+    options.tools = selectedTools;
+    options.toolSystemContent = buildToolSystemPrompt(selectedTools);
+    console.log(
+      "[Channels] execution plan:",
+      `mode=${executionPlan.mode} reason=${executionPlan.reason} tools=${selectedTools.length}/${filteredTools.length}` +
+      ` history=${historyMessages.length}/${priorMessages?.length ?? 0}` +
+      (executionPlan.finishAfterFirstToolBatch ? " finishAfterFirstToolBatch=true" : "") +
+      (options.softNoThink ? " softNoThink=true" : "") +
+      (localFallback ? ` fallback=${localFallback.model} after=15000ms` : ""),
+    );
 
     const threadId = `thread-${sessionId}-${Date.now()}`;
     const agent = new CyreneAgent({ threadId, description: `bot:${msg.channel}:${msg.senderId}` });

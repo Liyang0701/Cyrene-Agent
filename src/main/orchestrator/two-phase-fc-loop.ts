@@ -59,6 +59,17 @@ export interface AgentLoopSettings {
 export type TwoPhaseEvent =
   | { type: "step_started"; stepName: string }
   | { type: "step_finished"; stepName: string }
+  | {
+      type: "llm_phase_metrics";
+      phase: "tool" | "soul";
+      round?: number;
+      elapsedMs: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+      messageCount: number;
+      toolCount: number;
+    }
   | { type: "tool_call_start"; toolCallId: string; toolCallName: string }
   | { type: "tool_call_result"; toolCallId: string; messageId: string; content: string }
   | { type: "tool_call_end"; toolCallId: string }
@@ -66,7 +77,7 @@ export type TwoPhaseEvent =
   | { type: "text_message_content"; messageId: string; delta: string }
   | { type: "text_message_end"; messageId: string };
 
-export type SoulPhaseReason = "no_tool" | "max_rounds" | "timeout" | "tool_error";
+export type SoulPhaseReason = "soul_only" | "no_tool" | "tool_complete" | "max_rounds" | "timeout" | "tool_error";
 
 export interface TwoPhaseFcOptions {
   settings: AgentLoopSettings;
@@ -80,7 +91,24 @@ export interface TwoPhaseFcOptions {
   /** Soul 阶段使用的基础 system prompt（人设 + 环境/记忆/关系/附件）。
    *  工具结果（role: tool 消息）已在 conversation 中携带，本字段不重复注入。 */
   soulSystemBaseContent: string;
+  /** 固定 Soul 原文；存在时优先作为第一个 system message。 */
+  soulSystemStableContent?: string;
+  /** 每轮动态上下文；存在时作为第二个 system message。 */
+  soulSystemDynamicContent?: string;
   timeoutMs: number;
+  /** two-phase 为默认工具编排；soul-only 用于上层已确认的纯聊天快速路径。 */
+  executionMode?: "two-phase" | "soul-only";
+  /** 在请求副本最后一条 user 后附加 Qwen 原生 `/no_think`，不写入历史。 */
+  softNoThink?: boolean;
+  /** 云端请求失败时使用的本地模型；回退激活后，本轮后续请求保持在本地。 */
+  fallback?: {
+    settings: AgentLoopSettings;
+    adapter: ChatVendorAdapter;
+    softNoThink?: boolean;
+    activateAfterMs?: number;
+  };
+  /** 已路由为单次终结查询时，首批工具执行完成后直接进入 Soul。 */
+  finishAfterFirstToolBatch?: boolean;
   maxToolRounds?: number;
   perRoundTimeoutMs?: number;
   maxConsecutiveTimeouts?: number;
@@ -112,6 +140,56 @@ const DEFAULT_MAX_TOOL_ROUNDS = 20;
 const DEFAULT_PER_ROUND_TIMEOUT_MS = 75_000;
 const DEFAULT_MAX_CONSECUTIVE_TIMEOUTS = 2;
 const DEFAULT_FORCE_SUMMARY_TIMEOUT_MS = 90_000;
+const DEFAULT_FALLBACK_ACTIVATION_MS = 15_000;
+const SIDE_EFFECT_TOOL_IDS = new Set([
+  "apply_patch",
+  "delegate_task",
+  "install_mcp_server",
+  "play_live2d_action",
+  "record_expense",
+  "run_shell",
+  "send_email",
+  "todo_write",
+  "write_excel",
+  "write_file",
+  "write_markdown",
+  "write_pdf",
+  "write_word",
+]);
+
+class ModelRequestError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "ModelRequestError";
+  }
+}
+
+interface ModelFallbackState {
+  activated: boolean;
+}
+
+function abortError(): Error {
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalize(item)]),
+    );
+  }
+  return value;
+}
+
+function sideEffectSignature(toolName: string, args: Record<string, unknown>): string | undefined {
+  if (!SIDE_EFFECT_TOOL_IDS.has(toolName)) return undefined;
+  return `${toolName}:${JSON.stringify(canonicalize(args))}`;
+}
 
 
 function sliceToDeltas(text: string, chunkSize = 1): string[] {
@@ -175,6 +253,34 @@ function withSystem(conv: ChatMessage[], systemContent: string): ChatMessage[] {
   return [{ role: "system", content: systemContent }, ...conv];
 }
 
+function withSoulSystems(
+  conv: ChatMessage[],
+  baseContent: string,
+  stableContent?: string,
+  dynamicContent?: string,
+): ChatMessage[] {
+  if (stableContent === undefined && dynamicContent === undefined) {
+    return withSystem(conv, baseContent);
+  }
+  const systems: ChatMessage[] = [];
+  if (stableContent) systems.push({ role: "system", content: stableContent });
+  if (dynamicContent) systems.push({ role: "system", content: dynamicContent });
+  return [...systems, ...conv];
+}
+
+function applySoftNoThink(messages: ChatMessage[]): ChatMessage[] {
+  const next = messages.map((message) => ({ ...message }));
+  for (let index = next.length - 1; index >= 0; index--) {
+    const message = next[index];
+    if (message.role !== "user" || typeof message.content !== "string") continue;
+    if (!/(?:^|\s)\/no_think\s*$/i.test(message.content)) {
+      message.content = message.content.trimEnd() + " /no_think";
+    }
+    break;
+  }
+  return next;
+}
+
 /**
  * 执行一轮 LLM 调用，返回解析后的 ChatResponse。处理 abort / 超时 / HTTP 错误。
  */
@@ -210,10 +316,14 @@ async function callAdapter(
   req: ChatRequest,
   cfg: AgentLoopSettings,
   perRoundTimeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  if (signal?.aborted) throw abortError();
   const http = adapter.buildRequest(req, cfg);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), perRoundTimeoutMs);
+  const abortFromParent = () => controller.abort();
+  signal?.addEventListener("abort", abortFromParent, { once: true });
   try {
     const response = await fetch(http.url, {
       method: "POST",
@@ -223,11 +333,87 @@ async function callAdapter(
     });
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
-      throw new Error("模型请求失败：HTTP " + response.status + (errorText ? " — " + errorText.slice(0, 200) : ""));
+      throw new ModelRequestError(
+        response.status,
+        "模型请求失败：HTTP " + response.status + (errorText ? " — " + errorText.slice(0, 200) : ""),
+      );
     }
     return await response.json();
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+function isFallbackEligibleError(error: unknown): boolean {
+  if (error instanceof ModelRequestError) {
+    return error.status === 402 || error.status === 403 || error.status === 408 ||
+      error.status === 409 || error.status === 425 || error.status === 429 || error.status >= 500;
+  }
+  if (error instanceof Error && error.name === "AbortError") return true;
+  return error instanceof TypeError;
+}
+
+function buildFallbackRequest(
+  request: ChatRequest,
+  fallback: NonNullable<TwoPhaseFcOptions["fallback"]>,
+): ChatRequest {
+  let next: ChatRequest = {
+    ...request,
+    model: fallback.settings.model,
+    messages: fallback.softNoThink
+      ? applySoftNoThink(request.messages)
+      : request.messages.map((message) => ({ ...message })),
+  };
+  if (fallback.adapter.applyCacheHints) {
+    next = fallback.adapter.applyCacheHints(next, fallback.settings);
+  }
+  return next;
+}
+
+async function callAdapterWithFallback(args: {
+  adapter: ChatVendorAdapter;
+  request: ChatRequest;
+  settings: AgentLoopSettings;
+  timeoutMs: number;
+  fallback?: TwoPhaseFcOptions["fallback"];
+  fallbackState: ModelFallbackState;
+  signal?: AbortSignal;
+}): Promise<{ data: unknown; adapter: ChatVendorAdapter; usedFallback: boolean }> {
+  const { adapter, request, settings, timeoutMs, fallback, fallbackState, signal } = args;
+  if (fallbackState.activated && fallback) {
+    const data = await callAdapter(
+      fallback.adapter,
+      buildFallbackRequest(request, fallback),
+      fallback.settings,
+      timeoutMs,
+      signal,
+    );
+    return { data, adapter: fallback.adapter, usedFallback: true };
+  }
+
+  const primaryTimeoutMs = fallback
+    ? Math.min(timeoutMs, fallback.activateAfterMs ?? DEFAULT_FALLBACK_ACTIVATION_MS)
+    : timeoutMs;
+  try {
+    const data = await callAdapter(adapter, request, settings, primaryTimeoutMs, signal);
+    return { data, adapter, usedFallback: false };
+  } catch (error) {
+    if (signal?.aborted || !fallback || !isFallbackEligibleError(error)) throw error;
+    fallbackState.activated = true;
+    console.warn(
+      LOG_PREFIX,
+      `主模型不可用，切换本轮到本地回退: ${settings.provider}/${settings.model} → ${fallback.settings.provider}/${fallback.settings.model}`,
+      error instanceof Error ? error.message : String(error),
+    );
+    const data = await callAdapter(
+      fallback.adapter,
+      buildFallbackRequest(request, fallback),
+      fallback.settings,
+      timeoutMs,
+      signal,
+    );
+    return { data, adapter: fallback.adapter, usedFallback: true };
   }
 }
 
@@ -263,12 +449,39 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
   console.log(LOG_PREFIX, "原始消息数:", messages.length, "最后一角色:", messages[messages.length - 1]?.role);
 
   // conversation 不含 system，FC 循环按阶段动态注入
-  let conversation: ChatMessage[] = messages.map((m) => ({ ...m }));
+  let conversation: ChatMessage[] = options.softNoThink
+    ? applySoftNoThink(messages)
+    : messages.map((m) => ({ ...m }));
   const startTime = Date.now();
   let accInput = 0;
   let accOutput = 0;
   let consecutiveTimeouts = 0;
   let usedImageCaptionFallback = false;
+  const fallbackState: ModelFallbackState = { activated: false };
+  const completedSideEffects = new Map<string, string>();
+
+  if (options.executionMode === "soul-only") {
+    console.log(LOG_PREFIX, "执行模式: soul-only（跳过 TOOL_PHASE）");
+    return runSoulPhase({
+      adapter,
+      cfg: options.settings,
+      conversation,
+      soulSystemBaseContent,
+      soulSystemStableContent: options.soulSystemStableContent,
+      soulSystemDynamicContent: options.soulSystemDynamicContent,
+      buildSoulToolResultsSummary,
+      allToolResults,
+      accInput,
+      accOutput,
+      reason: "soul_only",
+      forceSummaryTimeoutMs,
+      signal,
+      onEvent,
+      recordUsageFn,
+      fallback: options.fallback,
+      fallbackState,
+    });
+  }
 
   const switchToImageCaptionFallback = async (reason: string): Promise<boolean> => {
     if (usedImageCaptionFallback || !imageCaptionFallback) return false;
@@ -299,10 +512,20 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
     if (toolSpecs.length > 0) req = { ...req, tools: toolSpecs };
     if (adapter.applyCacheHints) req = adapter.applyCacheHints(req, options.settings);
 
-    let data: unknown;
+    let callResult: { data: unknown; adapter: ChatVendorAdapter; usedFallback: boolean };
+    const phaseStartedAt = Date.now();
     try {
-      data = await callAdapter(adapter, req, options.settings, perRoundTimeoutMs);
+      callResult = await callAdapterWithFallback({
+        adapter,
+        request: req,
+        settings: options.settings,
+        timeoutMs: perRoundTimeoutMs,
+        fallback: options.fallback,
+        fallbackState,
+        signal,
+      });
     } catch (err) {
+      if (signal?.aborted) throw new Error("run cancelled");
       if (err instanceof Error && err.name === "AbortError") {
         consecutiveTimeouts++;
         console.warn(LOG_PREFIX, "第 " + (round + 1) + " 轮 LLM 请求超时，连续第 " + consecutiveTimeouts + " 次");
@@ -320,17 +543,38 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
       throw err;
     }
 
-    const chat = adapter.parseResponse(data);
+    const chat = callResult.adapter.parseResponse(callResult.data);
+    const phaseElapsedMs = Date.now() - phaseStartedAt;
     if (chat.usage) {
       accInput += chat.usage.input;
       accOutput += chat.usage.output;
       recordUsageFn(chat.usage.input, chat.usage.output, 1);
     }
+    onEvent?.({
+      type: "llm_phase_metrics",
+      phase: "tool",
+      round: round + 1,
+      elapsedMs: phaseElapsedMs,
+      ...(chat.usage ? {
+        inputTokens: chat.usage.input,
+        outputTokens: chat.usage.output,
+        ...(chat.usage.cachedInput !== undefined ? { cachedInputTokens: chat.usage.cachedInput } : {}),
+      } : {}),
+      messageCount: req.messages.length,
+      toolCount: toolSpecs.length,
+    });
 
     console.log(
       LOG_PREFIX,
       "第 " + (round + 1) + " 轮完成 finish=" + chat.finishReason +
-      " toolCalls=" + chat.toolCalls.length + " 耗时=" + (Date.now() - startTime) + "ms",
+      " toolCalls=" + chat.toolCalls.length +
+      " 阶段耗时=" + phaseElapsedMs + "ms" +
+      " 总耗时=" + (Date.now() - startTime) + "ms" +
+      " messages=" + req.messages.length +
+      " tools=" + toolSpecs.length +
+      (chat.usage ? " tokens=" + chat.usage.input + "/" + chat.usage.output : " tokens=n/a") +
+      (chat.usage?.cachedInput !== undefined ? " cached=" + chat.usage.cachedInput : "") +
+      (callResult.usedFallback ? " backend=fallback" : " backend=primary"),
     );
 
     // 请求成功，重置连续超时计数
@@ -361,13 +605,19 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
 
         console.log(LOG_PREFIX, "执行工具:", tc.name, JSON.stringify(args).slice(0, 200));
 
-        let output: string;
-        try {
-          output = await executeTool(tc, runnableToolIds);
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          output = "[工具执行失败] " + errMsg;
-          console.error(LOG_PREFIX, "工具执行失败 [" + tc.name + "]:", errMsg);
+        const signature = sideEffectSignature(tc.name, args);
+        let output = signature ? completedSideEffects.get(signature) : undefined;
+        if (output !== undefined) {
+          console.warn(LOG_PREFIX, "跳过重复副作用工具:", tc.name);
+        } else {
+          try {
+            output = await executeTool(tc, runnableToolIds);
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            output = "[工具执行失败] " + errMsg;
+            console.error(LOG_PREFIX, "工具执行失败 [" + tc.name + "]:", errMsg);
+          }
+          if (signature) completedSideEffects.set(signature, output);
         }
 
         allToolResults.push({ toolId: tc.name, args, output });
@@ -382,10 +632,32 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
         onEvent?.({ type: "tool_call_end", toolCallId });
       }
 
-      conversation = adapter.appendToolResults(conversation, execResults);
+      conversation = callResult.adapter.appendToolResults(conversation, execResults);
       conversation = compressConversation(conversation);
 
       onEvent?.({ type: "step_finished", stepName: `tool-round-${round + 1}` });
+      if (options.finishAfterFirstToolBatch) {
+        console.log(LOG_PREFIX, "首批工具结果已完成，直接进入 SOUL_PHASE");
+        return await runSoulPhase({
+          adapter,
+          cfg: options.settings,
+          conversation,
+          soulSystemBaseContent,
+          soulSystemStableContent: options.soulSystemStableContent,
+          soulSystemDynamicContent: options.soulSystemDynamicContent,
+          buildSoulToolResultsSummary,
+          allToolResults,
+          accInput,
+          accOutput,
+          reason: "tool_complete",
+          forceSummaryTimeoutMs,
+          signal,
+          onEvent,
+          recordUsageFn,
+          fallback: options.fallback,
+          fallbackState,
+        });
+      }
       continue;
     }
 
@@ -397,6 +669,8 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
       cfg: options.settings,
       conversation,
       soulSystemBaseContent,
+      soulSystemStableContent: options.soulSystemStableContent,
+      soulSystemDynamicContent: options.soulSystemDynamicContent,
       buildSoulToolResultsSummary,
       allToolResults,
       accInput,
@@ -406,6 +680,8 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
       signal,
       onEvent,
       recordUsageFn,
+      fallback: options.fallback,
+      fallbackState,
     });
   }
 
@@ -419,6 +695,8 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
     cfg: options.settings,
     conversation,
     soulSystemBaseContent,
+    soulSystemStableContent: options.soulSystemStableContent,
+    soulSystemDynamicContent: options.soulSystemDynamicContent,
     buildSoulToolResultsSummary,
     allToolResults,
     accInput,
@@ -428,6 +706,8 @@ export async function runTwoPhaseFcLoop(options: TwoPhaseFcOptions): Promise<Two
     signal,
     onEvent,
     recordUsageFn,
+    fallback: options.fallback,
+    fallbackState,
   });
 }
 
@@ -439,6 +719,8 @@ async function runSoulPhase(args: {
   cfg: AgentLoopSettings;
   conversation: ChatMessage[];
   soulSystemBaseContent: string;
+  soulSystemStableContent?: string;
+  soulSystemDynamicContent?: string;
   buildSoulToolResultsSummary: (results: ToolCallResult[]) => string;
   allToolResults: ToolCallResult[];
   accInput: number;
@@ -448,12 +730,16 @@ async function runSoulPhase(args: {
   signal: AbortSignal | undefined;
   onEvent: ((e: TwoPhaseEvent) => void) | undefined;
   recordUsageFn: (input: number, output: number, calls: number) => void;
+  fallback?: TwoPhaseFcOptions["fallback"];
+  fallbackState: ModelFallbackState;
 }): Promise<TwoPhaseFcResult> {
   const {
     adapter,
     cfg,
     conversation,
     soulSystemBaseContent,
+    soulSystemStableContent,
+    soulSystemDynamicContent,
     buildSoulToolResultsSummary,
     allToolResults,
     accInput,
@@ -463,6 +749,8 @@ async function runSoulPhase(args: {
     signal,
     onEvent,
     recordUsageFn,
+    fallback,
+    fallbackState,
   } = args;
 
   onEvent?.({ type: "step_started", stepName: `soul-phase-${reason}` });
@@ -473,24 +761,60 @@ async function runSoulPhase(args: {
   const finalSystemContent = soulResultsSummary
     ? soulSystemBaseContent + "\n\n" + soulResultsSummary
     : soulSystemBaseContent;
+  const finalDynamicContent = soulResultsSummary
+    ? [soulSystemDynamicContent, soulResultsSummary].filter(Boolean).join("\n\n")
+    : soulSystemDynamicContent;
 
   // Soul 请求**不带 tools** 字段
   let req: ChatRequest = {
     model: cfg.model,
-    messages: withSystem(conversation, finalSystemContent),
+    messages: soulSystemStableContent === undefined && soulSystemDynamicContent === undefined
+      ? withSystem(conversation, finalSystemContent)
+      : withSoulSystems(
+          conversation,
+          finalSystemContent,
+          soulSystemStableContent,
+          finalDynamicContent,
+        ),
     stream: false,
   };
   if (adapter.applyCacheHints) req = adapter.applyCacheHints(req, cfg);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), forceSummaryTimeoutMs);
-  if (signal) {
-    signal.addEventListener("abort", () => controller.abort());
-  }
-
   try {
-    const data = await callAdapter(adapter, req, cfg, forceSummaryTimeoutMs);
-    const chat = adapter.parseResponse(data);
+    const phaseStartedAt = Date.now();
+    const callResult = await callAdapterWithFallback({
+      adapter,
+      request: req,
+      settings: cfg,
+      timeoutMs: forceSummaryTimeoutMs,
+      fallback,
+      fallbackState,
+      signal,
+    });
+    const chat = callResult.adapter.parseResponse(callResult.data);
+    const phaseElapsedMs = Date.now() - phaseStartedAt;
+    onEvent?.({
+      type: "llm_phase_metrics",
+      phase: "soul",
+      elapsedMs: phaseElapsedMs,
+      ...(chat.usage ? {
+        inputTokens: chat.usage.input,
+        outputTokens: chat.usage.output,
+        ...(chat.usage.cachedInput !== undefined ? { cachedInputTokens: chat.usage.cachedInput } : {}),
+      } : {}),
+      messageCount: req.messages.length,
+      toolCount: 0,
+    });
+    console.log(
+      LOG_PREFIX,
+      "SOUL_PHASE 完成" +
+      " 阶段耗时=" + phaseElapsedMs + "ms" +
+      " messages=" + req.messages.length +
+      " tools=0" +
+      (chat.usage ? " tokens=" + chat.usage.input + "/" + chat.usage.output : " tokens=n/a") +
+      (chat.usage?.cachedInput !== undefined ? " cached=" + chat.usage.cachedInput : "") +
+      (callResult.usedFallback ? " backend=fallback" : " backend=primary"),
+    );
     const reply = stripLeakedChatTimeContext(chat.text);
     if (chat.usage) {
       const finalInput = accInput + chat.usage.input;
@@ -520,6 +844,7 @@ async function runSoulPhase(args: {
       soulPhaseReason: reason,
     };
   } catch (err) {
+    if (signal?.aborted) throw new Error("run cancelled");
     // 兜底再失败也别让整个 run 崩掉。用已收集的工具结果拼一个"任务中断"文案降级返回。
     const errReason = err instanceof Error && err.name === "AbortError"
       ? "总结请求超时"
@@ -535,7 +860,5 @@ async function runSoulPhase(args: {
       totalUsage: accInput > 0 || accOutput > 0 ? { input: accInput, output: accOutput } : undefined,
       soulPhaseReason: reason,
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
