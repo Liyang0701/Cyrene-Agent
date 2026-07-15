@@ -5,6 +5,7 @@ import * as path from "path";
 import { HybridRetriever } from "./retriever";
 import { JsonVectorStore } from "./vectorstore";
 import type { EmbeddingProvider } from "./embedding";
+import type { RerankerProvider } from "./reranker";
 
 const provider: EmbeddingProvider = {
   name: "deterministic",
@@ -99,5 +100,29 @@ describe("HybridRetriever", () => {
     });
 
     expect(results.map((result) => result.entry.id).sort()).toEqual(entries.map((entry) => entry.id).sort());
+  });
+
+  it("uses the configured reranker to determine the final candidate order", async () => {
+    const store = createStore();
+    store.addPreparedBatch([
+      { text: "alpha first by hybrid", source: "imported_doc", embedding: [1, 0] },
+      { text: "beta preferred by cross encoder", source: "imported_doc", embedding: [0.8, 0.2] },
+    ]);
+    const reranker: RerankerProvider = {
+      name: "test-reranker",
+      rerank: vi.fn(async (_query: string, documents: string[]) => documents
+        .map((text: string) => ({ text, score: text.startsWith("beta") ? 0.95 : 0.05 }))
+        .sort((a: { score: number }, b: { score: number }) => b.score - a.score)),
+    };
+    const retriever = new HybridRetriever(store, provider, () => reranker);
+
+    const results = await retriever.retrieve("alpha", "imported_doc", 2);
+
+    expect(reranker.rerank).toHaveBeenCalledOnce();
+    expect(results.map((result) => result.entry.text)).toEqual([
+      "beta preferred by cross encoder",
+      "alpha first by hybrid",
+    ]);
+    expect(results.map((result) => result.score)).toEqual([0.95, 0.05]);
   });
 });

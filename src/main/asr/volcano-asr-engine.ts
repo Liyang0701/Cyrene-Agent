@@ -9,6 +9,7 @@
 import { WebSocket } from "ws";
 import { createHmac } from "node:crypto";
 import { randomUUID } from "node:crypto";
+import type { AsrConfig } from "./types";
 
 const LOG_PREFIX = "[AliyunASR]";
 const NLS_GATEWAY = "wss://nls-gateway.cn-shanghai.aliyuncs.com/ws/v1";
@@ -20,10 +21,23 @@ export class VolcanoAsrStream {
   private audioBuffer = Buffer.alloc(0);
   private taskId = randomUUID().replace(/-/g, "");
   private appKey = "";
+  private completedResolve: (() => void) | null = null;
+  private completedReject: ((error: Error) => void) | null = null;
+  private readonly completed = new Promise<void>((resolve, reject) => {
+    this.completedResolve = resolve;
+    this.completedReject = reject;
+  });
+  private startedResolve: (() => void) | null = null;
+  private startedReject: ((error: Error) => void) | null = null;
+  private readonly started = new Promise<void>((resolve, reject) => {
+    this.startedResolve = resolve;
+    this.startedReject = reject;
+  });
 
   constructor(
     private readonly onPartial: (text: string) => void,
     private readonly onFinal: (text: string) => void,
+    private readonly onError: (error: Error) => void = () => {},
   ) {}
 
   /** 开始识别会话：获取 token → 连 WebSocket → 发 StartTranscription */
@@ -35,7 +49,10 @@ export class VolcanoAsrStream {
       token = await this.getToken(accessKeyId, accessKeySecret);
     } catch (err) {
       console.error(LOG_PREFIX, "获取 token 失败:", err);
-      return;
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.onError(error);
+      this.completedReject?.(error);
+      throw error;
     }
     console.log(LOG_PREFIX, "token 获取成功，连接 WebSocket...");
 
@@ -48,8 +65,27 @@ export class VolcanoAsrStream {
     });
 
     this.ws.on("message", (raw: Buffer) => this.handleMessage(raw));
-    this.ws.on("error", (err) => console.error(LOG_PREFIX, "WS 错误:", err.message));
-    this.ws.on("close", (code) => console.log(LOG_PREFIX, `WS 关闭: ${code}`));
+    this.ws.on("error", (err) => {
+      console.error(LOG_PREFIX, "WS 错误:", err.message);
+      this.onError(err);
+      this.completedReject?.(err);
+      this.startedReject?.(err);
+    });
+    this.ws.on("close", (code) => {
+      console.log(LOG_PREFIX, `WS 关闭: ${code}`);
+      if (this.stopped) this.completedResolve?.();
+    });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.started,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("阿里云 ASR 启动超时")), 10_000);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** 发送 StartTranscription 指令（JSON 文本帧） */
@@ -118,6 +154,22 @@ export class VolcanoAsrStream {
     setTimeout(() => { try { this.ws?.close(); } catch { /* ignore */ } }, 2000);
   }
 
+  /** 正常结束并等待服务端发出 TranscriptionCompleted，避免最终文本竞态。 */
+  async finish(timeoutMs = 8_000): Promise<void> {
+    this.stop();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.completed,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("阿里云 ASR 完成超时")), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /** 解析服务端 JSON 响应 */
   private handleMessage(raw: Buffer): void {
     try {
@@ -140,12 +192,16 @@ export class VolcanoAsrStream {
       const eventName = msg.header?.name;
 
       if (status !== 20000000 && status !== undefined) {
-        console.error(LOG_PREFIX, `ASR 错误: status=${status}, msg=${msg.header?.status_text}`);
+        const error = new Error(`ASR 错误: status=${status}, msg=${msg.header?.status_text}`);
+        console.error(LOG_PREFIX, error.message);
+        this.onError(error);
+        this.completedReject?.(error);
         return;
       }
 
       if (eventName === "TranscriptionStarted") {
         console.log(LOG_PREFIX, "转写已开始，可以发送音频");
+        this.startedResolve?.();
       } else if (eventName === "TranscriptionResultChanged") {
         // 中间结果
         const text = msg.payload?.result ?? "";
@@ -159,6 +215,7 @@ export class VolcanoAsrStream {
         }
       } else if (eventName === "TranscriptionCompleted") {
         console.log(LOG_PREFIX, "转写已完成");
+        this.completedResolve?.();
       }
     } catch (err) {
       console.error(LOG_PREFIX, "解析响应失败:", err);
@@ -204,14 +261,6 @@ export class VolcanoAsrStream {
 }
 
 // ── 配置注入 ──
-
-export interface AsrConfig {
-  appKey: string;
-  accessKeyId: string;
-  accessKeySecret: string;
-  language: string;
-  engine: string;
-}
 
 let asrConfigGetter: (() => AsrConfig | null) | null = null;
 

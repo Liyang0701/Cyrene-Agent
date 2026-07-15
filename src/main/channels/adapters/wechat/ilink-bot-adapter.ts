@@ -11,7 +11,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { app } from "electron";
-import { decode, isSilk } from "silk-wasm";
 import {
   ILinkClient,
   MediaType,
@@ -38,7 +37,8 @@ import {
   isWechatSaveIntent,
   type InboundMediaDescriptor,
 } from "./inbound-media";
-import { getAsrConfig, VolcanoAsrStream } from "../../../asr/volcano-asr-engine";
+import { getAsrConfig } from "../../../asr/volcano-asr-engine";
+import { transcribeWechatVoiceSource } from "./wechat-voice-asr";
 import type {
   ChannelAttachment,
   ChannelCapability,
@@ -49,6 +49,7 @@ import type {
   OutgoingMessage,
 } from "../../types";
 import type { ChannelAdapter } from "../base";
+import { loadChannelsSettings, saveChannelsSettings } from "../../settings-store";
 
 const LOG_PREFIX = "[WechatBot]";
 const USER_PROFILE_FILE = "user-profile.json";
@@ -110,6 +111,10 @@ export class ILinkBotAdapter implements ChannelAdapter {
   // ── ChannelAdapter ────────────────────────────────────────────────────────
 
   async start(): Promise<void> {
+    if (!loadChannelsSettings().wechat.enabled) {
+      this.status = { enabled: false, phase: "offline", message: "未启用" };
+      return;
+    }
     this.status = { enabled: true, phase: "starting" };
     console.log(LOG_PREFIX, "Starting...");
 
@@ -232,6 +237,9 @@ export class ILinkBotAdapter implements ChannelAdapter {
   }
 
   getStatus(): ChannelStatus {
+    if (!loadChannelsSettings().wechat.enabled) {
+      return { enabled: false, phase: "offline", message: "未启用" };
+    }
     return this.status;
   }
 
@@ -268,6 +276,7 @@ export class ILinkBotAdapter implements ChannelAdapter {
           ilinkUserId: status.ilink_user_id ?? "",
         };
         await saveCredentials(creds);
+        saveChannelsSettings({ wechat: { enabled: true } });
         return creds;
       }
       if (status.status === "expired") {
@@ -283,6 +292,7 @@ export class ILinkBotAdapter implements ChannelAdapter {
     await deleteCredentials();
     this.currentCredentials = null;
     this.isLoggedIn = false;
+    saveChannelsSettings({ wechat: { enabled: false } });
     this.status = { enabled: false, phase: "offline", message: "已登出" };
   }
 
@@ -586,64 +596,14 @@ async function transcribeInboundWechatVoice(
 ): Promise<string> {
   if (!item.media) throw new Error("缺少语音下载参数");
   const cfg = getAsrConfig();
-  if (!cfg || cfg.engine !== "aliyun" || !cfg.appKey || !cfg.accessKeyId || !cfg.accessKeySecret) {
+  if (!cfg || cfg.engine === "off") {
     throw new Error("ASR 未配置");
   }
 
   const source = await downloadWechatMedia(item.media);
   const sampleRate = item.sampleRate ?? 16000;
-  if (sampleRate !== 16000) {
-    throw new Error(`暂不支持 ${sampleRate}Hz 微信语音识别`);
-  }
 
-  let pcm = source;
-  if (isSilk(source)) {
-    const decoded = await decode(source, sampleRate);
-    pcm = Buffer.from(decoded.data);
-  }
-  return transcribePcmWithAliyun(pcm, cfg);
-}
-
-function transcribePcmWithAliyun(
-  pcm: Buffer,
-  cfg: { appKey: string; accessKeyId: string; accessKeySecret: string; language: string },
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const finals: string[] = [];
-    const stream = new VolcanoAsrStream(
-      () => {},
-      (text) => {
-        if (text.trim()) finals.push(text.trim());
-      },
-    );
-    const timeout = setTimeout(() => {
-      stream.stop();
-      const result = finals.join("").trim();
-      if (result) resolve(result);
-      else reject(new Error("ASR timeout"));
-    }, 15_000);
-
-    stream.start(cfg.appKey, cfg.accessKeyId, cfg.accessKeySecret, cfg.language)
-      .then(async () => {
-        await delay(500);
-        stream.sendAudio(pcm);
-        stream.stop();
-        await delay(2500);
-        clearTimeout(timeout);
-        const result = finals.join("").trim();
-        if (result) resolve(result);
-        else reject(new Error("没有识别到文字"));
-      })
-      .catch((err) => {
-        clearTimeout(timeout);
-        stream.stop();
-        reject(err instanceof Error ? err : new Error(String(err)));
-      });
-  });
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return transcribeWechatVoiceSource(source, sampleRate, cfg);
 }
 
 function pickInboundExtension(item: InboundMediaDescriptor, data: Buffer): string {

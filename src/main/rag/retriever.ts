@@ -1,5 +1,6 @@
 import { JsonVectorStore, SearchResult } from "./vectorstore";
 import { EmbeddingProvider, getEmbeddingProvider } from "./embedding";
+import { getReranker, type RerankerProvider } from "./reranker";
 
 // ── @node-rs/jieba 分词（Node 24 兼容；nodejieba 已弃用） ──
 import { Jieba } from "@node-rs/jieba";
@@ -195,10 +196,16 @@ function bm25Score(
 export class HybridRetriever {
   private store: JsonVectorStore;
   private provider: EmbeddingProvider | null;
+  private resolveReranker: () => RerankerProvider | null;
 
-  constructor(store: JsonVectorStore, provider?: EmbeddingProvider | null) {
+  constructor(
+    store: JsonVectorStore,
+    provider?: EmbeddingProvider | null,
+    resolveReranker: () => RerankerProvider | null = getReranker,
+  ) {
     this.store = store;
     this.provider = provider ?? null;
+    this.resolveReranker = resolveReranker;
   }
 
   async retrieve(
@@ -251,7 +258,33 @@ export class HybridRetriever {
     }));
 
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK);
+
+    // Cross-encoder reranking is intentionally applied after hybrid recall:
+    // vector/BM25 first build a broader candidate set, then the configured
+    // reranker determines the final topK order.  If reranking fails, preserve
+    // the hybrid results so RAG remains available.
+    const reranker = this.resolveReranker();
+    if (!reranker || scored.length < 2) return scored.slice(0, topK);
+
+    const candidates = scored.slice(0, Math.max(topK * 3, topK));
+    try {
+      const reranked = await reranker.rerank(query, candidates.map((candidate) => candidate.entry.text));
+      const candidateBuckets = new Map<string, SearchResult[]>();
+      for (const candidate of candidates) {
+        const bucket = candidateBuckets.get(candidate.entry.text) ?? [];
+        bucket.push(candidate);
+        candidateBuckets.set(candidate.entry.text, bucket);
+      }
+      const reordered: SearchResult[] = [];
+      for (const result of reranked) {
+        const candidate = candidateBuckets.get(result.text)?.shift();
+        if (candidate) reordered.push({ ...candidate, score: result.score });
+      }
+      return reordered.slice(0, topK);
+    } catch (err) {
+      console.warn("[Reranker] rerank failed; using hybrid retrieval order:", err);
+      return scored.slice(0, topK);
+    }
   }
 
   private bm25Search(query: string, source?: string, topK = 15, options: RetrieveOptions = {}): SearchResult[] {

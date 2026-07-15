@@ -5,12 +5,13 @@
 // - 支持桌面子目录（如 "test/report.xlsx"），自动创建父目录
 // - 文件名由模型给，强制校验扩展名（防 .exe 等危险后缀）
 // - 返回完整路径给模型，模型可以转述给用户
-// - PDF 中文字体走系统微软雅黑（Windows），找不到就降级
+// - PDF 中文字体按平台探测；含中文但没有可用字体时明确报错，禁止静默生成乱码
 
 import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
 import { toolRegistry } from "./tool-registry";
+import { containsCjkText, resolveCjkFontPath } from "./pdf-font";
 
 const LOG_PREFIX = "[DocTools]";
 
@@ -483,6 +484,13 @@ export function registerDocumentTools(): void {
       const outputPath = resolveOutputPath(filename);
       if (!outputPath) return "[错误] 路径不合法（禁止目录穿越或绝对路径）: " + filename;
 
+      const title = String(args.title || "");
+      const paragraphs = (args.paragraphs as string[]) || [];
+      const cjkFontPath = resolveCjkFontPath();
+      if (!cjkFontPath && (containsCjkText(title) || paragraphs.some(containsCjkText))) {
+        return "[错误] 未找到支持中文的系统字体，无法生成可读 PDF。可通过 CYRENE_PDF_CJK_FONT 指定 TTF/OTF 字体。";
+      }
+
       const PDFKit = await import("pdfkit");
       const dir = path.dirname(outputPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -490,20 +498,12 @@ export function registerDocumentTools(): void {
       const stream = fs.createWriteStream(outputPath);
       doc.pipe(stream);
 
-      // 中文字体：Windows 用微软雅黑，找不到则用默认（中文会乱码但能生成）
-      const fontCandidates = [
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "C:\\Windows\\Fonts\\simsun.ttc",
-        "C:\\Windows\\Fonts\\simhei.ttf",
-      ];
-      for (const f of fontCandidates) {
-        if (fs.existsSync(f)) { doc.font(f); break; }
-      }
+      if (cjkFontPath) doc.font(cjkFontPath);
 
-      doc.fontSize(22).text(String(args.title || ""), { align: "center" });
+      doc.fontSize(22).text(title, { align: "center" });
       doc.moveDown();
       doc.fontSize(12);
-      for (const p of (args.paragraphs as string[]) || []) {
+      for (const p of paragraphs) {
         doc.text(p, { align: "left" });
         doc.moveDown(0.5);
       }

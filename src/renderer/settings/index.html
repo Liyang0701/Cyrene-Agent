@@ -1717,10 +1717,28 @@
                 <select id="asr-engine">
                   <option value="off">关闭</option>
                   <option value="aliyun">阿里云（实时语音识别）</option>
-                  <option value="local">本地（占位，敬请期待）</option>
+                  <option value="local">本地 Qwen3-ASR 1.7B（MLX）</option>
                 </select>
               </div>
-              <p class="tts-hint">选择「阿里云」后填入下方配置。</p>
+              <p class="tts-hint">本地模式使用 VAD 后整句识别；第一版不提供实时 partial 字幕，最终转写仍可按下方开关显示。</p>
+            </div>
+
+            <div class="tts-section" id="asr-local-config" style="display:none">
+              <h2 class="tts-section__title">🖥️ 本地 Qwen3-ASR</h2>
+              <div class="tts-field">
+                <label for="asr-local-root">独立环境目录</label>
+                <input type="text" id="asr-local-root" autocomplete="off" />
+              </div>
+              <div class="tts-field">
+                <label for="asr-local-model-path">模型路径</label>
+                <input type="text" id="asr-local-model-path" autocomplete="off" />
+              </div>
+              <div class="tts-field">
+                <label for="asr-local-system-prompt">专有名词提示</label>
+                <input type="text" id="asr-local-system-prompt" autocomplete="off" />
+              </div>
+              <p class="tts-hint" id="asr-local-status" role="status">正在检查安装状态…</p>
+              <button type="button" class="btn-primary" id="asr-local-test">加载模型并测试</button>
             </div>
 
             <div class="tts-section" id="asr-aliyun-config">
@@ -1737,18 +1755,19 @@
                 <label for="asr-aliyun-access-key-secret">AccessKey Secret</label>
                 <input type="password" id="asr-aliyun-access-key-secret" placeholder="创建 AccessKey 时显示的 Secret" autocomplete="off" />
               </div>
-              <div class="tts-field">
-                <label for="asr-language">识别语言</label>
-                <select id="asr-language">
-                  <option value="zh">中文</option>
-                  <option value="en">英文</option>
-                </select>
-              </div>
               <p class="tts-hint">阿里云 → 智能语音交互控制台 → 创建项目获取 AppKey。AccessKey 在 RAM 访问控制台获取（ram.console.aliyun.com/manage/ak）。Token 会自动获取，无需手动填写。</p>
             </div>
 
             <div class="tts-section">
               <h2 class="tts-section__title">通话设置</h2>
+              <div class="tts-field">
+                <label for="asr-language">识别语言</label>
+                <select id="asr-language">
+                  <option value="auto">自动检测</option>
+                  <option value="zh">中文</option>
+                  <option value="en">英文</option>
+                </select>
+              </div>
               <div class="tts-field">
                 <label for="asr-vad-silence">VAD 静默阈值（毫秒）</label>
                 <input type="number" id="asr-vad-silence" placeholder="1000" min="300" max="10000" step="100" value="1000" />
@@ -1763,7 +1782,7 @@
               <label class="setting-row">
                 <div>
                   <strong>通话中显示文字转写</strong>
-                  <p class="tts-hint">开启后通话窗口显示实时识别文字和昔涟回复文字</p>
+                  <p class="tts-hint">开启后显示识别文字和昔涟回复；本地模式在一句结束后显示最终转写。</p>
                 </div>
                 <input type="checkbox" id="asr-show-transcript" />
               </label>
@@ -1819,5 +1838,3 @@
   <script type="module" src="./settings.ts"></script>
 </body>
 </html>
-
-

@@ -108,6 +108,8 @@ import {
   type ChatContextMessage,
 } from "./chat-time-context";
 import { setAsrConfig } from "./asr/volcano-asr-engine";
+import { disposeAsr } from "./asr/asr-service";
+import { localAsrWorker } from "./asr/local-asr-worker-manager";
 import { setCallWindow, registerCallIpc, setCallSettings, stopCall } from "./call/call-manager";
 import { initSkills, skillRegistry, buildSkillCatalog, parseSlashCommand, setSkillEnabled, listSkillsForUi } from "./skills";
 import { initGameBot } from "./game-bot";
@@ -545,7 +547,7 @@ interface GeneralSettings {
   emailSmtpPass: string;
   /** 发件人显示名（可选） */
   emailFromName: string;
-  /** 🎧ASR 服务商：off(关闭) | aliyun(阿里云) | local(本地,占位) */
+  /** 🎧ASR 服务商：off(关闭) | aliyun(阿里云) | local(本地 Qwen3-ASR) */
   asrEngine: "off" | "aliyun" | "local";
   /** 阿里云智能语音交互 AppKey */
   asrAliyunAppKey: string;
@@ -553,6 +555,14 @@ interface GeneralSettings {
   asrAliyunAccessKeyId: string;
   /** 阿里云 RAM AccessKey Secret */
   asrAliyunAccessKeySecret: string;
+  /** 独立本地 ASR 环境根目录 */
+  asrLocalRoot: string;
+  /** Qwen3-ASR 模型固定本地路径 */
+  asrLocalModelPath: string;
+  /** 单句本地识别超时 */
+  asrLocalTimeoutMs: number;
+  /** 专有名词和转写规则上下文 */
+  asrLocalSystemPrompt: string;
   /** ASR 识别语言：zh(中文) | en(英文) | auto(自动) */
   asrLanguage: "zh" | "en" | "auto";
   /** VAD 静默检测阈值（毫秒），500~2000，默认 1000 */
@@ -756,6 +766,10 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   asrAliyunAppKey: "",
   asrAliyunAccessKeyId: "",
   asrAliyunAccessKeySecret: "",
+  asrLocalRoot: path.join(os.homedir(), "Documents", "local-llms", "qwen3-asr-1.7b"),
+  asrLocalModelPath: path.join(os.homedir(), "Documents", "local-llms", "qwen3-asr-1.7b", "model"),
+  asrLocalTimeoutMs: 30000,
+  asrLocalSystemPrompt: "以下是语音转写。角色名可能包括：昔涟。技术名词可能包括：Qwen3.5、Cyrene。请忠实转写，不要改写。",
   asrLanguage: "zh",
   asrVadSilenceMs: 1000,
   asrVadThreshold: 0.01,
@@ -1173,6 +1187,18 @@ function normalizeGeneralSettings(input: Partial<GeneralSettings> | null | undef
     asrAliyunAppKey: typeof input?.asrAliyunAppKey === "string" ? input.asrAliyunAppKey : "",
     asrAliyunAccessKeyId: typeof input?.asrAliyunAccessKeyId === "string" ? input.asrAliyunAccessKeyId : "",
     asrAliyunAccessKeySecret: typeof input?.asrAliyunAccessKeySecret === "string" ? input.asrAliyunAccessKeySecret : "",
+    asrLocalRoot: typeof input?.asrLocalRoot === "string" && input.asrLocalRoot.trim()
+      ? input.asrLocalRoot.trim()
+      : DEFAULT_GENERAL_SETTINGS.asrLocalRoot,
+    asrLocalModelPath: typeof input?.asrLocalModelPath === "string" && input.asrLocalModelPath.trim()
+      ? input.asrLocalModelPath.trim()
+      : DEFAULT_GENERAL_SETTINGS.asrLocalModelPath,
+    asrLocalTimeoutMs: typeof input?.asrLocalTimeoutMs === "number"
+      ? Math.max(5000, Math.min(120000, Math.round(input.asrLocalTimeoutMs)))
+      : DEFAULT_GENERAL_SETTINGS.asrLocalTimeoutMs,
+    asrLocalSystemPrompt: typeof input?.asrLocalSystemPrompt === "string"
+      ? input.asrLocalSystemPrompt.slice(0, 2000)
+      : DEFAULT_GENERAL_SETTINGS.asrLocalSystemPrompt,
     asrLanguage: ["zh", "en", "auto"].includes(String(input?.asrLanguage))
       ? (input!.asrLanguage as "zh" | "en" | "auto")
       : "zh",
@@ -2558,8 +2584,18 @@ function createWindow(): void {
   // 注入 ASR 配置获取器（通话功能用，实时读 GeneralSettings）
   setAsrConfig(() => {
     const s = loadGeneralSettings();
-    if (s.asrEngine !== "aliyun") return null;
-    return { appKey: s.asrAliyunAppKey, accessKeyId: s.asrAliyunAccessKeyId, accessKeySecret: s.asrAliyunAccessKeySecret, language: s.asrLanguage, engine: s.asrEngine };
+    if (s.asrEngine === "off") return null;
+    return {
+      engine: s.asrEngine,
+      language: s.asrLanguage,
+      appKey: s.asrAliyunAppKey,
+      accessKeyId: s.asrAliyunAccessKeyId,
+      accessKeySecret: s.asrAliyunAccessKeySecret,
+      localRoot: s.asrLocalRoot,
+      localModelPath: s.asrLocalModelPath,
+      localTimeoutMs: s.asrLocalTimeoutMs,
+      localSystemPrompt: s.asrLocalSystemPrompt,
+    };
   });
 
   // 注入通话模型/TTS 配置获取器
@@ -3337,6 +3373,40 @@ ipcMain.handle(IPC.SETTINGS_GET_GENERAL, () => {
   return loadGeneralSettings();
 });
 
+ipcMain.handle(IPC.ASR_LOCAL_STATUS, async (_event, startWorker: boolean) => {
+  const settings = loadGeneralSettings();
+  return localAsrWorker.getStatus({
+    engine: "local",
+    language: settings.asrLanguage,
+    localRoot: settings.asrLocalRoot,
+    localModelPath: settings.asrLocalModelPath,
+    localTimeoutMs: settings.asrLocalTimeoutMs,
+    localSystemPrompt: settings.asrLocalSystemPrompt,
+  }, Boolean(startWorker));
+});
+
+ipcMain.handle(IPC.ASR_LOCAL_TEST, async () => {
+  const settings = loadGeneralSettings();
+  const fixturePath = path.join(settings.asrLocalRoot, "fixtures", "zh_short.wav");
+  const wav = fs.readFileSync(fixturePath);
+  if (wav.length < 44 || wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error(`测试音频无效：${fixturePath}`);
+  }
+  const sampleRate = wav.readUInt32LE(24);
+  const bits = wav.readUInt16LE(34);
+  const channels = wav.readUInt16LE(22);
+  if (bits !== 16 || channels !== 1) throw new Error("测试音频必须为 PCM16 单声道 WAV");
+  const result = await localAsrWorker.transcribe({ pcm: wav.subarray(44), sampleRate }, {
+    engine: "local",
+    language: settings.asrLanguage,
+    localRoot: settings.asrLocalRoot,
+    localModelPath: settings.asrLocalModelPath,
+    localTimeoutMs: settings.asrLocalTimeoutMs,
+    localSystemPrompt: settings.asrLocalSystemPrompt,
+  });
+  return result;
+});
+
 ipcMain.handle(IPC.UI_THEME_GET, () => {
   return loadGeneralSettings().uiTheme;
 });
@@ -3613,22 +3683,7 @@ ipcMain.handle(IPC.STICKERS_GET_ENABLED, () => {
 
 
 ipcMain.handle(IPC.EMBEDDING_GET_STATUS, async () => {
-  const cacheDir = path.join(os.homedir(), ".cache", "huggingface");
-  const models = {
-    minilm: { dir: "Xenova\\all-MiniLM-L6-v2", onnx: "onnx\\model_quantized.onnx", name: "MiniLM" },
-    bgem3: { dir: "Xenova\\bge-m3", onnx: "onnx\\model_quantized.onnx", name: "BGE-M3" },
-  };
-  const result: Record<string, { installed: boolean; sizeBytes: number }> = {};
-  for (const [key, m] of Object.entries(models)) {
-    const onnxPath = path.join(cacheDir, m.dir, m.onnx);
-    const installed = fs.existsSync(onnxPath);
-    let sizeBytes = 0;
-    if (installed) {
-      try { sizeBytes = fs.statSync(onnxPath).size; } catch {}
-    }
-    result[key] = { installed, sizeBytes };
-  }
-  return result;
+  return getEmbeddingStatus();
 });
 
 
@@ -4748,7 +4803,7 @@ app.whenReady().then(async () => {
     await initMcpManager();
     console.log("[Cyrene] RAG initialized OK");
 
-    console.log("[Reranker] startup preload skipped; reranker initializes when changed in settings.");
+    await initReranker(modelSettings.rerankerMode);
   } catch (err) {
     console.error("[Cyrene] RAG init FAILED:", err);
   }
@@ -4762,6 +4817,8 @@ app.on("window-all-closed", () => {});
 
 // 应用退出前把 token 用量缓存落盘（防抖未触发的最后一次写）
 app.on("before-quit", () => {
+  stopCall();
+  disposeAsr();
   petWindowMoveController.dispose();
   schedulerEngine?.stop();
   stopOpener();
@@ -4774,10 +4831,5 @@ app.on("activate", () => {
     createWindow();
   }
 });
-
-
-
-
-
 
 

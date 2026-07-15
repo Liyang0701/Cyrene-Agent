@@ -119,7 +119,7 @@ function stopCallTimer(): void {
 }
 
 // ── 状态管理 ──
-type CallState = "IDLE" | "LISTENING" | "THINKING" | "SPEAKING" | "ERROR" | "ENDED";
+type CallState = "IDLE" | "LISTENING" | "ASR" | "THINKING" | "SPEAKING" | "ERROR" | "ENDED";
 let currentState: CallState = "IDLE";
 let showTranscript = false; // 从设置读取
 
@@ -142,6 +142,14 @@ function updateUI(): void {
     mic.classList.add("is-active");
     waveformMode = "listening";
     micMode = "listening";
+  } else if (currentState === "ASR") {
+    status.textContent = "正在识别语音...";
+    status.className = "call__status call__status--thinking";
+    ring.classList.remove("is-active");
+    wave?.classList.add("is-active");
+    mic.classList.add("is-active");
+    waveformMode = "thinking";
+    micMode = "thinking";
   } else if (currentState === "THINKING") {
     status.textContent = "昔涟思考中...";
     status.className = "call__status call__status--thinking";
@@ -159,7 +167,7 @@ function updateUI(): void {
     waveformMode = "idle";
     micMode = "idle";
   } else if (currentState === "ERROR") {
-    status.textContent = "连接出错，请检查网络";
+    status.textContent = "通话出错，请查看错误提示";
     status.className = "call__status call__status--error";
     ring.classList.remove("is-active");
     wave?.classList.remove("is-active");
@@ -185,7 +193,7 @@ function updateUI(): void {
   }
 
   // 通话时长：进入活动状态时启动计时，END 时停止（IDLE/ERROR/ENDED 均停）。
-  if (currentState === "LISTENING" || currentState === "THINKING" || currentState === "SPEAKING") {
+  if (currentState === "LISTENING" || currentState === "ASR" || currentState === "THINKING" || currentState === "SPEAKING") {
     startCallTimer();
   } else if (currentState === "ENDED") {
     stopCallTimer();
