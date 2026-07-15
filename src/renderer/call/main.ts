@@ -1,6 +1,8 @@
 // 通话窗口渲染端 —— 粒子背景 + 麦克风采集 + VAD 静默检测 + 状态机 + TTS 播放。
 //
 // 状态：LISTENING（用户说话）→ THINKING（agent 思考）→ SPEAKING（昔涟说话）→ LISTENING
+
+import { computeRmsLevel } from "./vad-level";
 // 用户说话时：柱状胶囊波形跳动 + 头像外圈音量波形
 // 昔涟说话时：电波环脉冲扩散 + 波形隐藏
 import "../ui/theme";
@@ -241,6 +243,7 @@ function initWaveformCanvas(): void {
 }
 
 let analyserData: Uint8Array | null = null;
+let analyserTimeData: Float32Array | null = null;
 
 function drawWaveform(): void {
   if (!waveformCtx || !waveformCanvas) { requestAnimationFrame(drawWaveform); return; }
@@ -326,6 +329,7 @@ async function startMicrophone(): Promise<void> {
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 256;
     analyserData = new Uint8Array(analyser.frequencyBinCount);
+    analyserTimeData = new Float32Array(analyser.fftSize);
     source.connect(analyser);
 
     // AudioWorkletNode 用于 PCM 采集
@@ -350,14 +354,14 @@ async function startMicrophone(): Promise<void> {
 function startVAD(): void {
   let logCounter = 0;
   const checkInterval = setInterval(() => {
-    if (!analyser || !analyserData) return;
+    if (!analyser || !analyserData || !analyserTimeData) return;
     if (currentState !== "LISTENING") return;
 
+    // 频域数据只用于波形显示；VAD 阈值使用时域 RMS（0..1）。
+    // 频谱字节均值与设置页的 0.01 阈值量纲不同，在 macOS 麦克风静音时也可能约为 0.2。
     analyser.getByteFrequencyData(analyserData);
-    // 计算平均音量
-    let sum = 0;
-    for (let i = 0; i < analyserData.length; i++) sum += analyserData[i];
-    const avg = sum / analyserData.length / 255;
+    analyser.getFloatTimeDomainData(analyserTimeData);
+    const avg = computeRmsLevel(analyserTimeData);
 
     logCounter++;
     if (logCounter % 10 === 0) {
@@ -391,6 +395,8 @@ function stopMicrophone(): void {
   if (vadSilenceTimer) { clearTimeout(vadSilenceTimer); vadSilenceTimer = null; }
   if (workletNode) { try { workletNode.disconnect(); } catch { /* ignore */ } workletNode = null; }
   if (analyser) { try { analyser.disconnect(); } catch { /* ignore */ } analyser = null; }
+  analyserData = null;
+  analyserTimeData = null;
   if (audioContext) { try { audioContext.close(); } catch { /* ignore */ } audioContext = null; }
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
 }
