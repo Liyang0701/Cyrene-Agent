@@ -502,10 +502,12 @@ const ttsApi = {
   // GPT-SoVITS 本地 TTS（独立通道，payload 与 minimax 不同）
   synthesizeGptsovits: (payload: {
     baseUrl: string; refAudioPath: string; promptText: string; text: string;
+    promptLang?: "auto" | "zh" | "en" | "ja"; textLang?: "auto" | "zh" | "en" | "ja";
     speed?: number; format?: "wav" | "mp3";
   }) => ipcRenderer.invoke(IPC.TTS_SYNTHESIZE_GPTSOVITS, payload),
   synthesizeCachedGptsovits: (payload: {
     baseUrl: string; refAudioPath: string; promptText: string; text: string;
+    promptLang?: "auto" | "zh" | "en" | "ja"; textLang?: "auto" | "zh" | "en" | "ja";
     speed?: number; format?: "wav" | "mp3";
     expectedCacheKey?: string;
   }) => ipcRenderer.invoke(IPC.TTS_SYNTHESIZE_CACHED_GPTSOVITS, payload),

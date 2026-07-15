@@ -1587,6 +1587,24 @@
                 <input type="text" id="tts-gptsovits-prompt-text" placeholder="例：你好，我是昔涟" />
               </div>
               <div class="tts-field">
+                <label>参考音频语言</label>
+                <select id="tts-gptsovits-prompt-lang">
+                  <option value="zh">中文</option>
+                  <option value="ja">日语</option>
+                  <option value="en">英语</option>
+                  <option value="auto">自动检测</option>
+                </select>
+              </div>
+              <div class="tts-field">
+                <label>合成文本语言</label>
+                <select id="tts-gptsovits-text-lang">
+                  <option value="zh">中文</option>
+                  <option value="ja">日语</option>
+                  <option value="en">英语</option>
+                  <option value="auto">自动检测</option>
+                </select>
+              </div>
+              <div class="tts-field">
                 <label>输出格式</label>
                 <select id="tts-gptsovits-format">
                   <option value="wav">wav（推荐，gptsovits 默认）</option>

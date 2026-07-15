@@ -1483,6 +1483,8 @@ interface TtsSettings {
   ttsGptsovitsBaseUrl: string;
   ttsGptsovitsRefAudioPath: string;
   ttsGptsovitsPromptText: string;
+  ttsGptsovitsPromptLang: "auto" | "zh" | "en" | "ja";
+  ttsGptsovitsTextLang: "auto" | "zh" | "en" | "ja";
   ttsGptsovitsFormat: "wav" | "mp3";
   // 自定义云端
   ttsCustomCloudEndpointUrl: string;
@@ -1511,6 +1513,7 @@ interface TtsApi {
   // GPT-SoVITS（返回 base64 + cacheKey + cached + format）
   synthesizeCachedGptsovits: (payload: {
     baseUrl: string; refAudioPath: string; promptText: string; text: string;
+    promptLang?: "auto" | "zh" | "en" | "ja"; textLang?: "auto" | "zh" | "en" | "ja";
     speed?: number; format?: "wav" | "mp3";
     expectedCacheKey?: string;
   }) => Promise<{ base64: string; cacheKey: string; cached: boolean; format: "wav" | "mp3" }>;
@@ -1664,6 +1667,10 @@ async function loadTtsSettings(): Promise<TtsSettings | null> {
       ttsGptsovitsBaseUrl: String(raw.ttsGptsovitsBaseUrl ?? ""),
       ttsGptsovitsRefAudioPath: String(raw.ttsGptsovitsRefAudioPath ?? ""),
       ttsGptsovitsPromptText: String(raw.ttsGptsovitsPromptText ?? ""),
+      ttsGptsovitsPromptLang: ["auto", "zh", "en", "ja"].includes(String(raw.ttsGptsovitsPromptLang))
+        ? raw.ttsGptsovitsPromptLang as "auto" | "zh" | "en" | "ja" : "zh",
+      ttsGptsovitsTextLang: ["auto", "zh", "en", "ja"].includes(String(raw.ttsGptsovitsTextLang))
+        ? raw.ttsGptsovitsTextLang as "auto" | "zh" | "en" | "ja" : "zh",
       ttsGptsovitsFormat: raw.ttsGptsovitsFormat === "mp3" ? "mp3" : "wav",
       ttsCustomCloudEndpointUrl: String(raw.ttsCustomCloudEndpointUrl ?? ""),
       ttsCustomCloudApiKey: String(raw.ttsCustomCloudApiKey ?? ""),
@@ -1980,6 +1987,8 @@ async function synthesizeAndPlayCached(
           baseUrl: "cache-only",        // 占位，缓存命中不会用到
           refAudioPath: "cache-only",   // 占位
           promptText: "cache-only",     // 占位
+          promptLang: settings.ttsGptsovitsPromptLang,
+          textLang: settings.ttsGptsovitsTextLang,
           text,
           speed: settings.ttsSpeed,
           format: settings.ttsGptsovitsFormat,
@@ -2082,6 +2091,8 @@ async function synthesizeAndPlayCached(
         baseUrl: settings.ttsGptsovitsBaseUrl,
         refAudioPath: settings.ttsGptsovitsRefAudioPath,
         promptText: settings.ttsGptsovitsPromptText,
+        promptLang: settings.ttsGptsovitsPromptLang,
+        textLang: settings.ttsGptsovitsTextLang,
         text,
         speed: settings.ttsSpeed,
         format: settings.ttsGptsovitsFormat,

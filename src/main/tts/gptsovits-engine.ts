@@ -3,11 +3,15 @@
 // 参考：https://github.com/RVC-Boss/GPT-SoVITS
 import * as fs from "fs";
 
+export type GptsovitsLanguage = "auto" | "zh" | "en" | "ja";
+
 export interface GptsovitsSynthesizeOptions {
   baseUrl: string;          // 形如 "http://localhost:9880"，不含路径
   refAudioPath: string;     // 参考音频绝对路径
   promptText: string;      // 参考音频对应的文本
+  promptLang?: GptsovitsLanguage; // 参考音频语言，默认 zh
   text: string;             // 待合成文本
+  textLang?: GptsovitsLanguage;   // 输出文本语言，默认 zh
   speed?: number;           // 0.5~2，默认 1
   format?: "wav" | "mp3";   // 默认 wav
   timeoutMs?: number;      // 默认 60000（本地推理可能较慢）
@@ -52,10 +56,10 @@ export async function synthesize(opts: GptsovitsSynthesizeOptions): Promise<Gpts
   // 必需字段：text / text_lang / ref_audio_path / prompt_lang
   const body = JSON.stringify({
     text: opts.text,
-    text_lang: "zh",
+    text_lang: opts.textLang ?? "zh",
     ref_audio_path: opts.refAudioPath,
     prompt_text: opts.promptText,
-    prompt_lang: "zh",
+    prompt_lang: opts.promptLang ?? "zh",
     speed_factor: opts.speed ?? 1,
     streaming_mode: false,
     media_type: format,

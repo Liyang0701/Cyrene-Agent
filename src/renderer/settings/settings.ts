@@ -4524,10 +4524,12 @@ interface TtsApi {
   // GPT-SoVITS（返回 base64 + cacheKey + cached + format）
   synthesizeGptsovits: (payload: {
     baseUrl: string; refAudioPath: string; promptText: string; text: string;
+    promptLang?: "auto" | "zh" | "en" | "ja"; textLang?: "auto" | "zh" | "en" | "ja";
     speed?: number; format?: "wav" | "mp3";
   }) => Promise<{ base64: string; cacheKey: string; cached: boolean; format: "wav" | "mp3" }>;
   synthesizeCachedGptsovits: (payload: {
     baseUrl: string; refAudioPath: string; promptText: string; text: string;
+    promptLang?: "auto" | "zh" | "en" | "ja"; textLang?: "auto" | "zh" | "en" | "ja";
     speed?: number; format?: "wav" | "mp3";
     expectedCacheKey?: string;
   }) => Promise<{ base64: string; cacheKey: string; cached: boolean; format: "wav" | "mp3" }>;
@@ -4612,6 +4614,8 @@ async function loadTtsConfig(): Promise<void> {
   ttsEl("tts-gptsovits-url").value = String(ttsConfig.ttsGptsovitsBaseUrl ?? "http://localhost:9880");
   ttsEl("tts-gptsovits-ref-audio").value = String(ttsConfig.ttsGptsovitsRefAudioPath ?? "");
   ttsEl("tts-gptsovits-prompt-text").value = String(ttsConfig.ttsGptsovitsPromptText ?? "");
+  (ttsEl("tts-gptsovits-prompt-lang") as HTMLSelectElement).value = String(ttsConfig.ttsGptsovitsPromptLang ?? "zh");
+  (ttsEl("tts-gptsovits-text-lang") as HTMLSelectElement).value = String(ttsConfig.ttsGptsovitsTextLang ?? "zh");
   (ttsEl("tts-gptsovits-format") as HTMLSelectElement).value =
     ttsConfig.ttsGptsovitsFormat === "mp3" ? "mp3" : "wav";
 
@@ -4893,6 +4897,14 @@ for (const [provider, ui] of Object.entries(ttsProviderUi)) {
   void saveTtsField("ttsGptsovitsFormat", (ttsEl("tts-gptsovits-format") as HTMLSelectElement).value as "wav" | "mp3");
 });
 
+(ttsEl("tts-gptsovits-prompt-lang") as HTMLSelectElement).addEventListener("change", () => {
+  void saveTtsField("ttsGptsovitsPromptLang", (ttsEl("tts-gptsovits-prompt-lang") as HTMLSelectElement).value);
+});
+
+(ttsEl("tts-gptsovits-text-lang") as HTMLSelectElement).addEventListener("change", () => {
+  void saveTtsField("ttsGptsovitsTextLang", (ttsEl("tts-gptsovits-text-lang") as HTMLSelectElement).value);
+});
+
 // 自定义云端格式选择
 (ttsEl("tts-custom-cloud-format") as HTMLSelectElement).addEventListener("change", () => {
   void saveTtsField("ttsCustomCloudFormat", (ttsEl("tts-custom-cloud-format") as HTMLSelectElement).value as "wav" | "mp3");
@@ -4919,6 +4931,8 @@ document.getElementById("tts-gptsovits-test")?.addEventListener("click", async (
   const baseUrl = ttsEl("tts-gptsovits-url").value.trim();
   const refAudioPath = ttsEl("tts-gptsovits-ref-audio").value.trim();
   const promptText = ttsEl("tts-gptsovits-prompt-text").value.trim();
+  const promptLang = (ttsEl("tts-gptsovits-prompt-lang") as HTMLSelectElement).value as "auto" | "zh" | "en" | "ja";
+  const textLang = (ttsEl("tts-gptsovits-text-lang") as HTMLSelectElement).value as "auto" | "zh" | "en" | "ja";
   const format = (ttsEl("tts-gptsovits-format") as HTMLSelectElement).value as "wav" | "mp3";
   if (!baseUrl) { window.alert("请先填写 GPT-SoVITS API 地址"); return; }
   if (!refAudioPath) { window.alert("请先选择参考音频文件"); return; }
@@ -4929,7 +4943,7 @@ document.getElementById("tts-gptsovits-test")?.addEventListener("click", async (
   btn.textContent = "合成中…";
   try {
     const result = await window.tts.synthesizeGptsovits({
-      baseUrl, refAudioPath, promptText, text: TTS_TEST_TEXT, format,
+      baseUrl, refAudioPath, promptText, promptLang, text: TTS_TEST_TEXT, textLang, format,
     });
     playTtsAudio(result.base64, result.format);
   } catch (err) {

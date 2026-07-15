@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { synthesize } from "./gptsovits-engine";
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("gptsovits-engine synthesize 输入校验", () => {
   it("缺 baseUrl 时抛错", async () => {
@@ -36,5 +41,27 @@ describe("gptsovits-engine synthesize 输入校验", () => {
       promptText: "hi",
       text: "",
     })).rejects.toThrow(/合成文本|text/);
+  });
+
+  it("passes separate Japanese reference and Chinese output languages to api_v2", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "gptsovits-lang-"));
+    const refAudioPath = path.join(dir, "ref.wav");
+    writeFileSync(refAudioPath, "RIFF");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(Buffer.from("RIFFdata"), { status: 200 }));
+    try {
+      await synthesize({
+        baseUrl: "http://127.0.0.1:9880",
+        refAudioPath,
+        promptText: "ほほえましい光景だねー。",
+        promptLang: "ja",
+        text: "你好，这是语音测试。",
+        textLang: "zh",
+      });
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body.prompt_lang).toBe("ja");
+      expect(body.text_lang).toBe("zh");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

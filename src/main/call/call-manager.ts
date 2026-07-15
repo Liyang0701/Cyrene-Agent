@@ -53,7 +53,8 @@ let ttsSettingsGetter: (() => {
   ttsSpeed: number; ttsVolume: number;
   // GPT-SoVITS
   ttsGptsovitsBaseUrl: string; ttsGptsovitsRefAudioPath: string;
-  ttsGptsovitsPromptText: string; ttsGptsovitsFormat: "wav" | "mp3";
+  ttsGptsovitsPromptText: string; ttsGptsovitsPromptLang: "auto" | "zh" | "en" | "ja";
+  ttsGptsovitsTextLang: "auto" | "zh" | "en" | "ja"; ttsGptsovitsFormat: "wav" | "mp3";
   ttsCustomCloudEndpointUrl: string; ttsCustomCloudApiKey: string; ttsCustomCloudVoiceId: string;
   ttsCustomCloudFormat: "wav" | "mp3"; ttsCustomCloudTimeoutMs: number;
   ttsMimoKey: string; ttsMimoVoiceAudioPath: string; ttsMimoStylePrompt: string;
@@ -71,7 +72,8 @@ export function setCallSettings(
     ttsMinimaxModel: "speech-2.8-hd" | "speech-2.8-turbo";
     ttsSpeed: number; ttsVolume: number;
     ttsGptsovitsBaseUrl: string; ttsGptsovitsRefAudioPath: string;
-    ttsGptsovitsPromptText: string; ttsGptsovitsFormat: "wav" | "mp3";
+    ttsGptsovitsPromptText: string; ttsGptsovitsPromptLang: "auto" | "zh" | "en" | "ja";
+    ttsGptsovitsTextLang: "auto" | "zh" | "en" | "ja"; ttsGptsovitsFormat: "wav" | "mp3";
     ttsCustomCloudEndpointUrl: string; ttsCustomCloudApiKey: string; ttsCustomCloudVoiceId: string;
     ttsCustomCloudFormat: "wav" | "mp3"; ttsCustomCloudTimeoutMs: number;
     ttsMimoKey: string; ttsMimoVoiceAudioPath: string; ttsMimoStylePrompt: string;
@@ -256,6 +258,8 @@ export async function endTurn(): Promise<void> {
         baseUrl: tts.ttsGptsovitsBaseUrl,
         refAudioPath: tts.ttsGptsovitsRefAudioPath,
         promptText: tts.ttsGptsovitsPromptText,
+        promptLang: tts.ttsGptsovitsPromptLang,
+        textLang: tts.ttsGptsovitsTextLang,
         format: tts.ttsGptsovitsFormat,
         // custom-cloud
         endpointUrl: tts.ttsCustomCloudEndpointUrl,

@@ -3,6 +3,7 @@
 
 import { synthesize as minimaxSynthesize } from "./minimax-engine";
 import { synthesize as gptsovitsSynthesize } from "./gptsovits-engine";
+import type { GptsovitsLanguage } from "./gptsovits-engine";
 import { synthesize as customCloudSynthesize } from "./custom-cloud-engine";
 import { synthesize as mimoSynthesize } from "./mimo-engine";
 import type { TtsEngine } from "../../shared/tts-types";
@@ -19,6 +20,8 @@ export interface SynthesizeByEnginePayload {
   baseUrl?: string;
   refAudioPath?: string;
   promptText?: string;
+  promptLang?: GptsovitsLanguage;
+  textLang?: GptsovitsLanguage;
   format?: "wav" | "mp3";
   // custom-cloud 专用
   endpointUrl?: string;
@@ -66,6 +69,8 @@ export async function synthesizeByEngine(
       baseUrl: payload.baseUrl,
       refAudioPath: payload.refAudioPath,
       promptText: payload.promptText,
+      promptLang: payload.promptLang,
+      textLang: payload.textLang,
       text: payload.text,
       speed: payload.speed,
       format: payload.format ?? "wav",

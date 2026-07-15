@@ -62,6 +62,7 @@ describe("call manager ASR sequencing", () => {
         ttsEngine: "gptsovits", ttsMinimaxKey: "", ttsMinimaxVoiceId: "", ttsMinimaxModel: "speech-2.8-hd",
         ttsSpeed: 1, ttsVolume: 1, ttsGptsovitsBaseUrl: "http://127.0.0.1:9880",
         ttsGptsovitsRefAudioPath: "/tmp/ref.wav", ttsGptsovitsPromptText: "ref", ttsGptsovitsFormat: "wav",
+        ttsGptsovitsPromptLang: "ja", ttsGptsovitsTextLang: "zh",
         ttsCustomCloudEndpointUrl: "", ttsCustomCloudApiKey: "", ttsCustomCloudVoiceId: "",
         ttsCustomCloudFormat: "wav", ttsCustomCloudTimeoutMs: 30_000,
         ttsMimoKey: "", ttsMimoVoiceAudioPath: "", ttsMimoStylePrompt: "",
@@ -87,6 +88,10 @@ describe("call manager ASR sequencing", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mocks.synthesize).toHaveBeenCalledTimes(1);
+    expect(mocks.synthesize).toHaveBeenCalledWith("gptsovits", expect.objectContaining({
+      promptLang: "ja",
+      textLang: "zh",
+    }));
     expect(sent.some((entry) => (entry.payload as { state?: string }).state === "ASR")).toBe(true);
     expect(sent.some((entry) => entry.channel.includes("tts-audio"))).toBe(true);
     stopCall();

@@ -283,16 +283,20 @@ function buildGptsovitsCacheKey(payload: {
   baseUrl: string;
   refAudioPath: string;
   promptText: string;
+  promptLang?: "auto" | "zh" | "en" | "ja";
+  textLang?: "auto" | "zh" | "en" | "ja";
   text: string;
   speed?: number;
   format?: "wav" | "mp3";
 }): string {
   const source = JSON.stringify({
-    version: 1,
+    version: 2,
     engine: "gptsovits",
     baseUrl: payload.baseUrl,
     refAudioPath: payload.refAudioPath,
     promptText: payload.promptText,
+    promptLang: payload.promptLang ?? "zh",
+    textLang: payload.textLang ?? "zh",
     speed: payload.speed ?? 1,
     format: payload.format ?? "wav",
     text: payload.text,
@@ -507,6 +511,8 @@ interface GeneralSettings {
   ttsGptsovitsBaseUrl: string;
   ttsGptsovitsRefAudioPath: string;
   ttsGptsovitsPromptText: string;
+  ttsGptsovitsPromptLang: "auto" | "zh" | "en" | "ja";
+  ttsGptsovitsTextLang: "auto" | "zh" | "en" | "ja";
   ttsGptsovitsFormat: "wav" | "mp3";
   // 自定义云端 TTS
   ttsCustomCloudEndpointUrl: string;
@@ -737,6 +743,8 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   ttsGptsovitsBaseUrl: "http://localhost:9880",
   ttsGptsovitsRefAudioPath: "",
   ttsGptsovitsPromptText: "",
+  ttsGptsovitsPromptLang: "zh",
+  ttsGptsovitsTextLang: "zh",
   ttsGptsovitsFormat: "wav",
   ttsCustomCloudEndpointUrl: "",
   ttsCustomCloudApiKey: "",
@@ -1215,6 +1223,12 @@ function normalizeGeneralSettings(input: Partial<GeneralSettings> | null | undef
     ttsGptsovitsBaseUrl: typeof input?.ttsGptsovitsBaseUrl === "string" ? input.ttsGptsovitsBaseUrl : DEFAULT_GENERAL_SETTINGS.ttsGptsovitsBaseUrl,
     ttsGptsovitsRefAudioPath: typeof input?.ttsGptsovitsRefAudioPath === "string" ? input.ttsGptsovitsRefAudioPath : "",
     ttsGptsovitsPromptText: typeof input?.ttsGptsovitsPromptText === "string" ? input.ttsGptsovitsPromptText : "",
+    ttsGptsovitsPromptLang: ["auto", "zh", "en", "ja"].includes(String(input?.ttsGptsovitsPromptLang))
+      ? input!.ttsGptsovitsPromptLang as "auto" | "zh" | "en" | "ja"
+      : DEFAULT_GENERAL_SETTINGS.ttsGptsovitsPromptLang,
+    ttsGptsovitsTextLang: ["auto", "zh", "en", "ja"].includes(String(input?.ttsGptsovitsTextLang))
+      ? input!.ttsGptsovitsTextLang as "auto" | "zh" | "en" | "ja"
+      : DEFAULT_GENERAL_SETTINGS.ttsGptsovitsTextLang,
     ttsGptsovitsFormat: input?.ttsGptsovitsFormat === "mp3" ? "mp3" : "wav",
     ttsCustomCloudEndpointUrl: typeof input?.ttsCustomCloudEndpointUrl === "string" ? input.ttsCustomCloudEndpointUrl : "",
     ttsCustomCloudApiKey: typeof input?.ttsCustomCloudApiKey === "string" ? input.ttsCustomCloudApiKey : "",
@@ -1921,6 +1935,8 @@ async function synthesizeProactiveSpeech(text: string): Promise<{ audioBase64: s
       baseUrl: cfg.ttsGptsovitsBaseUrl,
       refAudioPath: cfg.ttsGptsovitsRefAudioPath,
       promptText: cfg.ttsGptsovitsPromptText,
+      promptLang: cfg.ttsGptsovitsPromptLang,
+      textLang: cfg.ttsGptsovitsTextLang,
       endpointUrl: cfg.ttsCustomCloudEndpointUrl,
       timeoutMs: cfg.ttsCustomCloudTimeoutMs,
       voiceAudioPath: cfg.ttsMimoVoiceAudioPath,
@@ -2614,6 +2630,8 @@ function createWindow(): void {
         ttsGptsovitsBaseUrl: s.ttsGptsovitsBaseUrl,
         ttsGptsovitsRefAudioPath: s.ttsGptsovitsRefAudioPath,
         ttsGptsovitsPromptText: s.ttsGptsovitsPromptText,
+        ttsGptsovitsPromptLang: s.ttsGptsovitsPromptLang,
+        ttsGptsovitsTextLang: s.ttsGptsovitsTextLang,
         ttsGptsovitsFormat: s.ttsGptsovitsFormat,
         ttsCustomCloudEndpointUrl: s.ttsCustomCloudEndpointUrl,
         ttsCustomCloudApiKey: s.ttsCustomCloudApiKey,
@@ -4133,6 +4151,7 @@ app.whenReady().then(async () => {
   // GPT-SoVITS 语音合成 → base64 音频（测试发音用，不缓存）
   ipcMain.handle(IPC.TTS_SYNTHESIZE_GPTSOVITS, async (_event, payload: {
     baseUrl: string; refAudioPath: string; promptText: string; text: string;
+    promptLang?: "auto" | "zh" | "en" | "ja"; textLang?: "auto" | "zh" | "en" | "ja";
     speed?: number; format?: "wav" | "mp3";
   }) => {
     if (!payload?.baseUrl || !payload?.refAudioPath || !payload?.promptText || !payload?.text) {
@@ -4154,6 +4173,7 @@ app.whenReady().then(async () => {
   // GPT-SoVITS 语音合成 + 本地缓存（聊天朗读用）
   ipcMain.handle(IPC.TTS_SYNTHESIZE_CACHED_GPTSOVITS, async (_event, payload: {
     baseUrl: string; refAudioPath: string; promptText: string; text: string;
+    promptLang?: "auto" | "zh" | "en" | "ja"; textLang?: "auto" | "zh" | "en" | "ja";
     speed?: number; format?: "wav" | "mp3";
     expectedCacheKey?: string;
   }) => {
@@ -4197,6 +4217,8 @@ app.whenReady().then(async () => {
       baseUrl: payload.baseUrl,
       refAudioPath: payload.refAudioPath,
       promptText: payload.promptText,
+      promptLang: payload.promptLang,
+      textLang: payload.textLang,
       text: payload.text,
       speed: payload.speed,
       format,
@@ -4574,6 +4596,8 @@ app.whenReady().then(async () => {
         baseUrl: cfg.ttsGptsovitsBaseUrl,
         refAudioPath: cfg.ttsGptsovitsRefAudioPath,
         promptText: cfg.ttsGptsovitsPromptText,
+        promptLang: cfg.ttsGptsovitsPromptLang,
+        textLang: cfg.ttsGptsovitsTextLang,
         // custom-cloud
         endpointUrl: cfg.ttsCustomCloudEndpointUrl,
         timeoutMs: cfg.ttsCustomCloudTimeoutMs,
@@ -4831,5 +4855,3 @@ app.on("activate", () => {
     createWindow();
   }
 });
-
-
