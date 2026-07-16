@@ -8,6 +8,8 @@ export const CHARACTER_STATE_SCHEMA_VERSION = 1 as const;
 export type CharacterStateLayout = Readonly<{
   root: string;
   chatsRoot: string;
+  channelHistoryRoot: string;
+  channelLogFile: string;
   memoryFile: string;
   entityGraphFile: string;
   memoryTraceFile: string;
@@ -60,6 +62,8 @@ export function resolveCharacterStateLayout(
   return Object.freeze({
     root,
     chatsRoot: path.join(root, "chats"),
+    channelHistoryRoot: path.join(root, "chats", "channels", "history"),
+    channelLogFile: path.join(root, "chats", "channels", "log.jsonl"),
     memoryFile: path.join(root, "memory", "memory.json"),
     entityGraphFile: path.join(root, "memory", "entity-graph.json"),
     memoryTraceFile: path.join(root, "memory", "memory-trace.log"),
@@ -74,6 +78,8 @@ export function resolveCharacterStateLayout(
 function legacyStateEntries(userDataRoot: string): LegacyStateEntry[] {
   return [
     { legacyPath: path.join(userDataRoot, "cyrene-chats"), relativeTarget: "chats" },
+    { legacyPath: path.join(userDataRoot, "channels", "history"), relativeTarget: path.join("chats", "channels", "history") },
+    { legacyPath: path.join(userDataRoot, "channels", "log.jsonl"), relativeTarget: path.join("chats", "channels", "log.jsonl") },
     { legacyPath: path.join(userDataRoot, "memory.json"), relativeTarget: path.join("memory", "memory.json") },
     { legacyPath: path.join(userDataRoot, "entity-graph.json"), relativeTarget: path.join("memory", "entity-graph.json") },
     { legacyPath: path.join(userDataRoot, "memory-trace.log"), relativeTarget: path.join("memory", "memory-trace.log") },

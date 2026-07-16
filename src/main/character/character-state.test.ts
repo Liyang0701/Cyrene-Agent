@@ -17,6 +17,8 @@ describe("Character State Root", () => {
     expect(cyrene).toMatchObject({
       root: path.join(userDataRoot, "characters", "cyrene"),
       chatsRoot: path.join(userDataRoot, "characters", "cyrene", "chats"),
+      channelHistoryRoot: path.join(userDataRoot, "characters", "cyrene", "chats", "channels", "history"),
+      channelLogFile: path.join(userDataRoot, "characters", "cyrene", "chats", "channels", "log.jsonl"),
       memoryFile: path.join(userDataRoot, "characters", "cyrene", "memory", "memory.json"),
       entityGraphFile: path.join(userDataRoot, "characters", "cyrene", "memory", "entity-graph.json"),
       memoryTraceFile: path.join(userDataRoot, "characters", "cyrene", "memory", "memory-trace.log"),
@@ -35,6 +37,9 @@ describe("Character State Root", () => {
     fs.mkdirSync(path.join(userDataRoot, "cyrene-chats", "sessions"), { recursive: true });
     fs.writeFileSync(path.join(userDataRoot, "cyrene-chats", "index.json"), "[]");
     fs.writeFileSync(path.join(userDataRoot, "cyrene-chats", "sessions", "chat.json"), '{"messages":[]}');
+    fs.mkdirSync(path.join(userDataRoot, "channels", "history"), { recursive: true });
+    fs.writeFileSync(path.join(userDataRoot, "channels", "history", "wechat.jsonl"), '{"content":"legacy channel history"}\n');
+    fs.writeFileSync(path.join(userDataRoot, "channels", "log.jsonl"), '{"text":"legacy channel log"}\n');
     fs.writeFileSync(path.join(userDataRoot, "memory.json"), '{"schemaVersion":2,"l2":[]}');
     fs.mkdirSync(path.join(userDataRoot, "rag-data"));
     fs.writeFileSync(path.join(userDataRoot, "rag-data", "memory-store.json"), "[]");
@@ -46,9 +51,11 @@ describe("Character State Root", () => {
     const first = await migrateLegacyCyreneState({ userDataRoot, characterId: "cyrene", now: () => 100 });
     const layout = resolveCharacterStateLayout(userDataRoot, "cyrene");
 
-    expect(first).toMatchObject({ status: "migrated", migratedEntries: 6, diagnostics: [] });
+    expect(first).toMatchObject({ status: "migrated", migratedEntries: 8, diagnostics: [] });
     expect(fs.readFileSync(layout.memoryFile, "utf8")).toContain('"schemaVersion":2');
     expect(fs.readFileSync(path.join(layout.chatsRoot, "sessions", "chat.json"), "utf8")).toContain("messages");
+    expect(fs.readFileSync(path.join(layout.channelHistoryRoot, "wechat.jsonl"), "utf8")).toContain("legacy channel history");
+    expect(fs.readFileSync(layout.channelLogFile, "utf8")).toContain("legacy channel log");
     expect(fs.readFileSync(path.join(layout.ragRoot, "memory-store.json"), "utf8")).toBe("[]");
     expect(fs.readFileSync(layout.proactiveStateFile, "utf8")).toContain("globalDesire");
     expect(fs.readFileSync(path.join(layout.ttsCacheRoot, "voice.wav"), "utf8")).toBe("audio");

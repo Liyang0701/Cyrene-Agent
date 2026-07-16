@@ -59,6 +59,8 @@ function createActiveCharacter(displayName: string): ActiveCharacterContext {
     state: {
       root: stateRoot,
       chatsRoot: path.join(stateRoot, "chats"),
+      channelHistoryRoot: path.join(stateRoot, "chats", "channels", "history"),
+      channelLogFile: path.join(stateRoot, "chats", "channels", "log.jsonl"),
       memoryFile: path.join(stateRoot, "memory", "memory.json"),
       entityGraphFile: path.join(stateRoot, "memory", "entity-graph.json"),
       memoryTraceFile: path.join(stateRoot, "memory", "memory-trace.log"),

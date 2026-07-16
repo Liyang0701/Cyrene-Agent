@@ -32,6 +32,8 @@ function activeCharacter(input: Readonly<{
     state: {
       root: stateRoot,
       chatsRoot: path.join(stateRoot, "chats"),
+      channelHistoryRoot: path.join(stateRoot, "chats", "channels", "history"),
+      channelLogFile: path.join(stateRoot, "chats", "channels", "log.jsonl"),
       memoryFile: path.join(stateRoot, "memory.json"),
       entityGraphFile: path.join(stateRoot, "entities.json"),
       memoryTraceFile: path.join(stateRoot, "trace.log"),

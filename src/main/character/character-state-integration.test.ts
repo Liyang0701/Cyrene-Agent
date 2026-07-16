@@ -32,6 +32,19 @@ describe("Character State Root store integration", () => {
     expect(fs.existsSync(path.join(layout.chatsRoot, "index.json"))).toBe(true);
     expect(fs.existsSync(path.join(userDataRoot, "cyrene-chats"))).toBe(false);
 
+    const channelHistory = await import("../channels/history-log");
+    channelHistory.appendHistory("channel:wechat:fixture", "user", "渠道隔离消息");
+    expect(fs.readdirSync(layout.channelHistoryRoot)).toHaveLength(1);
+    const channelLog = await import("../channels/message-log");
+    channelLog.appendLog({
+      dir: "incoming",
+      channel: "wechat",
+      senderId: "fixture",
+      chatId: "fixture",
+      text: "渠道日志隔离消息",
+    });
+    expect(fs.readFileSync(layout.channelLogFile, "utf8")).toContain("渠道日志隔离消息");
+
     const { memoryStore } = await import("../memory/memory-store");
     await memoryStore.load();
     expect(fs.existsSync(layout.memoryFile)).toBe(true);
@@ -64,5 +77,85 @@ describe("Character State Root store integration", () => {
 
     expect(values.every((value) => value.startsWith(layout.root))).toBe(true);
     expect(values.some((value) => /models?|embedding|reranker|asr/i.test(path.relative(layout.root, value)))).toBe(false);
+  });
+
+  it("keeps chats, secrets, relationships and vector retrieval physically isolated across relaunches", async () => {
+    const configureFor = async (characterId: string) => {
+      vi.resetModules();
+      const state = await import("./character-state");
+      const layout = state.resolveCharacterStateLayout(userDataRoot, characterId);
+      state.configureActiveCharacterState(layout);
+      return layout;
+    };
+
+    const cyrene = await configureFor("cyrene");
+    const cyreneChats = await import("../chats/chats-store");
+    cyreneChats.initialize();
+    cyreneChats.createSession({
+      title: "昔涟私密会话",
+      initialMessages: [{ id: "c-secret", role: "user", content: "唯一秘密是蓝色月桂", at: 1 }],
+    });
+    const { memoryStore: cyreneMemory } = await import("../memory/memory-store");
+    await cyreneMemory.addL2({
+      content: "用户的唯一秘密是蓝色月桂；昔涟称用户为小船长，并承诺下次一起看流星",
+      triggerText: "唯一秘密",
+      sourceConversationId: "cyrene-chat",
+      isPinned: false,
+    });
+    const cyreneRelationship = await import("../relationship/relationship-log");
+    await cyreneRelationship.recordRelationshipTurn({
+      userText: "我只把蓝色月桂告诉昔涟",
+      assistantText: "我会记住",
+      cyreneFeeling: "trusted",
+      channel: "desktop",
+    });
+    const { JsonVectorStore } = await import("../rag/vectorstore");
+    new JsonVectorStore(cyrene.ragRoot).addPreparedBatch([{
+      text: "昔涟秘密：蓝色月桂",
+      source: "user_memory",
+      embedding: [1, 0],
+    }]);
+
+    const lumen = await configureFor("fixture.lumen");
+    const lumenChats = await import("../chats/chats-store");
+    lumenChats.initialize();
+    expect(lumenChats.listSessions()).toEqual([]);
+    const { memoryStore: lumenMemory } = await import("../memory/memory-store");
+    const lumenMemoryText = (await lumenMemory.getAllL2()).map((entry) => entry.content).join("\n");
+    expect(lumenMemoryText).not.toContain("蓝色月桂");
+    expect(lumenMemoryText).not.toContain("小船长");
+    expect(lumenMemoryText).not.toContain("一起看流星");
+    expect(fs.existsSync(lumen.relationshipFile)).toBe(false);
+    const lumenVectors = new (await import("../rag/vectorstore")).JsonVectorStore(lumen.ragRoot);
+    const fakeProvider = {
+      name: "fixture",
+      dims: 2,
+      embed: async () => [1, 0],
+      embedBatch: async (texts: string[]) => texts.map(() => [1, 0]),
+    };
+    expect(await lumenVectors.search("蓝色月桂", "user_memory", fakeProvider, 5, 0)).toEqual([]);
+    const lumenSession = lumenChats.createSession({
+      title: "流明会话",
+      initialMessages: [{ id: "l-secret", role: "user", content: "流明代号是金色棱镜", at: 2 }],
+    });
+
+    await configureFor("cyrene");
+    const restoredChats = await import("../chats/chats-store");
+    restoredChats.initialize();
+    const restoredSession = restoredChats.getSession(restoredChats.listSessions()[0].id);
+    expect(restoredSession?.messages[0].content).toBe("唯一秘密是蓝色月桂");
+    const { memoryStore: restoredMemory } = await import("../memory/memory-store");
+    const restoredMemoryText = (await restoredMemory.getAllL2()).map((entry) => entry.content).join("\n");
+    expect(restoredMemoryText).toContain("蓝色月桂");
+    expect(restoredMemoryText).toContain("小船长");
+    expect(restoredMemoryText).toContain("一起看流星");
+    expect(fs.readFileSync(cyrene.relationshipFile, "utf8")).toContain("蓝色月桂");
+    const restoredVectors = new (await import("../rag/vectorstore")).JsonVectorStore(cyrene.ragRoot);
+    expect((await restoredVectors.search("蓝色月桂", "user_memory", fakeProvider, 5, 0))[0]?.entry.text)
+      .toContain("蓝色月桂");
+    expect(path.join(cyrene.ragRoot, "memory-store.json"))
+      .not.toBe(path.join(lumen.ragRoot, "memory-store.json"));
+    expect(fs.readFileSync(path.join(lumen.chatsRoot, "sessions", `${lumenSession.id}.json`), "utf8"))
+      .not.toContain("蓝色月桂");
   });
 });

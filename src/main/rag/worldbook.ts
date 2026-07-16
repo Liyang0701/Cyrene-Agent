@@ -136,7 +136,7 @@ export interface WorldbookManagerOptions {
   params?: Partial<DmaeParams>;
   rewardStrategy?: RewardStrategy;
   decayStrategy?: DecayStrategy;
-  stateFile?: string;   // v1 持久化 seam：传了也暂时只 load/save 空实现，重启回 0
+  stateFile?: string;   // 每个角色独立的 DMAE 状态文件
   debug?: boolean;
 }
 
@@ -469,6 +469,8 @@ export class WorldbookManager {
     if (this.debug && this.lastCascadeEntries.length > 0) {
       console.log(`[Worldbook/Cascade] ${this.lastCascadeEntries.length} entries one-shot injected: ${this.lastCascadeEntries.map(e => e.id).join(", ")}`);
     }
+
+    this.saveState();
   }
 
   // 取本轮 One-Shot cascade 触发的条目（仅供 orchestrator 注入用，不进 DMAE 状态表）
@@ -538,15 +540,57 @@ export class WorldbookManager {
     return this.state.get(id);
   }
 
-  // ── 持久化 seam（v1 no-op；后续接 JsonVectorStore 同款 sync JSON）──
+  // ── DMAE 状态持久化 ──
+  // stateFile 由 CharacterStateLayout 提供，因此不同角色即使条目 id 相同也不会共享激活状态。
   private loadState(): void {
-    if (!this.stateFile) return;
-    // TODO v1.1: fs.readFileSync(this.stateFile) → 反序列化到 this.state
-    // 暂不落盘，重启回 0（已确认 v1 接受）
+    if (!this.stateFile || !fs.existsSync(this.stateFile)) return;
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.stateFile, "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object") return;
+
+      const record = parsed as { schemaVersion?: unknown; entries?: unknown };
+      if (record.schemaVersion !== 1 || !record.entries || typeof record.entries !== "object") return;
+
+      for (const [id, value] of Object.entries(record.entries as Record<string, unknown>)) {
+        if (!this.state.has(id) || !value || typeof value !== "object") continue;
+        const candidate = value as Partial<EntryState>;
+        if (
+          !Number.isFinite(candidate.activation) ||
+          !Number.isFinite(candidate.userSilence) ||
+          !Number.isFinite(candidate.modelSilence)
+        ) continue;
+
+        this.state.set(id, {
+          activation: Math.max(0, Math.min(this.params.maxScore, candidate.activation as number)),
+          userSilence: Math.max(0, Math.trunc(candidate.userSilence as number)),
+          modelSilence: Math.max(0, Math.trunc(candidate.modelSilence as number)),
+        });
+      }
+    } catch (error) {
+      console.warn("[Worldbook] failed to load DMAE state; using clean state:", error);
+    }
   }
 
   private saveState(): void {
     if (!this.stateFile) return;
-    // TODO v1.1: fs.writeFileSync(this.stateFile, JSON.stringify([...this.state]))
+
+    const directory = path.dirname(this.stateFile);
+    const tempFile = `${this.stateFile}.${process.pid}.tmp`;
+    try {
+      fs.mkdirSync(directory, { recursive: true });
+      const entries = Object.fromEntries(
+        [...this.state.entries()].map(([id, state]) => [id, { ...state }]),
+      );
+      fs.writeFileSync(tempFile, JSON.stringify({ schemaVersion: 1, entries }, null, 2), "utf8");
+      fs.renameSync(tempFile, this.stateFile);
+    } catch (error) {
+      try {
+        fs.rmSync(tempFile, { force: true });
+      } catch {
+        // Best-effort cleanup; the original persistence error is the actionable one.
+      }
+      console.warn("[Worldbook] failed to persist DMAE state:", error);
+    }
   }
 }
