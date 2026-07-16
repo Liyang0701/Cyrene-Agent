@@ -21,9 +21,9 @@ import {
   type SendMessageItem,
   type WeixinMessage,
 } from "./ilink-protocol-client";
-import { uploadWechatMedia, uploadWechatMediaFile } from "./wechat-media-upload";
+import { uploadWechatMediaFile } from "./wechat-media-upload";
 import { downloadWechatMedia } from "./wechat-media-download";
-import { encodeWechatVoiceSilk } from "./wechat-voice-encoding";
+import { prepareWechatAudioFile } from "./wechat-audio-file";
 import {
   SAVE_INTENT_TTL_MS,
   buildUnsupportedWechatFilePrompt,
@@ -99,12 +99,11 @@ export class ILinkBotAdapter implements ChannelAdapter {
   private pendingSaveIntentByTarget = new Map<string, number>();
   private pendingUnsupportedMediaByTarget = new Map<string, PendingInboundMedia>();
   private uploadMedia = uploadWechatMediaFile;
-  private uploadMediaData = uploadWechatMedia;
+  private prepareAudioFile = prepareWechatAudioFile;
   private downloadMedia = downloadInboundWechatMedia;
   private saveInboundMedia = saveInboundWechatMedia;
   private transcribeVoice = transcribeInboundWechatVoice;
   private isAsrConfigured = isWechatAsrConfigured;
-  private encodeVoice = encodeWechatVoiceSilk;
 
   status: ChannelStatus = { enabled: false, phase: "offline" };
 
@@ -194,21 +193,36 @@ export class ILinkBotAdapter implements ChannelAdapter {
           console.warn(LOG_PREFIX, "sticker image_item 发送失败:", lastErr);
         }
       } else if (part.kind === "audio") {
-        const voice = await this.buildVoiceItem(msg.targetId, part.filePath).catch((err) => {
-          console.warn(LOG_PREFIX, "voice_item 构造失败（跳过语音）:", err instanceof Error ? err.message : err);
-          return null;
-        });
-        if (voice) {
-          const result = await this.client.sendMessage(msg.targetId, [voice], contextToken);
-          if (result.ok) anyOk = true;
-          else {
-            lastErr = result.error ?? "微信语音发送失败";
-            console.warn(LOG_PREFIX, "voice_item 发送失败:", lastErr);
-          }
+        // iLink 当前会对 outbound voice_item 返回 HTTP 200，但微信客户端不会展示。
+        // 优先发送体积更小的 M4A 文件，转换失败时自动回退 WAV。
+        const prepared = await this.prepareAudioFile(part.filePath);
+        const [media, stat] = await Promise.all([
+          this.uploadMedia(this.client, msg.targetId, prepared.filePath, MediaType.FILE),
+          fs.stat(prepared.filePath),
+        ]);
+        const result = await this.client.sendMessage(
+          msg.targetId,
+          [buildFileItem(media, prepared.fileName, stat.size)],
+          contextToken,
+        );
+        if (result.ok) {
+          anyOk = true;
+          console.info(
+            LOG_PREFIX,
+            `语音已作为${prepared.converted ? " M4A" : " WAV"}文件发送: size=${stat.size}`,
+          );
+        } else {
+          lastErr = result.error ?? "微信音频文件发送失败";
+          console.warn(LOG_PREFIX, "audio file_item 发送失败:", lastErr);
         }
       } else if (part.kind === "file") {
+        const stat = await fs.stat(part.filePath);
         const media = await this.uploadMedia(this.client, msg.targetId, part.filePath, MediaType.FILE);
-        const result = await this.client.sendMessage(msg.targetId, [buildFileItem(media, path.basename(part.name ?? part.filePath))], contextToken);
+        const result = await this.client.sendMessage(
+          msg.targetId,
+          [buildFileItem(media, path.basename(part.name ?? part.filePath), stat.size)],
+          contextToken,
+        );
         if (result.ok) anyOk = true;
         else {
           lastErr = result.error ?? "微信文件发送失败";
@@ -226,14 +240,6 @@ export class ILinkBotAdapter implements ChannelAdapter {
     }
     if (!anyOk && lastErr) return { ok: false, error: lastErr };
     return { ok: true };
-  }
-
-  private async buildVoiceItem(targetId: string, filePath: string): Promise<SendMessageItem> {
-    if (!this.client) throw new Error("微信未连接");
-    const source = await fs.readFile(filePath);
-    const encoded = await this.encodeVoice(source, { format: "wav" });
-    const media = await this.uploadMediaData(this.client, targetId, encoded.data, MediaType.VOICE);
-    return buildVoiceItem(media, encoded.durationMs, encoded.sampleRate, encoded.encodeType);
   }
 
   getStatus(): ChannelStatus {
@@ -520,11 +526,12 @@ function buildImageItem(media: CDNMedia): SendMessageItem {
   };
 }
 
-function buildFileItem(media: CDNMedia, fileName: string): SendMessageItem {
+function buildFileItem(media: CDNMedia, fileName: string, fileSize: number): SendMessageItem {
   return {
     type: 4,
     file_item: {
       file_name: fileName,
+      len: String(fileSize),
       media,
     },
   };
@@ -535,18 +542,6 @@ function buildVideoItem(media: CDNMedia): SendMessageItem {
     type: 5,
     video_item: {
       media,
-    },
-  };
-}
-
-function buildVoiceItem(media: CDNMedia, playtime: number, sampleRate: number, encodeType: number): SendMessageItem {
-  return {
-    type: 3,
-    voice_item: {
-      media,
-      encode_type: encodeType,
-      sample_rate: sampleRate,
-      playtime,
     },
   };
 }
