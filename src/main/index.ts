@@ -111,7 +111,7 @@ import {
 import { setAsrConfig } from "./asr/volcano-asr-engine";
 import { disposeAsr } from "./asr/asr-service";
 import { localAsrWorker } from "./asr/local-asr-worker-manager";
-import { setCallWindow, registerCallIpc, setCallSettings, stopCall } from "./call/call-manager";
+import { isCallActive, setCallWindow, registerCallIpc, setCallSettings, stopCall } from "./call/call-manager";
 import { initSkills, skillRegistry, buildSkillCatalog, parseSlashCommand, setSkillEnabled, listSkillsForUi } from "./skills";
 import { initGameBot } from "./game-bot";
 import { initChannels, shutdownChannels, setChannelsConversationLifecycle } from "./channels/init";
@@ -147,6 +147,9 @@ import { runProactiveModel } from "./proactive/proactive-model";
 import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/proactive-types";
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
+import { createElectronCharacterSwitchAdapters } from "./character/character-electron-switch";
+import { getCharacterBoundActivitySnapshot } from "./character/character-bound-activity";
+import { getCharacterSettingsSnapshot, requestCharacterSwitch } from "./character/character-ipc";
 import { configureActiveCharacterState, getActiveCharacterState } from "./character/character-state";
 import { resolveGlobalUserDataLayout } from "./character/global-user-data";
 import {
@@ -3433,7 +3436,7 @@ ipcMain.handle(IPC.SETTINGS_GET_GENERAL, () => {
 
 ipcMain.handle(IPC.CHARACTER_LIST, () => {
   if (!characterRuntime) throw new Error("角色运行时尚未就绪");
-  return characterRuntime.getSnapshot();
+  return getCharacterSettingsSnapshot(characterRuntime);
 });
 
 ipcMain.handle(IPC.CHARACTER_ACTIVE_GET, () => getActiveCharacterPublicIdentity());
@@ -3455,6 +3458,11 @@ ipcMain.handle(IPC.CHARACTER_IMPORT, async (_event, sourcePath: unknown) => {
     throw new Error("角色包路径必须是有效的绝对路径");
   }
   return characterRuntime.importPackage(sourcePath);
+});
+
+ipcMain.handle(IPC.CHARACTER_SWITCH, async (_event, characterId: unknown) => {
+  if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+  return requestCharacterSwitch(characterRuntime, characterId);
 });
 
 ipcMain.handle(IPC.ASR_LOCAL_STATUS, async (_event, startWorker: boolean) => {
@@ -3923,6 +3931,27 @@ app.whenReady().then(async () => {
     appRoot: app.getAppPath(),
     userDataRoot: app.getPath("userData"),
     appVersion: app.getVersion(),
+    switchAdapters: createElectronCharacterSwitchAdapters({
+      getActivity: () => {
+        const activity = getCharacterBoundActivitySnapshot();
+        return {
+          agentBusy: normalConversationBusyCount > 0,
+          callActive: isCallActive(),
+          asrBusy: localAsrWorker.isBusy(),
+          ttsBusy: activity.tts,
+          proactiveBusy: proactiveChatService?.isGenerating() ?? false,
+          stateWriteBusy: activity.stateWrite,
+        };
+      },
+      flushState: () => flushTokenUsage(),
+      stopCall: () => stopCall(),
+      disposeAsr: () => localAsrWorker.shutdown(),
+      stopScheduler: () => schedulerEngine?.stop(),
+      stopOpener: () => stopOpener(),
+      shutdownChannels: () => shutdownChannels(),
+      relaunch: () => app.relaunch(),
+      exit: (code) => app.exit(code),
+    }),
   });
   const characterSnapshot = await characterRuntime.initialize();
   if (characterSnapshot.status !== "ready" || !characterSnapshot.activeCharacter) {

@@ -25,6 +25,7 @@ import { normalizeUiIcon, type UiIcon } from "../../shared/ui-icon";
 import { buildAppearanceSettingsPatch } from "./appearance-settings-state";
 import { type ReasoningPreference } from "../../shared/reasoning";
 import {
+  buildCharacterSwitchConfirmation,
   renderCharacterPackages,
   type CharacterSettingsSnapshot,
 } from "./character-settings-view";
@@ -369,6 +370,19 @@ interface SettingsApi {
   importCharacter: (sourcePath: string) => Promise<
     | { ok: true; snapshot: CharacterSettingsSnapshot; package: { displayName: string } }
     | { ok: false; diagnostics: Array<{ code: string; message: string }> }
+  >;
+  switchCharacter: (characterId: string) => Promise<
+    | {
+        ok: true;
+        status: "relaunch-requested" | "already-active";
+        unavailableCapabilities: string[];
+      }
+    | {
+        ok: false;
+        status: "blocked" | "failed";
+        blockingActivities?: Array<{ kind: string; reason: string }>;
+        diagnostics: Array<{ code: string; message: string }>;
+      }
   >;
   pickUiFont: () => Promise<string | null>;
   importUiFont: (sourcePath: string) => Promise<UiFont>;
@@ -725,7 +739,7 @@ const NAV_LABELS: Record<string, { emoji: string; title: string; hint: string }>
   general: { emoji: "⚙️", title: "通用设置", hint: "管理窗口、音频和系统行为" },
   api: { emoji: "🔑", title: "API 设置", hint: "选择预设后只需要填写 API Key。" },
   cyrene: { emoji: "🌸", title: "角色行为", hint: "管理 Agent 行为、记忆、RAG 与权限" },
-  characters: { emoji: "🎭", title: "角色", hint: "安全导入并检查本地角色包" },
+  characters: { emoji: "🎭", title: "角色", hint: "导入、检查并切换本机角色包" },
   tts: { emoji: "🎙️", title: "TTS 设置", hint: "语音合成与朗读偏好" },
   asr: { emoji: "🎧", title: "ASR 设置", hint: "语音识别与通话配置" },
   tokens: { emoji: "📊", title: "Token 用量", hint: "查看 API 调用统计与消耗" },
@@ -2494,11 +2508,15 @@ async function toggleSchedulerHistory(taskId: string, card: Element): Promise<vo
   box.classList.remove("is-hidden");
 }
 
+let currentCharacterSnapshot: CharacterSettingsSnapshot | null = null;
+let characterSwitchInProgress = false;
+
 function showCharacterSnapshot(snapshot: CharacterSettingsSnapshot): void {
+  currentCharacterSnapshot = snapshot;
   const active = snapshot.activeCharacter;
   characterCurrentName.textContent = active?.displayName ?? "当前角色不可用";
   characterCurrentMeta.textContent = active
-    ? `${active.id} · 完整角色切换接入前保持不变`
+    ? `${active.id} · 重启后仍会恢复此角色`
     : "请根据下方诊断修复角色包";
   characterCount.textContent = `${snapshot.packages.length} 个`;
   characterPackageList.innerHTML = renderCharacterPackages(snapshot);
@@ -2514,6 +2532,12 @@ async function loadCharacterPackages(): Promise<void> {
   }
 }
 
+window.setInterval(() => {
+  if (!charactersPanel.classList.contains("is-hidden") && !characterSwitchInProgress) {
+    void loadCharacterPackages();
+  }
+}, 2_000);
+
 characterImportButton.addEventListener("click", async () => {
   const sourcePath = await window.settings!.pickCharacterImportFolder();
   if (!sourcePath) return;
@@ -2523,8 +2547,8 @@ characterImportButton.addEventListener("click", async () => {
   try {
     const result = await window.settings!.importCharacter(sourcePath);
     if (result.ok) {
-      showCharacterSnapshot(result.snapshot);
-      characterImportStatus.textContent = `已安全安装「${result.package.displayName}」；当前角色没有切换。`;
+      await loadCharacterPackages();
+      characterImportStatus.textContent = `已安全安装「${result.package.displayName}」，可在下方确认后切换。`;
       characterImportStatus.className = "character-import-status is-success";
     } else {
       characterImportStatus.textContent = result.diagnostics.map(({ message }) => message).join("；") || "角色包未通过检查";
@@ -2534,6 +2558,57 @@ characterImportButton.addEventListener("click", async () => {
     characterImportStatus.textContent = `导入失败：${error instanceof Error ? error.message : String(error)}`;
     characterImportStatus.className = "character-import-status is-error";
   } finally {
+    characterImportButton.disabled = false;
+  }
+});
+
+characterPackageList.addEventListener("click", async (event) => {
+  const target = event.target;
+  if (!(target instanceof Element) || characterSwitchInProgress) return;
+  const button = target.closest<HTMLButtonElement>("[data-character-switch]");
+  if (!button || button.disabled || !currentCharacterSnapshot) return;
+  const characterId = button.dataset.characterSwitch;
+  const characterPackage = currentCharacterSnapshot.packages.find(({ id }) => id === characterId);
+  if (!characterPackage) return;
+
+  const confirmation = buildCharacterSwitchConfirmation(characterPackage);
+  const confirmed = await showModal({
+    title: confirmation.title,
+    message: confirmation.message,
+    icon: "🎭",
+    confirmText: confirmation.confirmLabel,
+    cancelText: "保持当前角色",
+  });
+  if (!confirmed) return;
+
+  characterSwitchInProgress = true;
+  characterImportButton.disabled = true;
+  characterPackageList.querySelectorAll<HTMLButtonElement>("[data-character-switch]")
+    .forEach((switchButton) => { switchButton.disabled = true; });
+  characterImportStatus.textContent = `正在保存当前状态，并切换到「${characterPackage.displayName}」…`;
+  characterImportStatus.className = "character-import-status";
+
+  try {
+    const result = await window.settings!.switchCharacter(characterPackage.id);
+    if (result.ok) {
+      characterImportStatus.textContent = result.status === "already-active"
+        ? `「${characterPackage.displayName}」已经是当前角色。`
+        : `正在重启并启用「${characterPackage.displayName}」…`;
+      characterImportStatus.className = "character-import-status is-success";
+      if (result.status === "already-active") await loadCharacterPackages();
+      return;
+    }
+
+    const reasons = result.blockingActivities?.map(({ reason }) => reason) ?? [];
+    const diagnostics = result.diagnostics.map(({ message }) => message);
+    characterImportStatus.textContent = [...reasons, ...diagnostics].filter(Boolean).join("；") || "角色切换失败";
+    characterImportStatus.className = "character-import-status is-error";
+    await loadCharacterPackages();
+  } catch (error) {
+    characterImportStatus.textContent = `切换失败：${error instanceof Error ? error.message : String(error)}`;
+    characterImportStatus.className = "character-import-status is-error";
+  } finally {
+    characterSwitchInProgress = false;
     characterImportButton.disabled = false;
   }
 });

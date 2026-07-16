@@ -3,6 +3,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { trackCharacterBoundActivity } from "../character/character-bound-activity";
 
 export interface MimoSynthesizeOptions {
   apiKey: string;
@@ -39,7 +40,7 @@ function buildVoiceDataUrl(filePath: string): string {
   return `data:${guessAudioMime(filePath)};base64,${audio.toString("base64")}`;
 }
 
-export async function synthesize(opts: MimoSynthesizeOptions): Promise<MimoSynthesizeResult> {
+async function synthesizeUntracked(opts: MimoSynthesizeOptions): Promise<MimoSynthesizeResult> {
   const apiKey = opts.apiKey?.trim();
   const text = opts.text?.trim();
   const endpointUrl = opts.endpointUrl?.trim() || DEFAULT_ENDPOINT_URL;
@@ -125,4 +126,8 @@ export async function synthesize(opts: MimoSynthesizeOptions): Promise<MimoSynth
   });
 
   return { audio, format: "wav" };
+}
+
+export function synthesize(opts: MimoSynthesizeOptions): Promise<MimoSynthesizeResult> {
+  return trackCharacterBoundActivity("tts", () => synthesizeUntracked(opts));
 }

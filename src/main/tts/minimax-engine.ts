@@ -11,6 +11,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocket } from "ws";
+import { trackCharacterBoundActivity } from "../character/character-bound-activity";
 
 const BASE_URL = "https://api.minimaxi.com";
 const WS_URL = "wss://api.minimaxi.com/ws/v1/t2a_v2";
@@ -169,7 +170,7 @@ export interface SynthesizeOptions {
  * 建立 WS 连接 → task_start → task_continue(发文本) → 收 hex 音频块 → 拼接 → 返回完整 buffer。
  * 超时 30 秒。
  */
-export async function synthesize(opts: SynthesizeOptions): Promise<Buffer> {
+async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const audioChunks: Buffer[] = [];
     const requestId = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -348,4 +349,8 @@ export async function synthesize(opts: SynthesizeOptions): Promise<Buffer> {
       }
     });
   });
+}
+
+export function synthesize(opts: SynthesizeOptions): Promise<Buffer> {
+  return trackCharacterBoundActivity("tts", () => synthesizeUntracked(opts));
 }

@@ -2,6 +2,7 @@
 // 接口：官方 api_v2 (POST /api/tts)，返回 wav 字节
 // 参考：https://github.com/RVC-Boss/GPT-SoVITS
 import * as fs from "fs";
+import { trackCharacterBoundActivity } from "../character/character-bound-activity";
 
 export type GptsovitsLanguage = "auto" | "zh" | "en" | "ja";
 
@@ -32,7 +33,7 @@ const TTS_PATH = "/tts";
  *   refer_wav_path / prompt_text / text / text_language / prompt_language / speed_factor / streaming / format
  * 返回完整 wav（或 mp3）字节。
  */
-export async function synthesize(opts: GptsovitsSynthesizeOptions): Promise<GptsovitsSynthesizeResult> {
+async function synthesizeUntracked(opts: GptsovitsSynthesizeOptions): Promise<GptsovitsSynthesizeResult> {
   const format: "wav" | "mp3" = opts.format ?? "wav";
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const requestId = `gptsovits-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -125,4 +126,8 @@ export async function synthesize(opts: GptsovitsSynthesizeOptions): Promise<Gpts
   });
 
   return { audio, format };
+}
+
+export function synthesize(opts: GptsovitsSynthesizeOptions): Promise<GptsovitsSynthesizeResult> {
+  return trackCharacterBoundActivity("tts", () => synthesizeUntracked(opts));
 }

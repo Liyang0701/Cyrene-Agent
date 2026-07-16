@@ -64,6 +64,10 @@ export class LocalAsrWorkerManager {
   private lastError = "";
   private disposed = false;
 
+  isBusy(): boolean {
+    return this.pending.size > 0 || Boolean(this.readyPromise);
+  }
+
   async start(config: AsrConfig): Promise<void> {
     await this.ensureWorker(config);
   }
@@ -125,7 +129,7 @@ export class LocalAsrWorkerManager {
     return this.getStatus(config);
   }
 
-  dispose(): void {
+  async shutdown(timeoutMs = 1_500): Promise<void> {
     this.disposed = true;
     const child = this.child;
     const error = new Error("本地 ASR Worker 已关闭");
@@ -135,17 +139,36 @@ export class LocalAsrWorkerManager {
       pending.reject(error);
       this.pending.delete(id);
     }
-    if (child && !child.killed) {
-      try {
-        child.stdin.write(`${JSON.stringify({ id: randomUUID(), method: "shutdown", params: {} })}\n`);
-        // 空闲 Worker 会正常清理 MLX 资源；推理卡住时仍保证不会留下孤儿进程。
-        setTimeout(() => {
-          if (this.child === child && !child.killed) this.killWorker(error);
-        }, 1_000);
-      } catch {
-        this.killWorker(error);
+    if (!child) return;
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(killTimer);
+        clearTimeout(forceTimer);
+        child.off("exit", finish);
+        resolve();
+      };
+      child.once("exit", finish);
+      const killTimer = setTimeout(() => {
+        if (this.child === child && !child.killed) this.killWorker(error);
+      }, Math.min(1_000, timeoutMs));
+      const forceTimer = setTimeout(finish, timeoutMs);
+
+      if (!child.killed) {
+        try {
+          child.stdin.write(`${JSON.stringify({ id: randomUUID(), method: "shutdown", params: {} })}\n`);
+        } catch {
+          this.killWorker(error);
+        }
       }
-    }
+    });
+  }
+
+  dispose(): void {
+    void this.shutdown();
   }
 
   private resolvePaths(config: AsrConfig) {

@@ -244,6 +244,14 @@ Opener、随机关怀冷却、未回复计数、主动会话和主动生成 epoc
 
 新进程启动时，`CharacterRuntime.initialize()` 优先验证并绑定 pending 目标，成功后将其提交为 Active Character 并清除 previous/pending；若目标在重启前损坏或缺失，则恢复 previous 角色、保留目标健康诊断并清除半切换状态。当前 Ticket 只提供可测试的事务引擎与生命周期适配接口，真实设置页选择器、Electron `app.relaunch()` 接线和用户可见进度属于下一 Ticket。
 
+## 已落地：设置页角色切换与 Electron 受控重启（Issue #11）
+
+设置页现在显示当前角色、已安装角色、健康状态、已提供能力和切换入口。切换前的确认弹窗会明确写出目标角色、应用将自动重启，以及目标未提供的可选能力。设置页每两秒读取一次与 `CharacterRuntime.requestSwitch()` 相同的 Activity Adapter；回复生成、语音通话、ASR、TTS、主动消息生成或角色状态写入未结束时，切换按钮会禁用并显示具体原因，不会先接受操作再静默失败。
+
+主进程通过独立的 Character IPC 边界提供列表与切换请求。空闲切换会刷新当前持久状态，依次停止通话、本地 ASR Worker、计划任务调度、主动开口和外部渠道，再调用 Electron `app.relaunch()` 与 `app.exit(0)`。本地 ASR 新增可等待的 `shutdown()`，应用受控重启会等待 Worker 正常退出或强制终止，自动化测试也会等待清理完成，避免测试和正式退出留下孤儿进程。
+
+真实 Electron 验收脚本 `scripts/verify-character-electron-relaunch.cjs` 使用隔离的临时 userData，导入许可清晰的流明夹具，执行真正的 `app.relaunch()`，并在第二个 Electron 进程验证旧 PID 已退出、窗口数量未重复、pending 状态已提交且 Active Character 为 `fixture.lumen`。`scripts/verify-character-settings-visual.cjs` 使用正式构建的设置页与 preload，渲染正常态、确认弹窗和通话忙碌态截图，不读取或修改正式用户配置。
+
 ## 实施顺序
 
 1. 建立角色包 schema、校验器、Cyrene 默认包和旧路径兼容层。

@@ -1,5 +1,6 @@
 // 自定义云端 TTS 引擎
 // 固定 HTTP 合约：POST endpointUrl，返回音频二进制或 JSON base64。
+import { trackCharacterBoundActivity } from "../character/character-bound-activity";
 
 export interface CustomCloudSynthesizeOptions {
   endpointUrl: string;
@@ -35,7 +36,7 @@ function guessFormatFromContentType(contentType: string, fallback: "wav" | "mp3"
   return fallback;
 }
 
-export async function synthesize(opts: CustomCloudSynthesizeOptions): Promise<CustomCloudSynthesizeResult> {
+async function synthesizeUntracked(opts: CustomCloudSynthesizeOptions): Promise<CustomCloudSynthesizeResult> {
   const endpointUrl = opts.endpointUrl?.trim();
   const text = opts.text?.trim();
   const format = opts.format ?? "mp3";
@@ -128,4 +129,8 @@ export async function synthesize(opts: CustomCloudSynthesizeOptions): Promise<Cu
   });
 
   return { audio, format: resultFormat };
+}
+
+export function synthesize(opts: CustomCloudSynthesizeOptions): Promise<CustomCloudSynthesizeResult> {
+  return trackCharacterBoundActivity("tts", () => synthesizeUntracked(opts));
 }
