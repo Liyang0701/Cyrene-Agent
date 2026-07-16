@@ -37,8 +37,8 @@ async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void>
   throw new Error(`ASR worker ${pid} did not exit within ${timeoutMs}ms`);
 }
 
-afterEach(() => {
-  for (const manager of managers.splice(0)) manager.dispose();
+afterEach(async () => {
+  await Promise.all(managers.splice(0).map((manager) => manager.shutdown()));
 });
 
 describe.skipIf(!existsSync(`${ROOT}/model/model.safetensors`))("LocalAsrWorkerManager real integration", () => {
@@ -85,7 +85,7 @@ describe.skipIf(!existsSync(`${ROOT}/model/model.safetensors`))("LocalAsrWorkerM
     await expect(manager.transcribe(await fixture("long"), { ...config, localTimeoutMs: 1 })).rejects.toThrow(/超时/);
     const recovered = await manager.health(config);
     const pid = recovered.pid!;
-    manager.dispose();
+    await manager.shutdown();
     await expect(waitForProcessExit(pid)).resolves.toBeUndefined();
   }, 120_000);
 });

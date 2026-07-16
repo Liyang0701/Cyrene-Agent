@@ -9,6 +9,9 @@ export type CharacterCapabilityKey =
 export interface CharacterSettingsSnapshot {
   status: "ready" | "failed";
   activeCharacter: { id: string; displayName: string } | null;
+  switching?: {
+    blockingActivities: Array<{ kind: string; reason: string }>;
+  };
   packages: Array<{
     id: string;
     displayName: string;
@@ -32,6 +35,28 @@ const CAPABILITY_LABELS: Record<CharacterCapabilityKey, string> = {
   stickers: "表情包",
   openers: "主动开口",
 };
+
+export function buildCharacterSwitchConfirmation(characterPackage: {
+  id: string;
+  displayName: string;
+  capabilities: Record<CharacterCapabilityKey, "available" | "unavailable">;
+}): Readonly<{ title: string; message: string; confirmLabel: string }> {
+  const unavailableCapabilities = (Object.entries(characterPackage.capabilities) as Array<[
+    CharacterCapabilityKey,
+    "available" | "unavailable",
+  ]>)
+    .filter(([, status]) => status === "unavailable")
+    .map(([capability]) => CAPABILITY_LABELS[capability]);
+  const unavailableMessage = unavailableCapabilities.length > 0
+    ? `该角色暂不提供：${unavailableCapabilities.join("、")}。`
+    : "该角色已提供全部可选能力。";
+
+  return {
+    title: `切换到「${characterPackage.displayName}」？`,
+    message: `应用将保存当前状态并自动重启。${unavailableMessage}`,
+    confirmLabel: "切换并重启",
+  };
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -59,6 +84,11 @@ export function renderCharacterPackages(snapshot: CharacterSettingsSnapshot): st
       .map(([capability]) => `<span class="character-capability">${CAPABILITY_LABELS[capability]}</span>`)
       .join("");
     const diagnostic = characterPackage.health.diagnostics[0]?.message;
+    const blockingReason = snapshot.switching?.blockingActivities.map(({ reason }) => reason).join("；") ?? "";
+    const switchDisabled = Boolean(blockingReason);
+    const switchAction = !isActive && isHealthy
+      ? `<button type="button" class="character-switch-btn" data-character-switch="${escapeHtml(characterPackage.id)}"${switchDisabled ? " disabled" : ""} aria-label="切换到${escapeHtml(characterPackage.displayName)}">${switchDisabled ? "暂不可切换" : `切换到${escapeHtml(characterPackage.displayName)}`}</button>`
+      : "";
 
     return `
       <article class="character-package-row">
@@ -77,6 +107,8 @@ export function renderCharacterPackages(snapshot: CharacterSettingsSnapshot): st
           <span class="character-badge">${characterPackage.source === "builtin" ? "内置只读" : "本地安装"}</span>
           ${characterPackage.distributionStatus === "local-only" ? '<span class="character-badge character-badge--warning">仅限本机</span>' : ""}
           <span class="character-badge ${isHealthy ? "character-badge--healthy" : "character-badge--unhealthy"}">${isHealthy ? "状态正常" : "需要修复"}</span>
+          ${switchAction}
+          ${switchDisabled && switchAction ? `<span class="character-switch-reason">${escapeHtml(blockingReason)}</span>` : ""}
         </div>
       </article>
     `;

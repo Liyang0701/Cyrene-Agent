@@ -1194,6 +1194,10 @@ export class CharacterRuntime {
     return this.snapshot;
   }
 
+  getBlockingActivities(): readonly CharacterBlockingActivity[] {
+    return deepFreeze([...this.switchAdapters.getBlockingActivities()]);
+  }
+
   async requestSwitch(targetCharacterId: string): Promise<CharacterSwitchResult> {
     const snapshot = await this.initialize();
     const currentCharacterId = snapshot.activeCharacter?.id;

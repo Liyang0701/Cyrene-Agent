@@ -12,9 +12,10 @@ describe("character settings markup", () => {
     expect(html).toContain('id="character-package-list"');
   });
 
-  it("states that switching remains unavailable instead of exposing a partial control", () => {
+  it("explains controlled restart and busy-state protection before switching", () => {
     const panel = html.match(/<section[^>]+id="characters-panel"[\s\S]*?<\/section>/)?.[0] ?? "";
-    expect(panel).toContain("角色切换入口将在对话、语音、Live2D 与独立状态全部接入后开放");
-    expect(panel).not.toContain("切换角色</button>");
+    expect(panel).toContain("切换会保存状态并自动重启");
+    expect(panel).toContain("通话、识别、语音合成或回复生成期间会暂时禁止切换");
+    expect(panel).toContain("对话、语音、Live2D 和角色状态会统一使用新角色");
   });
 });

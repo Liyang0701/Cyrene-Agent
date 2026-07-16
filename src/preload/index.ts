@@ -229,6 +229,7 @@ const settingsApi = {
   listCharacters: () => ipcRenderer.invoke(IPC.CHARACTER_LIST),
   pickCharacterImportFolder: () => ipcRenderer.invoke(IPC.CHARACTER_PICK_IMPORT_FOLDER) as Promise<string | null>,
   importCharacter: (sourcePath: string) => ipcRenderer.invoke(IPC.CHARACTER_IMPORT, sourcePath),
+  switchCharacter: (characterId: string) => ipcRenderer.invoke(IPC.CHARACTER_SWITCH, characterId),
   pickUiFont: () => ipcRenderer.invoke(IPC.SETTINGS_PICK_UI_FONT) as Promise<string | null>,
   importUiFont: (sourcePath: string) => ipcRenderer.invoke(IPC.SETTINGS_IMPORT_UI_FONT, sourcePath) as Promise<UiFont>,
   resetUiFont: () => ipcRenderer.invoke(IPC.SETTINGS_RESET_UI_FONT) as Promise<UiFont>,

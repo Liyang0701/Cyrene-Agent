@@ -64,6 +64,7 @@ export const IPC = {
   CHARACTER_ACTIVE_GET: "character:active-get",
   CHARACTER_PICK_IMPORT_FOLDER: "character:pick-import-folder",
   CHARACTER_IMPORT: "character:import",
+  CHARACTER_SWITCH: "character:switch",
   UI_THEME_GET: "ui-theme:get",
   UI_THEME_CHANGED: "ui-theme:changed",
   UI_FONT_GET: "ui-font:get",

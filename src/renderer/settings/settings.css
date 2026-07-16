@@ -3422,6 +3422,45 @@ body {
   gap: 6px;
 }
 
+.character-package-row__badges {
+  justify-content: flex-end;
+  max-width: 290px;
+}
+
+.character-switch-btn {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(244, 114, 182, 0.52);
+  border-radius: 9px;
+  background: rgba(244, 114, 182, 0.14);
+  color: var(--rb-text-strong);
+  font: var(--rb-text-small-em);
+  cursor: pointer;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out;
+}
+
+.character-switch-btn:hover:not(:disabled) {
+  border-color: rgba(244, 114, 182, 0.84);
+  background: rgba(244, 114, 182, 0.22);
+}
+
+.character-switch-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.character-switch-btn:focus-visible {
+  outline: 2px solid rgba(244, 114, 182, 0.9);
+  outline-offset: 3px;
+}
+
+.character-switch-reason {
+  flex-basis: 100%;
+  color: #fecdd3;
+  font: var(--rb-text-micro);
+  text-align: right;
+}
+
 .character-package-row__title strong {
   color: var(--rb-text-strong);
   font: var(--rb-text-small-em);
@@ -3469,4 +3508,25 @@ body {
 .character-import-btn:focus-visible {
   outline: 2px solid rgba(244, 114, 182, 0.9);
   outline-offset: 3px;
+}
+
+@media (max-width: 760px) {
+  .character-package-row {
+    flex-direction: column;
+  }
+
+  .character-package-row__badges {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .character-switch-reason {
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .character-switch-btn {
+    transition: none;
+  }
 }
