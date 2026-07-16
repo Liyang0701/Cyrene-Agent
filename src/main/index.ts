@@ -4995,6 +4995,9 @@ app.whenReady().then(async () => {
     },
     stickerEmbeddingIndex: stickerEmbeddingIndex as unknown,
     getStickerEmbeddingIndex: () => stickerEmbeddingIndex as unknown,
+    canUseActiveCharacterStickers: () => (
+      getActiveCharacter().capabilities.stickers.status === "available"
+    ),
     getEmbeddingProvider: () => getEmbeddingProvider() as unknown,
     matchSticker: (async (text, provider, index, threshold) =>
       matchSticker(text, provider as any, index as any, threshold) as Promise<{ id: string } | null | undefined>) as OnRunFinishedDeps["matchSticker"],
