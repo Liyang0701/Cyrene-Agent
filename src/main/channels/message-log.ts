@@ -11,6 +11,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
+import { getActiveCharacterState } from "../character/character-state";
 
 const LOG = "[ChannelLog]";
 
@@ -34,7 +35,8 @@ const MAX_INMEM = 200;
 const inMemory: LogEntry[] = [];
 
 function filePath(): string {
-  return path.join(app.getPath("userData"), "channels", "log.jsonl");
+  return getActiveCharacterState()?.channelLogFile
+    ?? path.join(app.getPath("userData"), "channels", "log.jsonl");
 }
 
 function ensureDir(): void {
