@@ -2,7 +2,7 @@
 
 > 本文前半部分记录最初使用 Qwen3-4B 建立的复现基线。当前环境已升级为 Qwen3.5-9B，并加入 Qwen3-ASR、本地 Reranker、PDF 中文字体和微信语音适配；当前说明见 `docs/macos-local-adaptation.md`。
 
-更新时间：2026-07-15（Asia/Shanghai）
+更新时间：2026-07-16（Asia/Shanghai）
 
 ## 当前目标
 
@@ -200,9 +200,17 @@ characters/
 
 文本链路现在通过一个应用级 Active Character 上下文组装，桌面聊天、微信渠道、主动聊天和通话不再分别读取固定的 `prompts/identity.md`、`soul.md` 或 `prompts/worldbook/`。角色包 v1 的 `content` 可声明 `examples`、`canonQuotes`、`stylesDirectory`、`scenesDirectory`、`phoneIdentity` 和 `phoneStyle`；世界书继续通过显式 `capabilities.worldbook.directory` 声明。所有路径在角色运行时内验证并解析，不能越过角色包根目录。
 
-`prompts/application_policy.md` 与聊天/通话回复规则归 Cyrene Agent 应用所有，先于被标记为不可信数据的角色内容进入 system prompt。角色包不能声明或覆盖应用策略、工具协议、权限、确认流程和安全规则。桌面聊天、状态面板和通话窗口通过只读 IPC 获取活动角色名与头像；头像只由 `local-character://active/avatar` 暴露，并校验请求中的 Character ID。任务与设置窗口继续显示 Product Brand“Cyrene Agent”。
+`prompts/application_policy.md` 与聊天/通话回复规则归 Cyrene Agent 应用所有，先于被标记为不可信数据的角色内容进入 system prompt。角色包不能声明或覆盖应用策略、工具协议、权限、确认流程和安全规则。桌面聊天、状态面板和通话窗口通过只读 IPC 获取活动角色名与头像；头像只由 `local-character://<Character ID>/avatar` 暴露，并校验请求中的 Character ID。任务与设置窗口继续显示 Product Brand“Cyrene Agent”。
 
 许可清晰的 `test-fixtures/characters/lumen` 已补齐独立人格、风格、示例、通话人格、场景和世界书，用于与内置昔涟执行防串角测试。角色选择、持久化和受控重启属于后续切换事务 Issue，不在本层偷偷引入第二套活动角色状态。
+
+## 已落地：角色视觉与 Semantic Actions（Issue #6）
+
+`CharacterVisualContext` 是活动角色视觉的统一边界：它只向调用方暴露当前角色的展示方式、可用 Semantic Actions 和动作解析结果。LLM 与工具只使用 `neutral`、`wink`、`smile` 等稳定语义 ID；每个角色包通过 `capabilities.semanticActions.mapping` 把支持的语义映射到自己模型内已验证的 motion 或 expression。未声明 Live2D 或未映射动作时返回带原因的 no-op，不会尝试昔涟的动作名或上一角色的资源。
+
+角色运行时会解析 `.model3.json` 的内部引用，拒绝越过角色包、缺失资源、损坏模型和指向不存在模型目标的动作映射。`local-character://<Character ID>/live2d/<包内路径>` 只服务当前角色的模型文件及模型实际声明的资源；角色 Prompt 等其他包内文件即使构造 URL 也会被拒绝。
+
+渲染器根据 Active Character 身份选择 Live2D canvas 或静态头像。文本型角色会先清空旧模型表面，再显示自己的头像；完整 Live2D 角色加载自己的模型 URL。内置昔涟已补充独立的 Semantic Action 映射，真实 Electron 验收确认 model3、moc、纹理和动作可通过自定义协议加载，未授权包内路径返回 403。角色选择与受控重启仍由后续 Character Switch Transaction Issue 实现。
 
 ## 实施顺序
 

@@ -408,8 +408,8 @@ const live2dSpeechApi = {
 contextBridge.exposeInMainWorld("live2dSpeech", live2dSpeechApi);
 
 const live2dActionApi = {
-  onPlayAction: (callback: (payload: import("../shared/live2d-actions").Live2DTarget) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: import("../shared/live2d-actions").Live2DTarget) => callback(payload);
+  onPlayAction: (callback: (payload: import("../shared/semantic-actions").Live2DTarget) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: import("../shared/semantic-actions").Live2DTarget) => callback(payload);
     ipcRenderer.on(IPC.LIVE2D_PLAY_ACTION, listener);
     return () => ipcRenderer.removeListener(IPC.LIVE2D_PLAY_ACTION, listener);
   },

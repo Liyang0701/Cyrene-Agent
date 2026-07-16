@@ -6,6 +6,7 @@ import {
   resolveCharacterStateLayout,
   type CharacterStateLayout,
 } from "./character-state";
+import { readSemanticActionMapping } from "./character-visual";
 
 export const CHARACTER_PACKAGE_SCHEMA_VERSION = 1 as const;
 export const BUILT_IN_CYRENE_ID = "cyrene" as const;
@@ -274,11 +275,11 @@ function isPathInside(rootPath: string, candidatePath: string): boolean {
     && !path.isAbsolute(relativePath);
 }
 
-const LIVE2D_RESOURCE_KEYS = new Set([
+export const LIVE2D_RESOURCE_KEYS = new Set([
   "Moc", "Textures", "Physics", "Pose", "UserData", "DisplayInfo", "File", "Sound",
 ]);
 
-function collectLive2dResourcePaths(
+export function collectLive2dResourcePaths(
   value: unknown,
   result: string[] = [],
   parentKey?: string,
@@ -564,6 +565,54 @@ function evaluatePackage(
           resourcePath: modelPath,
         });
       }
+    }
+  }
+
+  const semanticMapping = rawCapabilities && isRecord(rawCapabilities.semanticActions)
+    ? rawCapabilities.semanticActions.mapping
+    : undefined;
+  if (isNonEmptyString(semanticMapping)) {
+    const mappingPath = path.resolve(source.rootPath, semanticMapping);
+    const modelPath = isNonEmptyString(live2dModel)
+      ? path.resolve(source.rootPath, live2dModel)
+      : "";
+    try {
+      if (!modelPath) throw new Error("声明 Semantic Actions 前必须声明 Live2D 模型");
+      if (!fs.existsSync(mappingPath) || !fs.statSync(mappingPath).isFile()) {
+        throw new Error("Semantic Actions 映射文件不存在");
+      }
+      const mapping = readSemanticActionMapping(mappingPath);
+      const model = JSON.parse(fs.readFileSync(modelPath, "utf8")) as Record<string, unknown>;
+      const fileReferences = isRecord(model.FileReferences) ? model.FileReferences : {};
+      const rawMotions = isRecord(fileReferences.Motions) ? fileReferences.Motions : {};
+      const motionKeys = new Set<string>();
+      for (const [group, entries] of Object.entries(rawMotions)) {
+        if (!Array.isArray(entries)) continue;
+        for (const entry of entries) {
+          if (isRecord(entry) && isNonEmptyString(entry.Name)) motionKeys.add(`${group}\0${entry.Name}`);
+        }
+      }
+      const expressionNames = new Set<string>();
+      if (Array.isArray(fileReferences.Expressions)) {
+        for (const entry of fileReferences.Expressions) {
+          if (isRecord(entry) && isNonEmptyString(entry.Name)) expressionNames.add(entry.Name);
+        }
+      }
+      for (const [actionId, target] of Object.entries(mapping.actions)) {
+        const exists = target.kind === "motion"
+          ? motionKeys.has(`${target.group}\0${target.motionName}`)
+          : expressionNames.has(target.name);
+        if (!exists) throw new Error(`Semantic Action ${actionId} 指向模型中不存在的目标`);
+      }
+    } catch (error) {
+      diagnostics.push({
+        code: "character.semantic_actions.invalid",
+        message: `Semantic Actions 映射无效：${error instanceof Error ? error.message : String(error)}`,
+        characterId: source.manifest.id,
+        capability: "semanticActions",
+        field: "capabilities.semanticActions.mapping",
+        resourcePath: mappingPath,
+      });
     }
   }
 
@@ -1091,6 +1140,7 @@ export function createDefaultCharacterRuntime(
     capabilities: {
       worldbook: { directory: "prompts/worldbook" },
       live2d: { model: "assets/models/cyrene/Cyrene.model3.json" },
+      semanticActions: { mapping: "assets/models/cyrene/semantic-actions.json" },
     },
   };
   return createCharacterRuntime({

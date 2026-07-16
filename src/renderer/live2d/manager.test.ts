@@ -148,7 +148,7 @@ describe("Live2DManager.playAction", () => {
     expect(motionMock).toHaveBeenLastCalledWith("动作#6", 3);
   });
 
-  it("falls back to expression() when motionName is not in the group", async () => {
+  it("does not borrow an expression when a mapped motion is missing", async () => {
     const { Live2DManager } = await import("./manager");
     const mgr = new Live2DManager({ canvas: fakeCanvas, width: 100, height: 100, modelPath: "/x" });
     const motionMock = vi.fn(async () => false);
@@ -164,7 +164,8 @@ describe("Live2DManager.playAction", () => {
     };
 
     await mgr.playAction({ kind: "motion", group: "动作#6", motionName: "Wink~" });
-    expect(expressionMock).toHaveBeenCalledWith("Wink~");
+    expect(motionMock).not.toHaveBeenCalled();
+    expect(expressionMock).not.toHaveBeenCalled();
   });
 
   it("swallows model errors and logs a warning", async () => {

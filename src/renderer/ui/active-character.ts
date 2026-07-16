@@ -2,6 +2,9 @@ export interface ActiveCharacterIdentity {
   id: string;
   displayName: string;
   avatarUrl: string;
+  visual:
+    | { kind: "live2d"; characterId: string; modelUrl: string; neutralTarget?: import("../../shared/semantic-actions").Live2DTarget }
+    | { kind: "static"; characterId: string; avatarUrl: string };
 }
 
 export type CharacterSurface = "chat" | "call" | "status";

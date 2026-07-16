@@ -19,6 +19,47 @@ const TEST_PACKAGE_METADATA = {
 } as const;
 
 describe("CharacterRuntime", () => {
+  function createVisualPackage(options: Readonly<{
+    id: string;
+    mappingTarget?: Record<string, string>;
+    declareLive2d?: boolean;
+  }>): Readonly<{ root: string; manifest: CharacterPackageManifest }> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "character-visual-package-"));
+    fs.mkdirSync(path.join(root, "content"), { recursive: true });
+    fs.mkdirSync(path.join(root, "live2d"), { recursive: true });
+    fs.writeFileSync(path.join(root, "content", "identity.md"), "# Identity\n");
+    fs.writeFileSync(path.join(root, "content", "soul.md"), "# Soul\n");
+    fs.writeFileSync(path.join(root, "avatar.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+    fs.writeFileSync(path.join(root, "live2d", "model.moc3"), "fixture");
+    fs.writeFileSync(path.join(root, "live2d", "wink.motion3.json"), "{}");
+    fs.writeFileSync(path.join(root, "live2d", "model.model3.json"), JSON.stringify({
+      FileReferences: {
+        Moc: "model.moc3",
+        Motions: { Face: [{ Name: "wink", File: "wink.motion3.json" }] },
+      },
+    }));
+    fs.writeFileSync(path.join(root, "live2d", "semantic-actions.json"), JSON.stringify({
+      schemaVersion: 1,
+      actions: { wink: options.mappingTarget ?? { kind: "motion", group: "Face", motionName: "wink" } },
+    }));
+    return {
+      root,
+      manifest: {
+        ...TEST_PACKAGE_METADATA,
+        schemaVersion: 1,
+        id: options.id,
+        version: "1.0.0",
+        displayName: "视觉测试角色",
+        distributionStatus: "redistributable",
+        content: { identity: "content/identity.md", soul: "content/soul.md", avatar: "avatar.svg" },
+        capabilities: {
+          ...(options.declareLive2d === false ? {} : { live2d: { model: "live2d/model.model3.json" } }),
+          semanticActions: { mapping: "live2d/semantic-actions.json" },
+        },
+      },
+    };
+  }
+
   it("keeps the built-in character usable with a precise diagnostic when state migration needs recovery", async () => {
     const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-incomplete-state-"));
     const incompleteRoot = path.join(userDataRoot, "characters", "cyrene");
@@ -70,7 +111,10 @@ describe("CharacterRuntime", () => {
             status: "available",
             modelPath: path.join(appRoot, "assets", "models", "cyrene", "Cyrene.model3.json"),
           },
-          semanticActions: { status: "unavailable" },
+          semanticActions: {
+            status: "available",
+            filePath: path.join(appRoot, "assets", "models", "cyrene", "semantic-actions.json"),
+          },
           voice: { status: "unavailable" },
           stickers: { status: "unavailable" },
           openers: { status: "unavailable" },
@@ -174,6 +218,51 @@ describe("CharacterRuntime", () => {
         capability: "worldbook",
         field: "capabilities.worldbook.directory",
         resourcePath: path.join(packageRoot, "worldbook"),
+      }],
+    });
+  });
+
+  it("marks a package unhealthy when a Semantic Action points to a missing model target", async () => {
+    const fixture = createVisualPackage({
+      id: "fixture.invalid-semantic-target",
+      mappingTarget: { kind: "motion", group: "Face", motionName: "borrowed-wink" },
+    });
+    const runtime = createCharacterRuntime({
+      userDataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-")),
+      activeCharacterId: fixture.manifest.id,
+      packages: [{ source: "builtin", rootPath: fixture.root, manifest: fixture.manifest }],
+    });
+
+    const snapshot = await runtime.initialize();
+
+    expect(snapshot).toMatchObject({
+      status: "failed",
+      activeCharacter: null,
+      diagnostics: [{
+        code: "character.semantic_actions.invalid",
+        characterId: fixture.manifest.id,
+        capability: "semanticActions",
+      }],
+    });
+  });
+
+  it("marks a package unhealthy when Semantic Actions are declared without Live2D", async () => {
+    const fixture = createVisualPackage({ id: "fixture.semantic-without-live2d", declareLive2d: false });
+    const runtime = createCharacterRuntime({
+      userDataRoot: fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-")),
+      activeCharacterId: fixture.manifest.id,
+      packages: [{ source: "builtin", rootPath: fixture.root, manifest: fixture.manifest }],
+    });
+
+    const snapshot = await runtime.initialize();
+
+    expect(snapshot).toMatchObject({
+      status: "failed",
+      activeCharacter: null,
+      diagnostics: [{
+        code: "character.semantic_actions.invalid",
+        characterId: fixture.manifest.id,
+        capability: "semanticActions",
       }],
     });
   });

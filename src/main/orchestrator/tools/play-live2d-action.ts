@@ -6,18 +6,21 @@
 // the renderer never sees the raw alias, so it can never play something the
 // catalog did not sanction.
 
-import { LIVE2D_ACTIONS, findAction, type Live2DTarget } from "../../../shared/live2d-actions";
+import { SEMANTIC_ACTIONS, type Live2DTarget } from "../../../shared/semantic-actions";
+import type { CharacterVisualContext } from "../../character/character-visual";
 import { IPC } from "../../../shared/ipc-channels";
 import type { ToolDefinition } from "../tool-registry";
 
 export type PlayLive2DActionDeps = {
   /** Injected so we can unit-test without a real BrowserWindow. */
   sendToLive2DWindow: (channel: string, payload?: unknown) => void;
+  getVisualContext: () => CharacterVisualContext;
 };
 
 export type PlayLive2DActionResult =
   | { ok: true }
   | { ok: false; error: "unknown_action"; available: string[] }
+  | { ok: false; error: "action_unavailable"; reason: "live2d_unavailable" | "action_unavailable"; available: readonly string[] }
   | { ok: false; error: "ipc_failed" };
 
 /** Serialize a structured result to the JSON string the tool contract requires. */
@@ -39,19 +42,27 @@ export function createPlayLive2DActionHandler(deps: PlayLive2DActionDeps) {
       return toJsonResult({
         ok: false,
         error: "unknown_action",
-        available: LIVE2D_ACTIONS.map((a) => a.alias),
+        available: SEMANTIC_ACTIONS.map((a) => a.alias),
       });
     }
-    const action = findAction(raw);
-    if (!action) {
+    const resolution = deps.getVisualContext().resolveAction(raw);
+    if (resolution.kind === "noop") {
+      if (resolution.reason !== "unknown_action") {
+        return toJsonResult({
+          ok: false,
+          error: "action_unavailable",
+          reason: resolution.reason,
+          available: resolution.available,
+        });
+      }
       return toJsonResult({
         ok: false,
         error: "unknown_action",
-        available: LIVE2D_ACTIONS.map((a) => a.alias),
+        available: [...resolution.available],
       });
     }
     try {
-      deps.sendToLive2DWindow(IPC.LIVE2D_PLAY_ACTION, action.target satisfies Live2DTarget);
+      deps.sendToLive2DWindow(IPC.LIVE2D_PLAY_ACTION, resolution.target satisfies Live2DTarget);
       return toJsonResult({ ok: true });
     } catch (err) {
       console.warn("[play-live2d-action] IPC failed:", err);
@@ -62,9 +73,9 @@ export function createPlayLive2DActionHandler(deps: PlayLive2DActionDeps) {
 
 /** Build the description string from the catalog so adding an alias needs no prompt edits. */
 function buildDescription(): string {
-  const lines = LIVE2D_ACTIONS.map((a) => `- ${a.alias}（${a.description}）`).join("\n");
+  const lines = SEMANTIC_ACTIONS.map((a) => `- ${a.alias}（${a.description}）`).join("\n");
   return [
-    "让 Cyrene 在 Live2D 模型上做一个动作（表情或肢体动作）。",
+    "让当前活动角色在自己的 Live2D 模型上做一个语义动作（表情或肢体动作）。",
     "当用户让她做一个屏幕上可以做的动作时调用此工具。",
     "",
     "可选动作列表：",
@@ -87,7 +98,7 @@ export function createPlayLive2DActionTool(deps: PlayLive2DActionDeps): ToolDefi
       properties: {
         name: {
           type: "string",
-          description: "动作的中文别名，例如「眨眨眼」「戴墨镜」「笑一笑」",
+          description: "稳定语义动作的中文别名，例如「眨眨眼」「戴墨镜」「笑一笑」",
         },
       },
       required: ["name"],

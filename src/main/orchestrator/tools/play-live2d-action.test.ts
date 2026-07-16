@@ -1,11 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
-import { LIVE2D_ACTIONS, findAction } from "../../../shared/live2d-actions";
+import { SEMANTIC_ACTIONS, findSemanticAction } from "../../../shared/semantic-actions";
+import type { CharacterVisualContext } from "../../character/character-visual";
 import { IPC } from "../../../shared/ipc-channels";
-import { createPlayLive2DActionHandler } from "./play-live2d-action";
+import { createPlayLive2DActionHandler, type PlayLive2DActionDeps } from "./play-live2d-action";
 
-function makeDeps() {
+type SendMock = ReturnType<typeof vi.fn<(channel: string, payload?: unknown) => void>>;
+
+function makeDeps(): Omit<PlayLive2DActionDeps, "sendToLive2DWindow"> & { sendToLive2DWindow: SendMock } {
+  const available = SEMANTIC_ACTIONS.map((action) => action.alias);
   return {
-    sendToLive2DWindow: vi.fn(),
+    sendToLive2DWindow: vi.fn<(channel: string, payload?: unknown) => void>(),
+    getVisualContext: (): CharacterVisualContext => ({
+      presentation: { kind: "live2d", characterId: "fixture", modelUrl: "local-character://fixture/live2d/model.json" },
+      availableActions: available,
+      resolveAction: (input: string) => {
+        const action = findSemanticAction(input);
+        if (!action) return { kind: "noop", reason: "unknown_action", available } as const;
+        if (action.id === "wink") {
+          return { kind: "play", actionId: action.id, target: { kind: "motion", group: "动作#6", motionName: "Wink~" } } as const;
+        }
+        return { kind: "play", actionId: action.id, target: { kind: "expression", name: action.id } } as const;
+      },
+    }),
   };
 }
 
@@ -34,7 +50,7 @@ describe("play-live2d-action handler", () => {
     expect(JSON.parse(result)).toMatchObject({ ok: true });
     expect(deps.sendToLive2DWindow.mock.calls[0][1]).toEqual({
       kind: "expression",
-      name: "墨镜",
+      name: "cool",
     });
   });
 
@@ -45,7 +61,7 @@ describe("play-live2d-action handler", () => {
 
     expect(JSON.parse(result)).toMatchObject({ ok: false, error: "unknown_action" });
     expect(Array.isArray((JSON.parse(result) as { available: string[] }).available)).toBe(true);
-    expect((JSON.parse(result) as { available: string[] }).available.length).toBe(LIVE2D_ACTIONS.length);
+    expect((JSON.parse(result) as { available: string[] }).available.length).toBe(SEMANTIC_ACTIONS.length);
     expect(deps.sendToLive2DWindow).not.toHaveBeenCalled();
   });
 
@@ -59,8 +75,32 @@ describe("play-live2d-action handler", () => {
     expect(deps.sendToLive2DWindow).not.toHaveBeenCalled();
   });
 
+  it("returns a diagnostic no-op and sends no IPC when the active character lacks the action", async () => {
+    const deps = makeDeps();
+    deps.getVisualContext = () => ({
+      presentation: { kind: "static", characterId: "fixture.lumen", avatarUrl: "local-character://fixture.lumen/avatar" },
+      availableActions: [],
+      resolveAction: () => ({
+        kind: "noop",
+        actionId: "wink",
+        reason: "live2d_unavailable",
+        available: [],
+      }),
+    });
+    const handler = createPlayLive2DActionHandler(deps);
+
+    expect(JSON.parse(await handler({ name: "眨眨眼" }, undefined))).toEqual({
+      ok: false,
+      error: "action_unavailable",
+      reason: "live2d_unavailable",
+      available: [],
+    });
+    expect(deps.sendToLive2DWindow).not.toHaveBeenCalled();
+  });
+
   it("swallows IPC failures and returns ipc_failed", async () => {
-    const deps = { sendToLive2DWindow: vi.fn(() => { throw new Error("ipc boom"); }) };
+    const deps = makeDeps();
+    deps.sendToLive2DWindow.mockImplementation(() => { throw new Error("ipc boom"); });
     const handler = createPlayLive2DActionHandler(deps);
     const result = await handler({ name: "笑一笑" }, undefined);
 
@@ -71,14 +111,14 @@ describe("play-live2d-action handler", () => {
     const deps = makeDeps();
     const handler = createPlayLive2DActionHandler(deps);
     const result = JSON.parse(await handler({ name: "挥手" }, undefined)) as { available: string[] };
-    for (const a of LIVE2D_ACTIONS) {
+    for (const a of SEMANTIC_ACTIONS) {
       expect(result.available).toContain(a.alias);
     }
   });
 
-  it("findAction is consistent with catalog (sanity)", () => {
-    for (const a of LIVE2D_ACTIONS) {
-      expect(findAction(a.alias)?.alias).toBe(a.alias);
+  it("findSemanticAction is consistent with catalog (sanity)", () => {
+    for (const a of SEMANTIC_ACTIONS) {
+      expect(findSemanticAction(a.alias)?.alias).toBe(a.alias);
     }
   });
 });

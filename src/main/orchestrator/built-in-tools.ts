@@ -6,6 +6,7 @@ import { toolRegistry } from "./tool-registry";
 import { addMcpServer } from "./mcp-manager";
 import { sendToLive2DWindow } from "../index";
 import { createPlayLive2DActionTool } from "./tools/play-live2d-action";
+import { getActiveCharacterVisual } from "../character/active-character";
 
 const LOG_PREFIX = "[BuiltinTools]";
 
@@ -1088,4 +1089,7 @@ toolRegistry.register({
   },
 });
 
-toolRegistry.register(createPlayLive2DActionTool({ sendToLive2DWindow }));
+toolRegistry.register(createPlayLive2DActionTool({
+  sendToLive2DWindow,
+  getVisualContext: getActiveCharacterVisual,
+}));

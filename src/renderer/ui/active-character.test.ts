@@ -6,7 +6,12 @@ describe("active character UI identity", () => {
     const text = buildActiveCharacterUiText({
       id: "fixture.lumen",
       displayName: "流明",
-      avatarUrl: "local-character://active/avatar?character=fixture.lumen",
+      avatarUrl: "local-character://fixture.lumen/avatar",
+      visual: {
+        kind: "static",
+        characterId: "fixture.lumen",
+        avatarUrl: "local-character://fixture.lumen/avatar",
+      },
     }, "chat");
 
     expect(text.windowTitle).toBe("流明 · 聊天");
