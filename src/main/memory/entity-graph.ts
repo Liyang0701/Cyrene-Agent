@@ -9,6 +9,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
 import { registerJiebaCustomWord, registerJiebaCustomWords } from "../rag/retriever";
+import { getActiveCharacterState } from "../character/character-state";
 
 // ── 类型 ──
 
@@ -100,8 +101,8 @@ export function extractEntitiesFromText(text: string): Array<{ type: EntityNode[
 
 // ── 实体图谱管理器 ──
 
-const dataDir = () => path.join(app.getPath("userData"));
-const getPath = () => path.join(dataDir(), "entity-graph.json");
+const getPath = () => getActiveCharacterState()?.entityGraphFile
+  ?? path.join(app.getPath("userData"), "entity-graph.json");
 
 class EntityGraph {
   private cache: EntityGraphData | null = null;

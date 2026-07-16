@@ -146,6 +146,7 @@ import { runProactiveModel } from "./proactive/proactive-model";
 import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/proactive-types";
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
+import { configureActiveCharacterState, getActiveCharacterState } from "./character/character-state";
 
 let characterRuntime: CharacterRuntime | null = null;
 
@@ -159,7 +160,14 @@ async function reconcileUserMemoryIndex(): Promise<void> {
   const report = await reconcileMemoryRag({
     getMemories: () => memoryStore.getAllL2(),
     getVectors: () => getEntriesBySource("user_memory"),
-    backup: async () => backupMemoryRagFiles(app.getPath("userData")),
+    backup: async () => {
+      const state = getActiveCharacterState();
+      backupMemoryRagFiles(app.getPath("userData"), Date.now(), 3, state ? {
+        memoryFile: state.memoryFile,
+        vectorFile: path.join(state.ragRoot, "memory-store.json"),
+        backupDir: path.join(path.dirname(state.memoryFile), "reconcile-backups"),
+      } : undefined);
+    },
     addVector: addL2MemoryVector,
     markSynced: (l2Id, ragId) => memoryStore.markL2SyncStatus(l2Id, "synced", ragId),
     markSyncFailed: (l2Id, error) => memoryStore.markL2SyncStatus(l2Id, "sync_failed", undefined, error),
@@ -253,7 +261,8 @@ function appendMimoTtsLog(entry: Record<string, unknown>): void {
 }
 
 function getTtsCacheDir(): string {
-  return path.join(app.getPath("userData"), "cyrene-tts-cache");
+  return getActiveCharacterState()?.ttsCacheRoot
+    ?? path.join(app.getPath("userData"), "cyrene-tts-cache");
 }
 
 function assertTtsCacheKey(cacheKey: string): string {
@@ -810,7 +819,10 @@ function getAvatarPath(): string {
 }
 
 function getRagStorePath(): string {
-  return path.join(app.getPath("userData"), "rag-data", "memory-store.json");
+  return path.join(
+    getActiveCharacterState()?.ragRoot ?? path.join(app.getPath("userData"), "rag-data"),
+    "memory-store.json",
+  );
 }
 
 const DEFAULT_USER_PROFILE: UserProfile = {
@@ -3891,6 +3903,14 @@ app.whenReady().then(async () => {
   console.log(
     `[CharacterRuntime] Active Character ready: ${characterSnapshot.activeCharacter.displayName} (${characterSnapshot.activeCharacter.id})`,
   );
+  const stateMigrationFailed = characterSnapshot.diagnostics.some(({ code }) => (
+    code.startsWith("character.state_migration.")
+  ));
+  if (stateMigrationFailed) {
+    console.warn("[CharacterRuntime] 状态迁移失败，本次启动继续使用昔涟旧状态路径", characterSnapshot.diagnostics);
+  } else {
+    configureActiveCharacterState(characterSnapshot.activeCharacter.state);
+  }
 
   // 注册 local-sticker:// 协议处理器：将请求映射到 userData/stickers/ 下的文件
   protocol.handle("local-sticker", (request) => {

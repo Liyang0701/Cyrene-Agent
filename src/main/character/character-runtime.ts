@@ -1,6 +1,11 @@
 import fs from "fs";
 import path from "path";
 import { createHash, randomUUID } from "crypto";
+import {
+  migrateLegacyCyreneState,
+  resolveCharacterStateLayout,
+  type CharacterStateLayout,
+} from "./character-state";
 
 export const CHARACTER_PACKAGE_SCHEMA_VERSION = 1 as const;
 export const BUILT_IN_CYRENE_ID = "cyrene" as const;
@@ -73,6 +78,7 @@ export type ActiveCharacterContext = Readonly<{
     avatarPath: string;
   }>;
   stateRoot: string;
+  state: CharacterStateLayout;
   capabilities: Readonly<{
     worldbook: WorldbookCapability | UnavailableCapability;
     live2d: Live2dCapability | UnavailableCapability;
@@ -530,6 +536,7 @@ function buildActiveContext(
   const { source } = evaluated;
   const { manifest } = source;
   const capabilities = manifest.capabilities;
+  const state = resolveCharacterStateLayout(userDataRoot, manifest.id);
   return {
     id: manifest.id,
     displayName: manifest.displayName,
@@ -543,7 +550,8 @@ function buildActiveContext(
       soulPath: path.resolve(source.rootPath, manifest.content.soul),
       avatarPath: path.resolve(source.rootPath, manifest.content.avatar),
     },
-    stateRoot: path.join(userDataRoot, "characters", manifest.id),
+    stateRoot: state.root,
+    state,
     capabilities: {
       worldbook: capabilities?.worldbook
         ? { status: "available", directoryPath: path.resolve(source.rootPath, capabilities.worldbook.directory) }
@@ -821,6 +829,14 @@ export class CharacterRuntime {
         message: `找不到活动角色：${this.options.activeCharacterId}`,
         characterId: this.options.activeCharacterId,
       });
+    }
+
+    if (active?.health.status === "healthy") {
+      const migration = await migrateLegacyCyreneState({
+        userDataRoot: this.options.userDataRoot,
+        characterId: active.source.manifest.id,
+      });
+      diagnostics.push(...migration.diagnostics);
     }
 
     const ready = Boolean(active && active.health.status === "healthy");
