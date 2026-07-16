@@ -7,6 +7,12 @@ import {
   type CharacterStateLayout,
 } from "./character-state";
 import { readSemanticActionMapping } from "./character-visual";
+import {
+  createSpeechRecognitionHints,
+  readVoiceProfile,
+  type CharacterVoiceProfile,
+  type SpeechRecognitionHints,
+} from "./character-speech";
 
 export const CHARACTER_PACKAGE_SCHEMA_VERSION = 1 as const;
 export const BUILT_IN_CYRENE_ID = "cyrene" as const;
@@ -47,6 +53,10 @@ export type CharacterPackageManifest = Readonly<{
     phoneIdentity?: string;
     phoneStyle?: string;
   }>;
+  speechRecognitionHints?: Readonly<{
+    aliases?: readonly string[];
+    terms?: readonly string[];
+  }>;
   capabilities?: Readonly<{
     worldbook?: Readonly<{ directory: string }>;
     live2d?: Readonly<{ model: string }>;
@@ -71,6 +81,11 @@ type WorldbookCapability = Readonly<{ status: "available"; directoryPath: string
 type Live2dCapability = Readonly<{ status: "available"; modelPath: string }>;
 type FileCapability = Readonly<{ status: "available"; filePath: string }>;
 type DirectoryCapability = Readonly<{ status: "available"; directoryPath: string }>;
+type VoiceCapability = Readonly<{
+  status: "available";
+  filePath: string;
+  profile: CharacterVoiceProfile;
+}>;
 
 export type ActiveCharacterContext = Readonly<{
   id: string;
@@ -94,11 +109,12 @@ export type ActiveCharacterContext = Readonly<{
   }>;
   stateRoot: string;
   state: CharacterStateLayout;
+  speechRecognitionHints: SpeechRecognitionHints;
   capabilities: Readonly<{
     worldbook: WorldbookCapability | UnavailableCapability;
     live2d: Live2dCapability | UnavailableCapability;
     semanticActions: FileCapability | UnavailableCapability;
-    voice: FileCapability | UnavailableCapability;
+    voice: VoiceCapability | UnavailableCapability;
     stickers: DirectoryCapability | UnavailableCapability;
     openers: DirectoryCapability | UnavailableCapability;
   }>;
@@ -386,6 +402,32 @@ function evaluatePackage(
   if (!isRecord(rawManifest.content)) {
     invalidField("content");
   }
+  const rawSpeechHints = rawManifest.speechRecognitionHints;
+  if (rawSpeechHints !== undefined && !isRecord(rawSpeechHints)) {
+    invalidField("speechRecognitionHints");
+  } else if (isRecord(rawSpeechHints)) {
+    if (rawSpeechHints.aliases !== undefined
+      && (!Array.isArray(rawSpeechHints.aliases) || !rawSpeechHints.aliases.every((value) => typeof value === "string"))) {
+      invalidField("speechRecognitionHints.aliases");
+    }
+    if (rawSpeechHints.terms !== undefined
+      && (!Array.isArray(rawSpeechHints.terms) || !rawSpeechHints.terms.every((value) => typeof value === "string"))) {
+      invalidField("speechRecognitionHints.terms");
+    }
+    try {
+      createSpeechRecognitionHints(source.manifest.displayName, {
+        aliases: Array.isArray(rawSpeechHints.aliases) ? rawSpeechHints.aliases as string[] : [],
+        terms: Array.isArray(rawSpeechHints.terms) ? rawSpeechHints.terms as string[] : [],
+      });
+    } catch (error) {
+      diagnostics.push({
+        code: "character.speech_hints.invalid",
+        message: error instanceof Error ? error.message : String(error),
+        characterId: source.manifest.id,
+        field: "speechRecognitionHints",
+      });
+    }
+  }
   if (!isNonEmptyString(rawContent.identity)) invalidField("content.identity");
   if (!isNonEmptyString(rawContent.soul)) invalidField("content.soul");
   if (!isNonEmptyString(rawContent.avatar)) invalidField("content.avatar");
@@ -616,6 +658,27 @@ function evaluatePackage(
     }
   }
 
+  const voiceProfile = rawCapabilities && isRecord(rawCapabilities.voice)
+    ? rawCapabilities.voice.profile
+    : undefined;
+  if (isNonEmptyString(voiceProfile)) {
+    const profilePath = path.resolve(source.rootPath, voiceProfile);
+    if (isPathInside(source.rootPath, profilePath) && fs.existsSync(profilePath) && fs.statSync(profilePath).isFile()) {
+      try {
+        readVoiceProfile(profilePath, source.rootPath, source.source === "builtin" && source.manifest.id === BUILT_IN_CYRENE_ID);
+      } catch (error) {
+        diagnostics.push({
+          code: "character.voice_profile.invalid",
+          message: `Voice Profile 无效：${error instanceof Error ? error.message : String(error)}`,
+          characterId: source.manifest.id,
+          capability: "voice",
+          field: "capabilities.voice.profile",
+          resourcePath: profilePath,
+        });
+      }
+    }
+  }
+
   return {
     source,
     health: {
@@ -637,6 +700,10 @@ function buildActiveContext(
   const { manifest } = source;
   const capabilities = manifest.capabilities;
   const state = resolveCharacterStateLayout(userDataRoot, manifest.id);
+  const speechRecognitionHints = createSpeechRecognitionHints(
+    manifest.displayName,
+    manifest.speechRecognitionHints,
+  );
   return {
     id: manifest.id,
     displayName: manifest.displayName,
@@ -673,6 +740,7 @@ function buildActiveContext(
     },
     stateRoot: state.root,
     state,
+    speechRecognitionHints,
     capabilities: {
       worldbook: capabilities?.worldbook
         ? { status: "available", directoryPath: path.resolve(source.rootPath, capabilities.worldbook.directory) }
@@ -684,7 +752,15 @@ function buildActiveContext(
         ? { status: "available", filePath: path.resolve(source.rootPath, capabilities.semanticActions.mapping) }
         : unavailable(),
       voice: capabilities?.voice
-        ? { status: "available", filePath: path.resolve(source.rootPath, capabilities.voice.profile) }
+        ? {
+            status: "available",
+            filePath: path.resolve(source.rootPath, capabilities.voice.profile),
+            profile: readVoiceProfile(
+              path.resolve(source.rootPath, capabilities.voice.profile),
+              source.rootPath,
+              source.source === "builtin" && manifest.id === BUILT_IN_CYRENE_ID,
+            ),
+          }
         : unavailable(),
       stickers: capabilities?.stickers
         ? { status: "available", directoryPath: path.resolve(source.rootPath, capabilities.stickers.directory) }
@@ -1125,6 +1201,12 @@ export function createDefaultCharacterRuntime(
         license: "MODEL_LICENSE.md 中记录的再分发授权与非商业同人使用边界",
         distributionStatus: "redistributable",
       },
+      {
+        assetClass: "voice",
+        source: "Cyrene Agent 内置兼容 Voice Profile（不含音频或凭据）",
+        license: "MIT",
+        distributionStatus: "redistributable",
+      },
     ],
     content: {
       identity: "prompts/identity.md",
@@ -1137,10 +1219,15 @@ export function createDefaultCharacterRuntime(
       phoneIdentity: "prompts/phone_identity.md",
       phoneStyle: "prompts/phone_style.md",
     },
+    speechRecognitionHints: {
+      aliases: ["Cyrene"],
+      terms: ["Qwen3.5"],
+    },
     capabilities: {
       worldbook: { directory: "prompts/worldbook" },
       live2d: { model: "assets/models/cyrene/Cyrene.model3.json" },
       semanticActions: { mapping: "assets/models/cyrene/semantic-actions.json" },
+      voice: { profile: "assets/voices/cyrene/profile.json" },
     },
   };
   return createCharacterRuntime({

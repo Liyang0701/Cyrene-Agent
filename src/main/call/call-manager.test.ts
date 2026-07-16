@@ -11,14 +11,24 @@ const mocks = vi.hoisted(() => {
   };
   return {
     session,
+    createSession: vi.fn(() => session),
     resolveFinish: (text: string) => finishResolve(text),
     synthesize: vi.fn(async () => ({ audio: Buffer.from("test-audio") })),
   };
 });
 vi.mock("electron", () => ({ ipcMain: { on: vi.fn() }, BrowserWindow: class {} }));
 vi.mock("../asr/asr-service", () => ({
-  createAsrSession: vi.fn(() => mocks.session),
+  createAsrSession: mocks.createSession,
   requireAsrConfig: vi.fn(() => ({ engine: "local", language: "zh" })),
+}));
+vi.mock("../character/active-character", () => ({
+  getActiveCharacter: () => ({
+    displayName: "昔涟",
+    speechRecognitionHints: { displayName: "流明", terms: ["流明", "Lumen", "Qwen3.5"] },
+    capabilities: {
+      voice: { status: "available", profile: { schemaVersion: 1, service: "legacy-global" } },
+    },
+  }),
 }));
 vi.mock("../asr/volcano-asr-engine", () => ({
   getAsrConfig: vi.fn(() => ({ engine: "local", language: "zh" })),
@@ -78,6 +88,10 @@ describe("call manager ASR sequencing", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await startCall();
+    expect(mocks.createSession).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+      engine: "local",
+      speechRecognitionHints: ["流明", "Lumen", "Qwen3.5"],
+    }));
     handleAudioFrame(Buffer.alloc(640));
     const first = endTurn();
     const duplicate = endTurn();

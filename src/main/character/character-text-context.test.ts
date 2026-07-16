@@ -55,6 +55,7 @@ function createActiveCharacter(displayName: string): ActiveCharacterContext {
       phoneStylePath: path.join(contentRoot, "phone-style.md"),
     },
     stateRoot,
+    speechRecognitionHints: { displayName, terms: [displayName] },
     state: {
       root: stateRoot,
       chatsRoot: path.join(stateRoot, "chats"),

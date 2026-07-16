@@ -32,6 +32,7 @@ import { getStickersDir, loadUserStickerManifest } from "../sticker-storage";
 import { BUILT_IN_STICKER_FILES } from "../sticker-descriptions";
 import { BUILT_IN_STICKER_IDS } from "../../shared/sticker-types";
 import { splitTextBySentenceBreaks } from "../../shared/message-segmentation";
+import { getActiveCharacterState } from "../character/character-state";
 import {
   normalizeMobileMessageSegmentationMode,
   type MobileMessageSegmentationMode,
@@ -205,7 +206,6 @@ export function shouldAppendChannelTtsAudio(
   hasSynthesizeTts: boolean,
   adapterSupportsAudio: boolean | undefined,
 ): boolean {
-  if (channel === "wechat") return false;
   return ttsEnabled && hasSynthesizeTts && adapterSupportsAudio === true;
 }
 
@@ -326,8 +326,11 @@ export class ChannelDispatcher {
           const audioResult = normalizeTtsResult(await this.deps.synthesizeTts(replyText, { channel: msg.channel }));
           console.log(LOG, `TTS 决策: 合成结果 length=${audioResult?.audio.length ?? "null"} format=${audioResult?.format ?? "null"}`);
           if (audioResult && audioResult.audio.length > 0) {
-            // 写到 userData/channels/audio/<messageId>.<ext> 缓存
-            const audioDir = path.join(app.getPath("userData"), "channels", "audio");
+            // 渠道临时音频归当前 Character State Root；初始化前才使用旧全局回退目录。
+            const characterTtsCacheRoot = getActiveCharacterState()?.ttsCacheRoot;
+            const audioDir = characterTtsCacheRoot
+              ? path.join(characterTtsCacheRoot, "channels")
+              : path.join(app.getPath("userData"), "channels", "audio");
             fs.mkdirSync(audioDir, { recursive: true });
             const audioPath = path.join(audioDir, `${msg.channel}-${Date.now()}${audioResult.extension}`);
             fs.writeFileSync(audioPath, audioResult.audio);

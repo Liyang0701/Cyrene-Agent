@@ -7,7 +7,16 @@ import { pcm16MonoToWav, resamplePcm16Mono } from "./pcm-utils";
 import type { AsrConfig, PcmAudio } from "./types";
 
 const DEFAULT_ROOT = path.join(os.homedir(), "Documents", "local-llms", "qwen3-asr-1.7b");
-const DEFAULT_PROMPT = "以下是语音转写。角色名可能包括：昔涟。技术名词可能包括：Qwen3.5、Cyrene。请忠实转写，不要改写。";
+const DEFAULT_PROMPT = "以下是语音转写。请忠实转写，不要改写，也不要添加未听见的内容。";
+
+export function buildLocalAsrSystemPrompt(
+  globalPrompt: string | undefined,
+  hints: readonly string[] = [],
+): string {
+  const base = globalPrompt?.trim() || DEFAULT_PROMPT;
+  if (hints.length === 0) return base;
+  return `${base}\n可能出现以下专有名词：${hints.join("、")}。只在确实听到时按此拼写，不得添加未听见内容。`;
+}
 
 interface WorkerReply {
   id?: string;
@@ -91,7 +100,7 @@ export class LocalAsrWorkerManager {
         {
           audioPath: wavPath,
           language: config.language,
-          systemPrompt: config.localSystemPrompt?.trim() || DEFAULT_PROMPT,
+          systemPrompt: buildLocalAsrSystemPrompt(config.localSystemPrompt, config.speechRecognitionHints),
         },
         config.localTimeoutMs ?? 30_000,
         signal,
