@@ -17,6 +17,7 @@ export interface ProactiveFallback {
 
 export interface ProactiveCommitInput {
   candidate: ProactiveCandidate;
+  ownerCharacterId: string;
   text: string;
   source: "model" | "fallback";
   fallbackPayload?: unknown;
@@ -35,6 +36,7 @@ export interface ProactiveChatServiceDeps {
   runModel: (messages: ChatMessage[]) => Promise<ProactiveModelResult>;
   getFallback: (candidate: ProactiveCandidate) => Promise<ProactiveFallback | null>;
   commitMessage: (input: ProactiveCommitInput) => Promise<ProactiveCommitResult>;
+  getActiveCharacterId: () => string;
   canStartDelivery?: () => boolean;
   log?: (event: string, detail?: unknown) => void;
 }
@@ -59,6 +61,7 @@ export function createProactiveChatService(deps: ProactiveChatServiceDeps): Proa
 
   return {
     async evaluateCandidate(candidate): Promise<void> {
+      const ownerCharacterId = deps.getActiveCharacterId();
       const initialState = deps.loadState();
       const rawInitialSnapshot = deps.getSnapshot();
       const initialSnapshot = { ...rawInitialSnapshot, generationBusy: rawInitialSnapshot.generationBusy || generating };
@@ -77,6 +80,14 @@ export function createProactiveChatService(deps: ProactiveChatServiceDeps): Proa
       try {
         const messages = await deps.buildMessages(candidate, initialState);
         const result = await deps.runModel(messages);
+        if (deps.getActiveCharacterId() !== ownerCharacterId) {
+          deps.log?.("generation_discarded", {
+            scene: candidate.sceneId,
+            reason: "inactive_character",
+            ownerCharacterId,
+          });
+          return;
+        }
         const stateAfterModel = deps.loadState();
         if (stateAfterModel.proactiveEpoch !== generationEpoch) {
           deps.log?.("generation_discarded", { scene: candidate.sceneId, reason: "stale_epoch" });
@@ -124,11 +135,34 @@ export function createProactiveChatService(deps: ProactiveChatServiceDeps): Proa
           return;
         }
 
-        const commitResult = await deps.commitMessage({ candidate, text, source, fallbackPayload, generationEpoch });
+        if (deps.getActiveCharacterId() !== ownerCharacterId) {
+          deps.log?.("generation_discarded", {
+            scene: candidate.sceneId,
+            reason: "inactive_character",
+            ownerCharacterId,
+          });
+          return;
+        }
+        const commitResult = await deps.commitMessage({
+          candidate,
+          ownerCharacterId,
+          text,
+          source,
+          fallbackPayload,
+          generationEpoch,
+        });
         if (commitResult.kind === "cancelled") {
           deps.log?.("commit_cancelled", {
             scene: candidate.sceneId,
             reason: commitResult.reason,
+            source,
+          });
+          return;
+        }
+        if (deps.getActiveCharacterId() !== ownerCharacterId) {
+          deps.log?.("commit_cancelled", {
+            scene: candidate.sceneId,
+            reason: "inactive_character",
             source,
           });
           return;

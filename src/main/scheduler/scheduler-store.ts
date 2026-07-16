@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
+import { resolveGlobalUserDataLayout } from "../character/global-user-data";
 import { computeInitialNextFireAt, normalizeOverdueNextFireAt } from "./schedule-calculator";
 import type {
   NewScheduledTaskInput,
@@ -19,9 +20,10 @@ interface StoreDeps {
 }
 
 function defaultDeps(): StoreDeps {
+  const global = resolveGlobalUserDataLayout(app.getPath("userData"));
   return {
-    tasksFile: path.join(app.getPath("userData"), "scheduled-tasks.json"),
-    historyFile: path.join(app.getPath("userData"), "scheduled-tasks-history.jsonl"),
+    tasksFile: global.scheduledTasksFile,
+    historyFile: global.scheduledTaskHistoryFile,
     now: () => new Date(),
     id: () => `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   };
