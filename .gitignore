@@ -31,6 +31,9 @@ verify-*.html
 .zcode/
 .worktrees/
 
+# Raw/licensed Character Corpus evidence must stay local and outside Git.
+character-corpus-private/
+
 # Debug previews / scratch files generated during UI work
 cyrene-*-preview.html
 tmp_*.txt
@@ -97,5 +100,6 @@ docs/
 !docs/local-models.md
 !docs/opener-pack.md
 !docs/electron-33-to-43-upgrade-assessment.md
+!docs/character-corpus-workflow.md
 PRODUCT.md
 sticker-descriptions/
