@@ -85,6 +85,7 @@ export interface OnRunFinishedDeps {
   setRuntimeState: (next: { status?: string; expression?: number; updatedAt?: number; feeling?: string }) => void;
   stickerEmbeddingIndex: unknown;
   getStickerEmbeddingIndex?: () => unknown;
+  canUseActiveCharacterStickers?: () => boolean;
   getEmbeddingProvider: () => unknown;
   matchSticker: (
     text: string,
@@ -430,8 +431,9 @@ export async function onAgentRunFinished(
 
   const stickerIndex = deps.getStickerEmbeddingIndex?.() ?? deps.stickerEmbeddingIndex;
   const stickerQuery = (chatContent + "\n" + sideEffectUserText).slice(0, 1000);
+  const canUseStickers = deps.canUseActiveCharacterStickers?.() ?? true;
   const stickerCandidate =
-    settings.stickerEnabled && stickerIndex
+    settings.stickerEnabled && canUseStickers && stickerIndex
       ? (
           await deps.matchSticker(
             stickerQuery,

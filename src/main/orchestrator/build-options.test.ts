@@ -264,6 +264,56 @@ describe("build-options", () => {
     }))
   })
 
+  it("does not inherit the global sticker index when the Active Character has no sticker capability", async () => {
+    const matchSticker = vi.fn(async () => ({ id: "cyrene-hugtight" }))
+    const send = vi.fn()
+    const deps: OnRunFinishedDeps & { canUseActiveCharacterStickers: () => boolean } = {
+      loadModelSettings: () => ({
+        provider: "test",
+        baseUrl: "",
+        model: "",
+        apiKey: "",
+        runtimeSync: "off",
+        stickerEnabled: true,
+        stickerSimilarityThreshold: 0.55,
+      }),
+      scheduleMemoryWrite: () => {},
+      inferRuntimeState: () => ({ status: "陪伴中" }),
+      runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
+      feelingToExpression: { "温柔": 0 },
+      setRuntimeState: () => {},
+      stickerEmbeddingIndex: [{ id: "cyrene-hugtight", embedding: [1, 0] }],
+      canUseActiveCharacterStickers: () => false,
+      getEmbeddingProvider: () => ({ embed: async () => [1, 0] }),
+      matchSticker,
+      loadStickerSettings: () => ({}),
+      broadcastRuntimeStateChanged: () => {},
+      observeRuntimeState: async () => {},
+      recordRelationshipTurn: async () => {},
+      getChatWindow: () => ({
+        isDestroyed: () => false,
+        webContents: {
+          isDestroyed: () => false,
+          send,
+        },
+      }),
+    }
+
+    const result = await onAgentRunFinished(
+      { reply: "老师，休息一下吧", toolResults: [] },
+      "今天有点累",
+      deps,
+      "wechat",
+    )
+
+    expect(matchSticker).not.toHaveBeenCalled()
+    expect(result.sticker).toBeNull()
+    expect(send).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      name: "cyrene.sticker",
+      value: null,
+    }))
+  })
+
   it("does not send document model context into memory or sticker embedding side effects", async () => {
     const scheduleMemoryWrite = vi.fn()
     const matchSticker = vi.fn(async () => null)
