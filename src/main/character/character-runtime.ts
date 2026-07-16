@@ -158,6 +158,52 @@ export type CharacterImportResult =
   | Readonly<{ ok: true; package: CharacterPackageSnapshot; snapshot: CharacterRuntimeSnapshot }>
   | Readonly<{ ok: false; diagnostics: readonly CharacterRuntimeDiagnostic[] }>;
 
+export type CharacterActivityKind =
+  | "agent-run"
+  | "voice-call"
+  | "asr"
+  | "tts"
+  | "proactive-generation"
+  | "state-write";
+
+export type CharacterBlockingActivity = Readonly<{
+  kind: CharacterActivityKind;
+  reason: string;
+}>;
+
+export interface CharacterSwitchAdapters {
+  getBlockingActivities(): readonly CharacterBlockingActivity[];
+  persistActiveState(): void | Promise<void>;
+  shutdownActiveResources(): void | Promise<void>;
+  requestRelaunch(): void | Promise<void>;
+}
+
+export type CharacterSwitchResult =
+  | Readonly<{
+      ok: true;
+      status: "relaunch-requested";
+      previousCharacterId: string;
+      targetCharacterId: string;
+      unavailableCapabilities: readonly CharacterCapabilityName[];
+    }>
+  | Readonly<{
+      ok: true;
+      status: "already-active";
+      characterId: string;
+      unavailableCapabilities: readonly CharacterCapabilityName[];
+    }>
+  | Readonly<{
+      ok: false;
+      status: "blocked";
+      blockingActivities: readonly CharacterBlockingActivity[];
+      diagnostics: readonly CharacterRuntimeDiagnostic[];
+    }>
+  | Readonly<{
+      ok: false;
+      status: "failed";
+      diagnostics: readonly CharacterRuntimeDiagnostic[];
+    }>;
+
 export type CharacterImportLimits = Readonly<{
   maxFiles: number;
   maxTotalBytes: number;
@@ -170,6 +216,7 @@ export interface CreateCharacterRuntimeOptions {
   packages: readonly CharacterPackageSource[];
   importLimits?: CharacterImportLimits;
   appVersion?: string;
+  switchAdapters?: CharacterSwitchAdapters;
 }
 
 export interface CreateDefaultCharacterRuntimeOptions {
@@ -177,6 +224,7 @@ export interface CreateDefaultCharacterRuntimeOptions {
   userDataRoot: string;
   importLimits?: CharacterImportLimits;
   appVersion?: string;
+  switchAdapters?: CharacterSwitchAdapters;
 }
 
 const DEFAULT_CHARACTER_IMPORT_LIMITS: CharacterImportLimits = {
@@ -977,25 +1025,70 @@ async function calculatePackageDigest(rootPath: string): Promise<string> {
   return hash.digest("hex");
 }
 
+type CharacterRuntimeState = Readonly<{
+  schemaVersion: 1;
+  activeCharacterId: string;
+  pendingCharacterId?: string;
+  previousCharacterId?: string;
+}>;
+
+function readRuntimeState(filePath: string): CharacterRuntimeState | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<CharacterRuntimeState>;
+    if (parsed.schemaVersion !== 1 || typeof parsed.activeCharacterId !== "string") return null;
+    return {
+      schemaVersion: 1,
+      activeCharacterId: parsed.activeCharacterId,
+      ...(typeof parsed.pendingCharacterId === "string" ? { pendingCharacterId: parsed.pendingCharacterId } : {}),
+      ...(typeof parsed.previousCharacterId === "string" ? { previousCharacterId: parsed.previousCharacterId } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeRuntimeState(filePath: string, state: CharacterRuntimeState): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { flag: "wx" });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+  }
+}
+
+const UNCONFIGURED_SWITCH_ADAPTERS: CharacterSwitchAdapters = {
+  getBlockingActivities: () => [],
+  persistActiveState: () => undefined,
+  shutdownActiveResources: () => undefined,
+  requestRelaunch: () => { throw new Error("Electron relaunch adapter is not configured"); },
+};
+
 export class CharacterRuntime {
   private snapshot: CharacterRuntimeSnapshot | null = null;
   private readonly packageStorageRoot: string;
   private readonly installedRoot: string;
   private readonly stagingRoot: string;
   private readonly registryPath: string;
+  private readonly runtimeStatePath: string;
   private packageSources: CharacterPackageSource[];
   private installedSourcesLoaded = false;
   private readonly importLimits: CharacterImportLimits;
   private readonly appVersion: string;
+  private readonly switchAdapters: CharacterSwitchAdapters;
+  private switchTransactionRunning = false;
 
   constructor(private readonly options: CreateCharacterRuntimeOptions) {
     this.packageStorageRoot = path.join(options.userDataRoot, "character-packages");
     this.installedRoot = path.join(this.packageStorageRoot, "installed");
     this.stagingRoot = path.join(this.packageStorageRoot, ".staging");
     this.registryPath = path.join(this.packageStorageRoot, "registry.json");
+    this.runtimeStatePath = path.join(this.packageStorageRoot, "runtime-state.json");
     this.packageSources = [...options.packages];
     this.importLimits = options.importLimits ?? DEFAULT_CHARACTER_IMPORT_LIMITS;
     this.appVersion = options.appVersion ?? "0.1.0";
+    this.switchAdapters = options.switchAdapters ?? UNCONFIGURED_SWITCH_ADAPTERS;
   }
 
   async initialize(): Promise<CharacterRuntimeSnapshot> {
@@ -1014,17 +1107,67 @@ export class CharacterRuntime {
         .map(({ manifest }) => manifest.id),
     );
     const evaluated = this.packageSources.map((source) => evaluatePackage(source, reservedCharacterIds, this.appVersion));
+    const runtimeState = readRuntimeState(this.runtimeStatePath);
+    const requestedCharacterId = runtimeState?.pendingCharacterId
+      ?? runtimeState?.activeCharacterId
+      ?? this.options.activeCharacterId;
     const matchingActivePackages = evaluated.filter(
-      ({ source }) => source.manifest.id === this.options.activeCharacterId,
+      ({ source }) => source.manifest.id === requestedCharacterId,
     );
-    const active = matchingActivePackages.find(({ source }) => source.source === "builtin")
+    let active: EvaluatedPackage | undefined = matchingActivePackages.find(({ source }) => source.source === "builtin")
       ?? matchingActivePackages[0];
     const diagnostics: CharacterRuntimeDiagnostic[] = evaluated.flatMap(({ health }) => health.diagnostics);
+
+    if (runtimeState?.pendingCharacterId && (!active || active.health.status !== "healthy")) {
+      diagnostics.push({
+        code: "character.switch.target_startup_failed",
+        message: `目标角色启动失败，已恢复上一角色：${runtimeState.pendingCharacterId}`,
+        characterId: runtimeState.pendingCharacterId,
+      });
+      const rollbackCharacterId = runtimeState.previousCharacterId ?? runtimeState.activeCharacterId;
+      const rollbackPackages = evaluated.filter(({ source }) => source.manifest.id === rollbackCharacterId);
+      const rollback = rollbackPackages.find(({ source }) => source.source === "builtin") ?? rollbackPackages[0];
+      if (rollback?.health.status === "healthy") {
+        active = rollback;
+        try {
+          writeRuntimeState(this.runtimeStatePath, {
+            schemaVersion: 1,
+            activeCharacterId: rollbackCharacterId,
+          });
+        } catch (error) {
+          diagnostics.push({
+            code: "character.switch.rollback_persist_failed",
+            message: `角色回滚状态写入失败：${error instanceof Error ? error.message : String(error)}`,
+            characterId: rollbackCharacterId,
+            resourcePath: this.runtimeStatePath,
+          });
+          active = undefined;
+        }
+      } else {
+        active = rollback;
+      }
+    } else if (runtimeState?.pendingCharacterId && active?.health.status === "healthy") {
+      try {
+        writeRuntimeState(this.runtimeStatePath, {
+          schemaVersion: 1,
+          activeCharacterId: runtimeState.pendingCharacterId,
+        });
+      } catch (error) {
+        diagnostics.push({
+          code: "character.switch.commit_failed",
+          message: `目标角色状态提交失败：${error instanceof Error ? error.message : String(error)}`,
+          characterId: runtimeState.pendingCharacterId,
+          resourcePath: this.runtimeStatePath,
+        });
+        active = undefined;
+      }
+    }
+
     if (!active) {
       diagnostics.push({
         code: "character.active.missing",
-        message: `找不到活动角色：${this.options.activeCharacterId}`,
-        characterId: this.options.activeCharacterId,
+        message: `找不到活动角色：${requestedCharacterId}`,
+        characterId: requestedCharacterId,
       });
     }
 
@@ -1049,6 +1192,184 @@ export class CharacterRuntime {
   getSnapshot(): CharacterRuntimeSnapshot {
     if (!this.snapshot) throw new Error("CharacterRuntime 尚未初始化");
     return this.snapshot;
+  }
+
+  async requestSwitch(targetCharacterId: string): Promise<CharacterSwitchResult> {
+    const snapshot = await this.initialize();
+    const currentCharacterId = snapshot.activeCharacter?.id;
+    if (!currentCharacterId) {
+      return deepFreeze({
+        ok: false,
+        status: "failed",
+        diagnostics: [{
+          code: "character.switch.no_active_character",
+          message: "当前没有可持久化的活动角色，无法切换。",
+        }],
+      });
+    }
+
+    const existingRuntimeState = readRuntimeState(this.runtimeStatePath);
+    if (this.switchTransactionRunning || existingRuntimeState?.pendingCharacterId) {
+      const blockingActivities: readonly CharacterBlockingActivity[] = [{
+        kind: "state-write",
+        reason: this.switchTransactionRunning ? "角色切换事务正在执行" : "角色切换正在等待受控重启",
+      }];
+      return deepFreeze({
+        ok: false,
+        status: "blocked",
+        blockingActivities,
+        diagnostics: [{
+          code: "character.switch.pending",
+          message: existingRuntimeState?.pendingCharacterId
+            ? `角色切换正在等待受控重启：${existingRuntimeState.pendingCharacterId}`
+            : "已有角色切换事务正在执行。",
+          characterId: existingRuntimeState?.pendingCharacterId ?? currentCharacterId,
+        }],
+      });
+    }
+
+    const reservedCharacterIds = new Set(
+      this.packageSources
+        .filter(({ source }) => source === "builtin")
+        .map(({ manifest }) => manifest.id),
+    );
+    const targetCandidates = this.packageSources
+      .filter(({ manifest }) => manifest.id === targetCharacterId)
+      .map((source) => evaluatePackage(source, reservedCharacterIds, this.appVersion));
+    const target = targetCandidates.find(({ source }) => source.source === "builtin") ?? targetCandidates[0];
+    if (!target || target.health.status !== "healthy") {
+      return deepFreeze({
+        ok: false,
+        status: "failed",
+        diagnostics: target
+          ? [{
+              code: "character.switch.target_unhealthy",
+              message: `目标角色不可用：${targetCharacterId}`,
+              characterId: targetCharacterId,
+            }, ...target.health.diagnostics]
+          : [{
+              code: "character.switch.target_missing",
+              message: `找不到目标角色：${targetCharacterId}`,
+              characterId: targetCharacterId,
+            }],
+      });
+    }
+
+    const targetSnapshot = toPackageSnapshot(target);
+    const unavailableCapabilities = (Object.entries(targetSnapshot.capabilities) as Array<[
+      CharacterCapabilityName,
+      "available" | "unavailable",
+    ]>)
+      .filter(([, availability]) => availability === "unavailable")
+      .map(([capability]) => capability);
+
+    if (targetCharacterId === currentCharacterId) {
+      return deepFreeze({
+        ok: true,
+        status: "already-active",
+        characterId: currentCharacterId,
+        unavailableCapabilities,
+      });
+    }
+
+    const blockingActivities = [...this.switchAdapters.getBlockingActivities()];
+    if (blockingActivities.length > 0) {
+      return deepFreeze({
+        ok: false,
+        status: "blocked",
+        blockingActivities,
+        diagnostics: [{
+          code: "character.switch.busy",
+          message: `角色切换暂不可用：${blockingActivities.map(({ reason }) => reason).join("；")}`,
+          characterId: currentCharacterId,
+        }],
+      });
+    }
+
+    this.switchTransactionRunning = true;
+
+    try {
+      await this.switchAdapters.persistActiveState();
+    } catch (error) {
+      this.switchTransactionRunning = false;
+      return deepFreeze({
+        ok: false,
+        status: "failed",
+        diagnostics: [{
+          code: "character.switch.persist_failed",
+          message: `当前角色状态持久化失败：${error instanceof Error ? error.message : String(error)}`,
+          characterId: currentCharacterId,
+        }],
+      });
+    }
+
+    try {
+      writeRuntimeState(this.runtimeStatePath, {
+        schemaVersion: 1,
+        activeCharacterId: currentCharacterId,
+        pendingCharacterId: targetCharacterId,
+        previousCharacterId: currentCharacterId,
+      });
+    } catch (error) {
+      this.switchTransactionRunning = false;
+      return deepFreeze({
+        ok: false,
+        status: "failed",
+        diagnostics: [{
+          code: "character.switch.pending_persist_failed",
+          message: `角色切换状态写入失败：${error instanceof Error ? error.message : String(error)}`,
+          characterId: targetCharacterId,
+          resourcePath: this.runtimeStatePath,
+        }],
+      });
+    }
+
+    const rollbackPendingState = (diagnostic: CharacterRuntimeDiagnostic): CharacterSwitchResult => {
+      this.switchTransactionRunning = false;
+      const diagnostics = [diagnostic];
+      try {
+        writeRuntimeState(this.runtimeStatePath, {
+          schemaVersion: 1,
+          activeCharacterId: currentCharacterId,
+        });
+      } catch (error) {
+        diagnostics.push({
+          code: "character.switch.rollback_persist_failed",
+          message: `角色切换回滚状态写入失败：${error instanceof Error ? error.message : String(error)}`,
+          characterId: currentCharacterId,
+          resourcePath: this.runtimeStatePath,
+        });
+      }
+      return deepFreeze({ ok: false, status: "failed", diagnostics });
+    };
+
+    try {
+      await this.switchAdapters.shutdownActiveResources();
+    } catch (error) {
+      return rollbackPendingState({
+        code: "character.switch.shutdown_failed",
+        message: `当前角色资源关闭失败：${error instanceof Error ? error.message : String(error)}`,
+        characterId: currentCharacterId,
+      });
+    }
+
+    try {
+      await this.switchAdapters.requestRelaunch();
+    } catch (error) {
+      return rollbackPendingState({
+        code: "character.switch.relaunch_failed",
+        message: `受控重启请求失败：${error instanceof Error ? error.message : String(error)}`,
+        characterId: targetCharacterId,
+      });
+    }
+
+    return deepFreeze({
+      ok: true,
+      status: "relaunch-requested",
+      previousCharacterId: currentCharacterId,
+      targetCharacterId,
+      unavailableCapabilities,
+    });
   }
 
   async importPackage(sourceRoot: string): Promise<CharacterImportResult> {
@@ -1236,5 +1557,6 @@ export function createDefaultCharacterRuntime(
     packages: [{ source: "builtin", rootPath: appRoot, manifest }],
     importLimits: options.importLimits,
     appVersion: options.appVersion,
+    switchAdapters: options.switchAdapters,
   });
 }
