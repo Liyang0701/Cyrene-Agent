@@ -145,7 +145,9 @@ import { buildProactiveMessages, type ProactiveHistoryTurn } from "./proactive/p
 import { runProactiveModel } from "./proactive/proactive-model";
 import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/proactive-types";
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
-import { createDefaultCharacterRuntime } from "./character/character-runtime";
+import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
+
+let characterRuntime: CharacterRuntime | null = null;
 
 configureDocumentIndexQueue(runDocumentIndexJob);
 
@@ -3396,6 +3398,30 @@ ipcMain.handle(IPC.SETTINGS_GET_GENERAL, () => {
   return loadGeneralSettings();
 });
 
+ipcMain.handle(IPC.CHARACTER_LIST, () => {
+  if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+  return characterRuntime.getSnapshot();
+});
+
+ipcMain.handle(IPC.CHARACTER_PICK_IMPORT_FOLDER, async () => {
+  const options: Electron.OpenDialogOptions = {
+    title: "选择角色包文件夹",
+    properties: ["openDirectory"],
+  };
+  const result = settingsWindow
+    ? await dialog.showOpenDialog(settingsWindow, options)
+    : await dialog.showOpenDialog(options);
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
+
+ipcMain.handle(IPC.CHARACTER_IMPORT, async (_event, sourcePath: unknown) => {
+  if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+  if (typeof sourcePath !== "string" || sourcePath.trim().length === 0 || !path.isAbsolute(sourcePath)) {
+    throw new Error("角色包路径必须是有效的绝对路径");
+  }
+  return characterRuntime.importPackage(sourcePath);
+});
+
 ipcMain.handle(IPC.ASR_LOCAL_STATUS, async (_event, startWorker: boolean) => {
   const settings = loadGeneralSettings();
   return localAsrWorker.getStatus({
@@ -3851,9 +3877,10 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
-  const characterRuntime = createDefaultCharacterRuntime({
+  characterRuntime = createDefaultCharacterRuntime({
     appRoot: app.getAppPath(),
     userDataRoot: app.getPath("userData"),
+    appVersion: app.getVersion(),
   });
   const characterSnapshot = await characterRuntime.initialize();
   if (characterSnapshot.status !== "ready" || !characterSnapshot.activeCharacter) {

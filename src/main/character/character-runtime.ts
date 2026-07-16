@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { createHash, randomUUID } from "crypto";
 
 export const CHARACTER_PACKAGE_SCHEMA_VERSION = 1 as const;
 export const BUILT_IN_CYRENE_ID = "cyrene" as const;
@@ -93,6 +94,12 @@ export type CharacterPackageSnapshot = Readonly<{
   version: string;
   source: "builtin" | "local";
   readOnly: boolean;
+  packageRoot: string;
+  distributionStatus: "redistributable" | "local-only";
+  compatibility: CharacterPackageManifest["compatibility"];
+  assetProvenance: CharacterPackageManifest["assetProvenance"];
+  digest?: string;
+  capabilities: Readonly<Record<CharacterCapabilityName, "available" | "unavailable">>;
   health: CharacterPackageHealth;
 }>;
 
@@ -107,23 +114,93 @@ export type CharacterPackageSource = Readonly<{
   source: "builtin" | "local";
   rootPath: string;
   manifest: CharacterPackageManifest;
+  digest?: string;
+}>;
+
+export type CharacterImportResult =
+  | Readonly<{ ok: true; package: CharacterPackageSnapshot; snapshot: CharacterRuntimeSnapshot }>
+  | Readonly<{ ok: false; diagnostics: readonly CharacterRuntimeDiagnostic[] }>;
+
+export type CharacterImportLimits = Readonly<{
+  maxFiles: number;
+  maxTotalBytes: number;
+  maxFileBytes: number;
 }>;
 
 export interface CreateCharacterRuntimeOptions {
   userDataRoot: string;
   activeCharacterId: string;
   packages: readonly CharacterPackageSource[];
+  importLimits?: CharacterImportLimits;
+  appVersion?: string;
 }
 
 export interface CreateDefaultCharacterRuntimeOptions {
   appRoot: string;
   userDataRoot: string;
+  importLimits?: CharacterImportLimits;
+  appVersion?: string;
 }
+
+const DEFAULT_CHARACTER_IMPORT_LIMITS: CharacterImportLimits = {
+  maxFiles: 5_000,
+  maxTotalBytes: 512 * 1024 * 1024,
+  maxFileBytes: 256 * 1024 * 1024,
+};
 
 type EvaluatedPackage = Readonly<{
   source: CharacterPackageSource;
   health: CharacterPackageHealth;
 }>;
+
+type CharacterRegistryRecord = Readonly<{
+  id: string;
+  digest: string;
+  installedDirectory: string;
+  importedAt: string;
+}>;
+
+type CharacterRegistryFile = Readonly<{
+  schemaVersion: 1;
+  packages: readonly CharacterRegistryRecord[];
+}>;
+
+class CharacterImportValidationError extends Error {
+  constructor(readonly diagnostic: CharacterRuntimeDiagnostic) {
+    super(diagnostic.message);
+    this.name = "CharacterImportValidationError";
+  }
+}
+
+async function readFileHeader(filePath: string, length = 16): Promise<Buffer> {
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+function hasExpectedAssetSignature(extension: string, header: Buffer): boolean {
+  const startsWithHex = (hex: string): boolean => header.subarray(0, hex.length / 2).toString("hex") === hex;
+  const startsWithText = (text: string): boolean => header.subarray(0, text.length).toString("ascii") === text;
+  switch (extension) {
+    case ".png": return startsWithHex("89504e470d0a1a0a");
+    case ".jpg":
+    case ".jpeg": return startsWithHex("ffd8ff");
+    case ".gif": return startsWithText("GIF87a") || startsWithText("GIF89a");
+    case ".webp": return startsWithText("RIFF") && header.subarray(8, 12).toString("ascii") === "WEBP";
+    case ".wav": return startsWithText("RIFF") && header.subarray(8, 12).toString("ascii") === "WAVE";
+    case ".flac": return startsWithText("fLaC");
+    case ".ogg": return startsWithText("OggS");
+    case ".m4a": return header.subarray(4, 8).toString("ascii") === "ftyp";
+    case ".mp3": return startsWithText("ID3") || (header.length >= 2 && header[0] === 0xff && (header[1] & 0xe0) === 0xe0);
+    case ".moc3": return startsWithText("MOC3");
+    default: return true;
+  }
+}
 
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
@@ -158,9 +235,48 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function compareSemver(left: string, right: string): number {
+  const parse = (version: string): number[] => version.split("-", 1)[0].split(".").map(Number);
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function isPathInside(rootPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return relativePath.length > 0
+    && relativePath !== ".."
+    && !relativePath.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relativePath);
+}
+
+const LIVE2D_RESOURCE_KEYS = new Set([
+  "Moc", "Textures", "Physics", "Pose", "UserData", "DisplayInfo", "File", "Sound",
+]);
+
+function collectLive2dResourcePaths(
+  value: unknown,
+  result: string[] = [],
+  parentKey?: string,
+): string[] {
+  if (typeof value === "string") {
+    if (parentKey && LIVE2D_RESOURCE_KEYS.has(parentKey)) result.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectLive2dResourcePaths(item, result, parentKey);
+  } else if (isRecord(value)) {
+    for (const [key, item] of Object.entries(value)) collectLive2dResourcePaths(item, result, key);
+  }
+  return result;
+}
+
 function evaluatePackage(
   source: CharacterPackageSource,
   reservedCharacterIds: ReadonlySet<string>,
+  appVersion: string,
 ): EvaluatedPackage {
   const diagnostics: CharacterRuntimeDiagnostic[] = [];
   const rawManifest = source.manifest as unknown as Record<string, unknown>;
@@ -204,6 +320,26 @@ function evaluatePackage(
     && (!isNonEmptyString(rawCompatibility.maximumAppVersion)
       || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(rawCompatibility.maximumAppVersion))) {
     invalidField("compatibility.maximumAppVersion");
+  }
+  if (isNonEmptyString(rawCompatibility.minimumAppVersion)
+    && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(rawCompatibility.minimumAppVersion)
+    && compareSemver(appVersion, rawCompatibility.minimumAppVersion) < 0) {
+    diagnostics.push({
+      code: "character.compatibility.unsupported",
+      message: `角色包需要 Cyrene Agent ${rawCompatibility.minimumAppVersion} 或更高版本，当前版本为 ${appVersion}`,
+      characterId: source.manifest.id,
+      field: "compatibility.minimumAppVersion",
+    });
+  }
+  if (isNonEmptyString(rawCompatibility.maximumAppVersion)
+    && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(rawCompatibility.maximumAppVersion)
+    && compareSemver(appVersion, rawCompatibility.maximumAppVersion) > 0) {
+    diagnostics.push({
+      code: "character.compatibility.unsupported",
+      message: `角色包最高支持 Cyrene Agent ${rawCompatibility.maximumAppVersion}，当前版本为 ${appVersion}`,
+      characterId: source.manifest.id,
+      field: "compatibility.maximumAppVersion",
+    });
   }
   const allowedAssetClasses = new Set([
     "character-content", "avatar", "live2d", "voice", "stickers", "other",
@@ -253,6 +389,16 @@ function evaluatePackage(
 
   for (const [field, relativePath] of coreResources) {
     const resourcePath = path.resolve(source.rootPath, relativePath);
+    if (!isPathInside(source.rootPath, resourcePath)) {
+      diagnostics.push({
+        code: "character.resource.outside_package",
+        message: `角色包资源必须位于包目录内：${field}`,
+        characterId: source.manifest.id,
+        field,
+        resourcePath,
+      });
+      continue;
+    }
     if (!fs.existsSync(resourcePath) || !fs.statSync(resourcePath).isFile()) {
       diagnostics.push(resourceDiagnostic(source, field, relativePath));
     }
@@ -293,6 +439,17 @@ function evaluatePackage(
 
   for (const declared of declaredCapabilities) {
     const resourcePath = path.resolve(source.rootPath, declared.relativePath);
+    if (!isPathInside(source.rootPath, resourcePath)) {
+      diagnostics.push({
+        code: "character.resource.outside_package",
+        message: `角色包资源必须位于包目录内：${declared.field}`,
+        characterId: source.manifest.id,
+        capability: declared.capability,
+        field: declared.field,
+        resourcePath,
+      });
+      continue;
+    }
     const exists = fs.existsSync(resourcePath);
     const hasExpectedKind = exists && (declared.kind === "file"
       ? fs.statSync(resourcePath).isFile()
@@ -306,6 +463,50 @@ function evaluatePackage(
         field: declared.field,
         resourcePath,
       });
+    }
+  }
+
+  const live2dModel = rawCapabilities && isRecord(rawCapabilities.live2d)
+    ? rawCapabilities.live2d.model
+    : undefined;
+  if (isNonEmptyString(live2dModel)) {
+    const modelPath = path.resolve(source.rootPath, live2dModel);
+    if (isPathInside(source.rootPath, modelPath) && fs.existsSync(modelPath) && fs.statSync(modelPath).isFile()) {
+      try {
+        const model = JSON.parse(fs.readFileSync(modelPath, "utf8")) as unknown;
+        const fileReferences = isRecord(model) ? model.FileReferences : undefined;
+        for (const reference of collectLive2dResourcePaths(fileReferences)) {
+          const referencedPath = path.resolve(path.dirname(modelPath), reference);
+          if (!isPathInside(source.rootPath, referencedPath)) {
+            diagnostics.push({
+              code: "character.live2d.reference_outside_package",
+              message: `Live2D 资源引用必须位于角色包内：${reference}`,
+              characterId: source.manifest.id,
+              capability: "live2d",
+              field: "capabilities.live2d.model",
+              resourcePath: referencedPath,
+            });
+          } else if (!fs.existsSync(referencedPath) || !fs.statSync(referencedPath).isFile()) {
+            diagnostics.push({
+              code: "character.live2d.reference_missing",
+              message: `Live2D 引用的资源不存在：${reference}`,
+              characterId: source.manifest.id,
+              capability: "live2d",
+              field: "capabilities.live2d.model",
+              resourcePath: referencedPath,
+            });
+          }
+        }
+      } catch (error) {
+        diagnostics.push({
+          code: "character.live2d.model_invalid",
+          message: `Live2D 模型配置无法解析：${error instanceof Error ? error.message : String(error)}`,
+          characterId: source.manifest.id,
+          capability: "live2d",
+          field: "capabilities.live2d.model",
+          resourcePath: modelPath,
+        });
+      }
     }
   }
 
@@ -368,30 +569,246 @@ function buildActiveContext(
 
 function toPackageSnapshot(evaluated: EvaluatedPackage): CharacterPackageSnapshot {
   const { source, health } = evaluated;
+  const capabilityNames: CharacterCapabilityName[] = [
+    "worldbook", "live2d", "semanticActions", "voice", "stickers", "openers",
+  ];
+  const capabilities = Object.fromEntries(capabilityNames.map((capability) => [
+    capability,
+    source.manifest.capabilities?.[capability]
+      && !health.diagnostics.some((diagnostic) => diagnostic.capability === capability)
+      ? "available"
+      : "unavailable",
+  ])) as Record<CharacterCapabilityName, "available" | "unavailable">;
   return {
     id: source.manifest.id,
     displayName: source.manifest.displayName,
     version: source.manifest.version,
     source: source.source,
     readOnly: source.source === "builtin",
+    packageRoot: path.resolve(source.rootPath),
+    distributionStatus: source.manifest.distributionStatus,
+    compatibility: source.manifest.compatibility,
+    assetProvenance: source.manifest.assetProvenance,
+    digest: source.digest,
+    capabilities,
     health,
   };
 }
 
+function readCharacterRegistry(registryPath: string): CharacterRegistryFile {
+  if (!fs.existsSync(registryPath)) return { schemaVersion: 1, packages: [] };
+  const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as CharacterRegistryFile;
+  if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.packages)) {
+    throw new Error("Character Registry 格式无效");
+  }
+  return parsed;
+}
+
+function loadInstalledPackageSources(
+  registryPath: string,
+  installedRoot: string,
+): CharacterPackageSource[] {
+  const registry = readCharacterRegistry(registryPath);
+  return registry.packages.map((record) => {
+    const rootPath = path.join(installedRoot, record.installedDirectory);
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(rootPath, "character.json"), "utf8"),
+    ) as CharacterPackageManifest;
+    return { source: "local", rootPath, manifest, digest: record.digest };
+  });
+}
+
+async function copyPackageDirectory(
+  sourceRoot: string,
+  targetRoot: string,
+  packageRoot = sourceRoot,
+  context: {
+    readonly limits: CharacterImportLimits;
+    fileCount: number;
+    totalBytes: number;
+  } = {
+    limits: DEFAULT_CHARACTER_IMPORT_LIMITS,
+    fileCount: 0,
+    totalBytes: 0,
+  },
+): Promise<void> {
+  const sourceStat = await fs.promises.lstat(sourceRoot);
+  if (sourceStat.isSymbolicLink() || !sourceStat.isDirectory()) {
+    throw new CharacterImportValidationError({
+      code: "character.import.symlink",
+      message: "角色包来源必须是普通目录，不能是符号链接",
+      resourcePath: sourceRoot,
+    });
+  }
+  await fs.promises.mkdir(targetRoot, { recursive: false });
+  const entries = await fs.promises.readdir(sourceRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceRoot, entry.name);
+    const targetPath = path.join(targetRoot, entry.name);
+    const stat = await fs.promises.lstat(sourcePath);
+    const relativePath = path.relative(packageRoot, sourcePath).split(path.sep).join("/");
+    const prohibitedDirectoryNames = new Set(["skills", "scripts", "plugins", "mcp", ".mcp"]);
+    const prohibitedFileNames = new Set(["skill.md", "mcp.json", ".mcp.json", "plugin.json", "package.json"]);
+    if ((stat.isDirectory() && prohibitedDirectoryNames.has(entry.name.toLowerCase()))
+      || (stat.isFile() && prohibitedFileNames.has(entry.name.toLowerCase()))) {
+      throw new CharacterImportValidationError({
+        code: "character.import.definition_not_allowed",
+        message: `角色包不能包含脚本、Skill、Plugin 或 MCP 定义：${relativePath}`,
+        resourcePath: sourcePath,
+      });
+    }
+    if (stat.isSymbolicLink()) {
+      throw new CharacterImportValidationError({
+        code: "character.import.symlink",
+        message: `角色包不能包含符号链接：${relativePath}`,
+        resourcePath: sourcePath,
+      });
+    }
+    if (stat.isDirectory()) {
+      await copyPackageDirectory(sourcePath, targetPath, packageRoot, context);
+    } else if (stat.isFile()) {
+      context.fileCount += 1;
+      context.totalBytes += stat.size;
+      if (context.fileCount > context.limits.maxFiles) {
+        throw new CharacterImportValidationError({
+          code: "character.import.limit_exceeded",
+          message: `角色包文件数量超过限制：最多 ${context.limits.maxFiles} 个文件`,
+          resourcePath: packageRoot,
+        });
+      }
+      if (stat.size > context.limits.maxFileBytes) {
+        throw new CharacterImportValidationError({
+          code: "character.import.limit_exceeded",
+          message: `角色包单个文件超过限制：${relativePath}`,
+          resourcePath: sourcePath,
+        });
+      }
+      if (context.totalBytes > context.limits.maxTotalBytes) {
+        throw new CharacterImportValidationError({
+          code: "character.import.limit_exceeded",
+          message: "角色包总大小超过限制",
+          resourcePath: packageRoot,
+        });
+      }
+      if ((stat.mode & 0o111) !== 0) {
+        throw new CharacterImportValidationError({
+          code: "character.import.executable",
+          message: `角色包数据文件不能具有执行权限：${relativePath}`,
+          resourcePath: sourcePath,
+        });
+      }
+      const allowedExtensions = new Set([
+        ".json", ".md", ".txt",
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
+        ".wav", ".mp3", ".flac", ".ogg", ".m4a",
+        ".moc3",
+      ]);
+      if (!allowedExtensions.has(path.extname(entry.name).toLowerCase())) {
+        throw new CharacterImportValidationError({
+          code: "character.import.file_type_not_allowed",
+          message: `角色包文件类型不在白名单内：${relativePath}`,
+          resourcePath: sourcePath,
+        });
+      }
+      const extension = path.extname(entry.name).toLowerCase();
+      if (extension === ".json") {
+        try {
+          JSON.parse(await fs.promises.readFile(sourcePath, "utf8"));
+        } catch {
+          throw new CharacterImportValidationError({
+            code: "character.import.malformed_json",
+            message: `角色包包含无法解析的 JSON：${relativePath}`,
+            resourcePath: sourcePath,
+          });
+        }
+      }
+      if (extension === ".svg") {
+        const svg = await fs.promises.readFile(sourcePath, "utf8");
+        const containsActiveContent = /<\s*(?:script|foreignObject)\b/i.test(svg)
+          || /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(svg)
+          || /\son[a-z]+\s*=/i.test(svg)
+          || /(?:href|src)\s*=\s*["']\s*(?:https?:|data:|javascript:)/i.test(svg);
+        if (containsActiveContent) {
+          throw new CharacterImportValidationError({
+            code: "character.import.unsafe_svg",
+            message: `角色包 SVG 包含不安全的活动内容：${relativePath}`,
+            resourcePath: sourcePath,
+          });
+        }
+      }
+      if (!hasExpectedAssetSignature(extension, await readFileHeader(sourcePath))) {
+        throw new CharacterImportValidationError({
+          code: "character.import.malformed_asset",
+          message: `角色包资源内容与扩展名不匹配：${relativePath}`,
+          resourcePath: sourcePath,
+        });
+      }
+      await fs.promises.copyFile(sourcePath, targetPath, fs.constants.COPYFILE_EXCL);
+    } else {
+      throw new Error(`角色包包含不支持的文件类型：${sourcePath}`);
+    }
+  }
+}
+
+async function calculatePackageDigest(rootPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const filePath = path.join(directory, entry.name);
+      const relativePath = path.relative(rootPath, filePath).split(path.sep).join("/");
+      if (entry.isDirectory()) {
+        hash.update(`directory\0${relativePath}\0`);
+        await visit(filePath);
+      } else if (entry.isFile()) {
+        hash.update(`file\0${relativePath}\0`);
+        hash.update(await fs.promises.readFile(filePath));
+        hash.update("\0");
+      }
+    }
+  };
+  await visit(rootPath);
+  return hash.digest("hex");
+}
+
 export class CharacterRuntime {
   private snapshot: CharacterRuntimeSnapshot | null = null;
+  private readonly packageStorageRoot: string;
+  private readonly installedRoot: string;
+  private readonly stagingRoot: string;
+  private readonly registryPath: string;
+  private packageSources: CharacterPackageSource[];
+  private installedSourcesLoaded = false;
+  private readonly importLimits: CharacterImportLimits;
+  private readonly appVersion: string;
 
-  constructor(private readonly options: CreateCharacterRuntimeOptions) {}
+  constructor(private readonly options: CreateCharacterRuntimeOptions) {
+    this.packageStorageRoot = path.join(options.userDataRoot, "character-packages");
+    this.installedRoot = path.join(this.packageStorageRoot, "installed");
+    this.stagingRoot = path.join(this.packageStorageRoot, ".staging");
+    this.registryPath = path.join(this.packageStorageRoot, "registry.json");
+    this.packageSources = [...options.packages];
+    this.importLimits = options.importLimits ?? DEFAULT_CHARACTER_IMPORT_LIMITS;
+    this.appVersion = options.appVersion ?? "0.1.0";
+  }
 
   async initialize(): Promise<CharacterRuntimeSnapshot> {
     if (this.snapshot) return this.snapshot;
 
+    if (!this.installedSourcesLoaded) {
+      const installedSources = loadInstalledPackageSources(this.registryPath, this.installedRoot);
+      const knownRoots = new Set(this.packageSources.map(({ rootPath }) => path.resolve(rootPath)));
+      this.packageSources.push(...installedSources.filter(({ rootPath }) => !knownRoots.has(path.resolve(rootPath))));
+      this.installedSourcesLoaded = true;
+    }
+
     const reservedCharacterIds = new Set(
-      this.options.packages
+      this.packageSources
         .filter(({ source }) => source === "builtin")
         .map(({ manifest }) => manifest.id),
     );
-    const evaluated = this.options.packages.map((source) => evaluatePackage(source, reservedCharacterIds));
+    const evaluated = this.packageSources.map((source) => evaluatePackage(source, reservedCharacterIds, this.appVersion));
     const matchingActivePackages = evaluated.filter(
       ({ source }) => source.manifest.id === this.options.activeCharacterId,
     );
@@ -419,6 +836,121 @@ export class CharacterRuntime {
   getSnapshot(): CharacterRuntimeSnapshot {
     if (!this.snapshot) throw new Error("CharacterRuntime 尚未初始化");
     return this.snapshot;
+  }
+
+  async importPackage(sourceRoot: string): Promise<CharacterImportResult> {
+    await this.initialize();
+    let stagingPath: string | null = null;
+    let installedPath: string | null = null;
+    let registryTempPath: string | null = null;
+    try {
+      const manifestPath = path.join(sourceRoot, "character.json");
+      const manifest = JSON.parse(await fs.promises.readFile(manifestPath, "utf8")) as CharacterPackageManifest;
+      const reservedCharacterIds = new Set(
+        this.packageSources
+          .filter(({ source }) => source === "builtin")
+          .map(({ manifest: installedManifest }) => installedManifest.id),
+      );
+      const source: CharacterPackageSource = { source: "local", rootPath: sourceRoot, manifest };
+      const evaluatedSource = evaluatePackage(source, reservedCharacterIds, this.appVersion);
+      if (evaluatedSource.health.status === "unhealthy") {
+        return { ok: false, diagnostics: deepFreeze([...evaluatedSource.health.diagnostics]) };
+      }
+      if (this.packageSources.some(({ manifest: installedManifest }) => installedManifest.id === manifest.id)) {
+        return {
+          ok: false,
+          diagnostics: deepFreeze([{
+            code: "character.import.already_installed",
+            message: `角色包已经安装：${manifest.id}`,
+            characterId: manifest.id,
+            field: "id",
+          }]),
+        };
+      }
+
+      await fs.promises.mkdir(this.stagingRoot, { recursive: true });
+      await fs.promises.mkdir(this.installedRoot, { recursive: true });
+      stagingPath = path.join(this.stagingRoot, `${manifest.id}-${randomUUID()}`);
+      installedPath = path.join(this.installedRoot, manifest.id);
+      if (fs.existsSync(installedPath)) {
+        throw new Error(`角色包安装目录已存在：${installedPath}`);
+      }
+      await copyPackageDirectory(sourceRoot, stagingPath, sourceRoot, {
+        limits: this.importLimits,
+        fileCount: 0,
+        totalBytes: 0,
+      });
+
+      const stagedManifest = JSON.parse(
+        await fs.promises.readFile(path.join(stagingPath, "character.json"), "utf8"),
+      ) as CharacterPackageManifest;
+      const stagedSource: CharacterPackageSource = {
+        source: "local",
+        rootPath: stagingPath,
+        manifest: stagedManifest,
+      };
+      const stagedEvaluation = evaluatePackage(stagedSource, reservedCharacterIds, this.appVersion);
+      if (stagedEvaluation.health.status === "unhealthy" || stagedManifest.id !== manifest.id) {
+        return { ok: false, diagnostics: deepFreeze([...stagedEvaluation.health.diagnostics]) };
+      }
+
+      const digest = await calculatePackageDigest(stagingPath);
+      await fs.promises.rename(stagingPath, installedPath);
+      stagingPath = null;
+
+      const registry = readCharacterRegistry(this.registryPath);
+      const nextRegistry: CharacterRegistryFile = {
+        schemaVersion: 1,
+        packages: [...registry.packages, {
+          id: manifest.id,
+          digest,
+          installedDirectory: manifest.id,
+          importedAt: new Date().toISOString(),
+        }],
+      };
+      registryTempPath = path.join(this.packageStorageRoot, `.registry-${randomUUID()}.tmp`);
+      await fs.promises.writeFile(registryTempPath, `${JSON.stringify(nextRegistry, null, 2)}\n`, { flag: "wx" });
+      await fs.promises.rename(registryTempPath, this.registryPath);
+      registryTempPath = null;
+
+      const installedSource: CharacterPackageSource = {
+        source: "local",
+        rootPath: installedPath,
+        manifest: stagedManifest,
+        digest,
+      };
+      this.packageSources.push(installedSource);
+      this.snapshot = null;
+      const snapshot = await this.initialize();
+      const installedPackage = snapshot.packages.find(({ id, source: packageSource }) => (
+        id === manifest.id && packageSource === "local"
+      ));
+      if (!installedPackage) throw new Error(`安装后找不到角色包：${manifest.id}`);
+      return { ok: true, package: installedPackage, snapshot };
+    } catch (error) {
+      if (installedPath && fs.existsSync(installedPath)) {
+        await fs.promises.rm(installedPath, { recursive: true, force: true });
+      }
+      return {
+        ok: false,
+        diagnostics: deepFreeze([
+          error instanceof CharacterImportValidationError
+            ? error.diagnostic
+            : {
+              code: "character.import.failed",
+              message: error instanceof Error ? error.message : String(error),
+              resourcePath: sourceRoot,
+            },
+        ]),
+      };
+    } finally {
+      if (registryTempPath && fs.existsSync(registryTempPath)) {
+        await fs.promises.rm(registryTempPath, { force: true });
+      }
+      if (stagingPath && fs.existsSync(stagingPath)) {
+        await fs.promises.rm(stagingPath, { recursive: true, force: true });
+      }
+    }
   }
 }
 
@@ -471,5 +1003,7 @@ export function createDefaultCharacterRuntime(
     userDataRoot,
     activeCharacterId: BUILT_IN_CYRENE_ID,
     packages: [{ source: "builtin", rootPath: appRoot, manifest }],
+    importLimits: options.importLimits,
+    appVersion: options.appVersion,
   });
 }

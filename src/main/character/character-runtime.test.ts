@@ -397,4 +397,356 @@ describe("CharacterRuntime", () => {
       { code: "character.manifest.invalid_field", field: "assetProvenance" },
     ]);
   });
+
+  it("imports a validated local folder atomically and restores it from the Character Registry", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(fixtureRoot);
+
+    expect(result).toMatchObject({
+      ok: true,
+      package: {
+        id: "fixture.lumen",
+        displayName: "流明",
+        version: "1.0.0",
+        source: "local",
+        readOnly: false,
+        distributionStatus: "redistributable",
+        compatibility: { minimumAppVersion: "0.1.0" },
+        assetProvenance: [{
+          assetClass: "character-content",
+          source: "Cyrene-Agent 测试夹具原创内容",
+          license: "MIT",
+          distributionStatus: "redistributable",
+        }, {
+          assetClass: "avatar",
+          source: "Cyrene-Agent 测试夹具原创 SVG",
+          license: "MIT",
+          distributionStatus: "redistributable",
+        }],
+        health: { status: "healthy", diagnostics: [] },
+      },
+    });
+    if (!result.ok) throw new Error("测试角色包导入失败");
+    expect(result.package.digest).toMatch(/^[a-f0-9]{64}$/);
+
+    const installedRoot = path.join(
+      userDataRoot,
+      "character-packages",
+      "installed",
+      "fixture.lumen",
+    );
+    expect(result.package.packageRoot).toBe(installedRoot);
+    expect(fs.readFileSync(path.join(installedRoot, "content", "soul.md"), "utf8"))
+      .toContain("不借用其他角色");
+    expect(JSON.parse(
+      fs.readFileSync(path.join(userDataRoot, "character-packages", "registry.json"), "utf8"),
+    )).toMatchObject({
+      schemaVersion: 1,
+      packages: [{ id: "fixture.lumen", digest: result.package.digest }],
+    });
+
+    const restarted = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    const restartedSnapshot = await restarted.initialize();
+    expect(restartedSnapshot.packages).toContainEqual(expect.objectContaining({
+      id: "fixture.lumen",
+      displayName: "流明",
+      source: "local",
+      packageRoot: installedRoot,
+      health: { status: "healthy", diagnostics: [] },
+    }));
+  });
+
+  it("rejects a symbolic link and cleans both staging and installation directories", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-symlink-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const outsideFile = path.join(userDataRoot, "outside-secret.md");
+    fs.writeFileSync(outsideFile, "不应进入角色包");
+    const symlinkPath = path.join(packageRoot, "content", "outside.md");
+    fs.symlinkSync(outsideFile, symlinkPath);
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.symlink",
+        message: "角色包不能包含符号链接：content/outside.md",
+        resourcePath: symlinkPath,
+      }],
+    });
+    const storageRoot = path.join(userDataRoot, "character-packages");
+    expect(fs.existsSync(path.join(storageRoot, "installed", "fixture.lumen"))).toBe(false);
+    expect(fs.readdirSync(path.join(storageRoot, ".staging"))).toEqual([]);
+    expect(fs.existsSync(path.join(storageRoot, "registry.json"))).toBe(false);
+  });
+
+  it("rejects a manifest resource path that escapes the selected package folder before staging", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const sourceParent = fs.mkdtempSync(path.join(os.tmpdir(), "character-traversal-"));
+    const packageRoot = path.join(sourceParent, "package");
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const outsidePath = path.join(sourceParent, "outside.md");
+    fs.writeFileSync(outsidePath, "伪装成角色人格的外部文件");
+    const manifestPath = path.join(packageRoot, "character.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as CharacterPackageManifest;
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      ...manifest,
+      content: { ...manifest.content, soul: "../outside.md" },
+    }));
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.resource.outside_package",
+        message: "角色包资源必须位于包目录内：content.soul",
+        characterId: "fixture.lumen",
+        field: "content.soul",
+        resourcePath: outsidePath,
+      }],
+    });
+    expect(fs.existsSync(path.join(userDataRoot, "character-packages", ".staging"))).toBe(false);
+  });
+
+  it("rejects executable or unknown file types instead of copying them into managed storage", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-script-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const scriptPath = path.join(packageRoot, "install.js");
+    fs.writeFileSync(scriptPath, "require('child_process').exec('echo unsafe')");
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.file_type_not_allowed",
+        message: "角色包文件类型不在白名单内：install.js",
+        resourcePath: scriptPath,
+      }],
+    });
+    expect(fs.existsSync(path.join(userDataRoot, "character-packages", "installed", "fixture.lumen"))).toBe(false);
+  });
+
+  it("rejects an allowlisted data file when it has executable permission bits", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-executable-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const executablePath = path.join(packageRoot, "content", "command.md");
+    fs.writeFileSync(executablePath, "即使扩展名合法也不能具有执行权限");
+    fs.chmodSync(executablePath, 0o755);
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.executable",
+        message: "角色包数据文件不能具有执行权限：content/command.md",
+        resourcePath: executablePath,
+      }],
+    });
+  });
+
+  it("rejects a package that exceeds configured file count limits before installation", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-too-many-files-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, "content", "extra.txt"), "超过数量限制");
+    const runtime = createDefaultCharacterRuntime({
+      appRoot: process.cwd(),
+      userDataRoot,
+      importLimits: { maxFiles: 5, maxTotalBytes: 1024 * 1024, maxFileBytes: 1024 * 1024 },
+    });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.limit_exceeded",
+        message: "角色包文件数量超过限制：最多 5 个文件",
+        resourcePath: packageRoot,
+      }],
+    });
+    expect(fs.existsSync(path.join(userDataRoot, "character-packages", "installed", "fixture.lumen"))).toBe(false);
+  });
+
+  it("rejects malformed JSON data even when the extension is allowlisted", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-malformed-json-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const malformedPath = path.join(packageRoot, "actions.json");
+    fs.writeFileSync(malformedPath, "{ definitely not json }");
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.malformed_json",
+        message: "角色包包含无法解析的 JSON：actions.json",
+        resourcePath: malformedPath,
+      }],
+    });
+  });
+
+  it("rejects active content embedded in an SVG asset", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-active-svg-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const avatarPath = path.join(packageRoot, "avatar.svg");
+    fs.writeFileSync(avatarPath, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.unsafe_svg",
+        message: "角色包 SVG 包含不安全的活动内容：avatar.svg",
+        resourcePath: avatarPath,
+      }],
+    });
+  });
+
+  it("rejects a raster asset whose content signature does not match its extension", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-fake-png-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const avatarPath = path.join(packageRoot, "avatar.png");
+    fs.writeFileSync(avatarPath, "this is not a png");
+    const manifestPath = path.join(packageRoot, "character.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as CharacterPackageManifest;
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      ...manifest,
+      content: { ...manifest.content, avatar: "avatar.png" },
+    }));
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.malformed_asset",
+        message: "角色包资源内容与扩展名不匹配：avatar.png",
+        resourcePath: avatarPath,
+      }],
+    });
+  });
+
+  it("rejects a Live2D model whose internal asset reference escapes the package", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-live2d-traversal-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, "live2d"));
+    const modelPath = path.join(packageRoot, "live2d", "model.model3.json");
+    fs.writeFileSync(modelPath, JSON.stringify({ Version: 3, FileReferences: { Moc: "../../../outside.moc3" } }));
+    const manifestPath = path.join(packageRoot, "character.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as CharacterPackageManifest;
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      ...manifest,
+      capabilities: { live2d: { model: "live2d/model.model3.json" } },
+    }));
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.live2d.reference_outside_package",
+        message: "Live2D 资源引用必须位于角色包内：../../../outside.moc3",
+        characterId: "fixture.lumen",
+        capability: "live2d",
+        field: "capabilities.live2d.model",
+        resourcePath: path.resolve(path.dirname(modelPath), "../../../outside.moc3"),
+      }],
+    });
+  });
+
+  it("rejects a package that is incompatible with the running app version", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-incompatible-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    const manifestPath = path.join(packageRoot, "character.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as CharacterPackageManifest;
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      ...manifest,
+      compatibility: { minimumAppVersion: "99.0.0" },
+    }));
+    const runtime = createDefaultCharacterRuntime({
+      appRoot: process.cwd(),
+      userDataRoot,
+      appVersion: "0.1.1",
+    });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.compatibility.unsupported",
+        message: "角色包需要 Cyrene Agent 99.0.0 或更高版本，当前版本为 0.1.1",
+        characterId: "fixture.lumen",
+        field: "compatibility.minimumAppVersion",
+      }],
+    });
+  });
+
+  it("rejects embedded Skill or MCP definitions even when their extension is allowlisted", async () => {
+    const fixtureRoot = path.join(process.cwd(), "test-fixtures", "characters", "lumen");
+    const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-skill-definition-"));
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-import-"));
+    fs.cpSync(fixtureRoot, packageRoot, { recursive: true });
+    fs.mkdirSync(path.join(packageRoot, "skills"));
+    const skillPath = path.join(packageRoot, "skills", "SKILL.md");
+    fs.writeFileSync(skillPath, "# 不允许随角色包安装的 Skill");
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+    await runtime.initialize();
+
+    const result = await runtime.importPackage(packageRoot);
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [{
+        code: "character.import.definition_not_allowed",
+        message: "角色包不能包含脚本、Skill、Plugin 或 MCP 定义：skills",
+        resourcePath: path.join(packageRoot, "skills"),
+      }],
+    });
+  });
 });

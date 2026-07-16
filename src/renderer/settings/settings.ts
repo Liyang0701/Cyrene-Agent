@@ -24,6 +24,10 @@ import { DEFAULT_UI_FONT, normalizeUiFont, type UiFont } from "../../shared/ui-f
 import { normalizeUiIcon, type UiIcon } from "../../shared/ui-icon";
 import { buildAppearanceSettingsPatch } from "./appearance-settings-state";
 import { type ReasoningPreference } from "../../shared/reasoning";
+import {
+  renderCharacterPackages,
+  type CharacterSettingsSnapshot,
+} from "./character-settings-view";
 
 // Inline modal (to avoid Vite tree-shaking)
 let _cyModalOverlay: HTMLElement | null = null;
@@ -360,6 +364,12 @@ interface SettingsApi {
   saveConfig: (config: Partial<ModelSettings>) => Promise<ModelSettings>;
   getGeneral: () => Promise<GeneralSettings>;
   saveGeneral: (config: Partial<GeneralSettings>) => Promise<GeneralSettings>;
+  listCharacters: () => Promise<CharacterSettingsSnapshot>;
+  pickCharacterImportFolder: () => Promise<string | null>;
+  importCharacter: (sourcePath: string) => Promise<
+    | { ok: true; snapshot: CharacterSettingsSnapshot; package: { displayName: string } }
+    | { ok: false; diagnostics: Array<{ code: string; message: string }> }
+  >;
   pickUiFont: () => Promise<string | null>;
   importUiFont: (sourcePath: string) => Promise<UiFont>;
   resetUiFont: () => Promise<UiFont>;
@@ -592,6 +602,13 @@ const sectionTitle = document.getElementById("section-title") as HTMLElement;
 const sectionHint = document.getElementById("section-hint") as HTMLElement;
 const placeholderPanel = document.getElementById("placeholder-panel") as HTMLElement;
 const cyrenePanel = document.getElementById("cyrene-panel") as HTMLFormElement;
+const charactersPanel = document.getElementById("characters-panel") as HTMLElement;
+const characterCurrentName = document.getElementById("character-current-name") as HTMLElement;
+const characterCurrentMeta = document.getElementById("character-current-meta") as HTMLElement;
+const characterPackageList = document.getElementById("character-package-list") as HTMLElement;
+const characterCount = document.getElementById("character-count") as HTMLElement;
+const characterImportButton = document.getElementById("character-import-btn") as HTMLButtonElement;
+const characterImportStatus = document.getElementById("character-import-status") as HTMLElement;
 const disclaimerPanel = document.getElementById("disclaimer-panel") as HTMLElement;
 const pluginsPanel = document.getElementById("plugins-panel") as HTMLElement;
 const placeholderIcon = document.getElementById("placeholder-icon") as HTMLElement;
@@ -708,6 +725,7 @@ const NAV_LABELS: Record<string, { emoji: string; title: string; hint: string }>
   general: { emoji: "⚙️", title: "通用设置", hint: "管理窗口、音频和系统行为" },
   api: { emoji: "🔑", title: "API 设置", hint: "选择预设后只需要填写 API Key。" },
   cyrene: { emoji: "🌸", title: "昔涟设置", hint: "管理 Agent 行为、记忆、RAG 与权限" },
+  characters: { emoji: "🎭", title: "角色", hint: "安全导入并检查本地角色包" },
   tts: { emoji: "🎙️", title: "TTS 设置", hint: "语音合成与朗读偏好" },
   asr: { emoji: "🎧", title: "ASR 设置", hint: "语音识别与通话配置" },
   tokens: { emoji: "📊", title: "Token 用量", hint: "查看 API 调用统计与消耗" },
@@ -2476,6 +2494,50 @@ async function toggleSchedulerHistory(taskId: string, card: Element): Promise<vo
   box.classList.remove("is-hidden");
 }
 
+function showCharacterSnapshot(snapshot: CharacterSettingsSnapshot): void {
+  const active = snapshot.activeCharacter;
+  characterCurrentName.textContent = active?.displayName ?? "当前角色不可用";
+  characterCurrentMeta.textContent = active
+    ? `${active.id} · 完整角色切换接入前保持不变`
+    : "请根据下方诊断修复角色包";
+  characterCount.textContent = `${snapshot.packages.length} 个`;
+  characterPackageList.innerHTML = renderCharacterPackages(snapshot);
+}
+
+async function loadCharacterPackages(): Promise<void> {
+  try {
+    showCharacterSnapshot(await window.settings!.listCharacters());
+  } catch (error) {
+    characterPackageList.innerHTML = '<div class="character-empty">角色列表读取失败，请稍后重试。</div>';
+    characterImportStatus.textContent = error instanceof Error ? error.message : String(error);
+    characterImportStatus.className = "character-import-status is-error";
+  }
+}
+
+characterImportButton.addEventListener("click", async () => {
+  const sourcePath = await window.settings!.pickCharacterImportFolder();
+  if (!sourcePath) return;
+  characterImportButton.disabled = true;
+  characterImportStatus.textContent = "正在检查并安装角色包…";
+  characterImportStatus.className = "character-import-status";
+  try {
+    const result = await window.settings!.importCharacter(sourcePath);
+    if (result.ok) {
+      showCharacterSnapshot(result.snapshot);
+      characterImportStatus.textContent = `已安全安装「${result.package.displayName}」；当前角色没有切换。`;
+      characterImportStatus.className = "character-import-status is-success";
+    } else {
+      characterImportStatus.textContent = result.diagnostics.map(({ message }) => message).join("；") || "角色包未通过检查";
+      characterImportStatus.className = "character-import-status is-error";
+    }
+  } catch (error) {
+    characterImportStatus.textContent = `导入失败：${error instanceof Error ? error.message : String(error)}`;
+    characterImportStatus.className = "character-import-status is-error";
+  } finally {
+    characterImportButton.disabled = false;
+  }
+});
+
 function switchSection(section: string): void {
   const label = NAV_LABELS[section] ?? NAV_LABELS.api;
   sectionTitle.textContent = label.title;
@@ -2486,6 +2548,7 @@ function switchSection(section: string): void {
   const isGeneral = section === "general";
   const isPreferences = section === "preferences";
   const isCyrene = section === "cyrene";
+  const isCharacters = section === "characters";
   const isDisclaimer = section === "disclaimer";
   const isMemory = section === "memory";
   const isUser = section === "user";
@@ -2503,6 +2566,8 @@ function switchSection(section: string): void {
   generalForm.classList.toggle("is-hidden", !isGeneral);
   preferencesForm.classList.toggle("is-hidden", !isPreferences);
   cyrenePanel.classList.toggle("is-hidden", !isCyrene);
+  charactersPanel.classList.toggle("is-hidden", !isCharacters);
+  if (isCharacters) void loadCharacterPackages();
   disclaimerPanel.classList.toggle("is-hidden", !isDisclaimer);
   const memoryPanel = document.getElementById("memory-panel");
   if (memoryPanel) memoryPanel.classList.toggle("is-hidden", !isMemory);
@@ -2532,7 +2597,7 @@ function switchSection(section: string): void {
   if (asrPanel) asrPanel.classList.toggle("is-hidden", !isAsr);
   placeholderPanel.classList.toggle(
     "is-hidden",
-    isApi || isAppearance || isGeneral || isPreferences || isCyrene || isDisclaimer || isMemory || isUser || isChat || isTasks || isIdentity || isPlugins || isSkills || isTokens || isChannels || isTts || isAsr,
+    isApi || isAppearance || isGeneral || isPreferences || isCyrene || isCharacters || isDisclaimer || isMemory || isUser || isChat || isTasks || isIdentity || isPlugins || isSkills || isTokens || isChannels || isTts || isAsr,
   );
 
   if (
@@ -2541,6 +2606,7 @@ function switchSection(section: string): void {
     !isGeneral &&
     !isPreferences &&
     !isCyrene &&
+    !isCharacters &&
     !isDisclaimer &&
     !isMemory &&
     !isUser &&
