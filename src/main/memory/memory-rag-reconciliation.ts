@@ -27,14 +27,19 @@ export interface MemoryRagReconciliationReport {
   changed: boolean;
 }
 
-export function backupMemoryRagFiles(userDataDir: string, timestamp = Date.now(), retention = 3): void {
+export function backupMemoryRagFiles(
+  userDataDir: string,
+  timestamp = Date.now(),
+  retention = 3,
+  statePaths?: { memoryFile: string; vectorFile: string; backupDir: string },
+): void {
   const sources = [
-    { path: path.join(userDataDir, "memory.json"), prefix: "memory" },
-    { path: path.join(userDataDir, "rag-data", "memory-store.json"), prefix: "memory-store" },
+    { path: statePaths?.memoryFile ?? path.join(userDataDir, "memory.json"), prefix: "memory" },
+    { path: statePaths?.vectorFile ?? path.join(userDataDir, "rag-data", "memory-store.json"), prefix: "memory-store" },
   ].filter((source) => fs.existsSync(source.path));
   if (sources.length === 0) return;
 
-  const backupDir = path.join(userDataDir, "memory-reconcile-backups");
+  const backupDir = statePaths?.backupDir ?? path.join(userDataDir, "memory-reconcile-backups");
   fs.mkdirSync(backupDir, { recursive: true });
   for (const source of sources) {
     fs.copyFileSync(source.path, path.join(backupDir, `${source.prefix}.${timestamp}.json`));

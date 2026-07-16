@@ -11,6 +11,7 @@ import { chunkText } from "./chunk";
 import { feedEntityNamesToJieba } from "../memory/entity-graph";
 import { isL2LocallyRecallable } from "../memory/memory-types";
 import type { DocumentImportControl } from "./file-ingest";
+import { getActiveCharacterState } from "../character/character-state";
 
 // ── Global RAG instances ──
 let store: JsonVectorStore | null = null;
@@ -19,7 +20,8 @@ let worldbook: WorldbookManager | null = null;
 let provider: EmbeddingProvider | null = null;
 
 function getDataDir(): string {
-  return path.join(app.getPath("userData"), "rag-data");
+  return getActiveCharacterState()?.ragRoot
+    ?? path.join(app.getPath("userData"), "rag-data");
 }
 
 // ── Init ──
@@ -38,7 +40,7 @@ export async function initRAG(
   }
   worldbook = new WorldbookManager(
     path.join(app.getAppPath(), "prompts", "worldbook"),
-    { stateFile: path.join(app.getPath("userData"), "worldbook-state.json") }
+    { stateFile: getActiveCharacterState()?.worldbookStateFile ?? path.join(app.getPath("userData"), "worldbook-state.json") }
   );
   await worldbook.loadFromDirectory();
 

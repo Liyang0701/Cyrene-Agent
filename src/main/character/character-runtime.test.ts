@@ -19,6 +19,26 @@ const TEST_PACKAGE_METADATA = {
 } as const;
 
 describe("CharacterRuntime", () => {
+  it("keeps the built-in character usable with a precise diagnostic when state migration needs recovery", async () => {
+    const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-incomplete-state-"));
+    const incompleteRoot = path.join(userDataRoot, "characters", "cyrene");
+    fs.mkdirSync(incompleteRoot, { recursive: true });
+    fs.writeFileSync(path.join(incompleteRoot, "partial.txt"), "incomplete migration");
+    const runtime = createDefaultCharacterRuntime({ appRoot: process.cwd(), userDataRoot });
+
+    const snapshot = await runtime.initialize();
+
+    expect(snapshot).toMatchObject({
+      status: "ready",
+      activeCharacter: { id: "cyrene", stateRoot: incompleteRoot },
+      diagnostics: [{
+        code: "character.state_migration.incomplete_target",
+        characterId: "cyrene",
+        resourcePath: incompleteRoot,
+      }],
+    });
+  });
+
   it("initializes the built-in Cyrene package as one immutable Active Character", async () => {
     const userDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), "character-runtime-"));
     const appRoot = process.cwd();

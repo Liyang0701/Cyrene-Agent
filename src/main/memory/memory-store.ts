@@ -3,6 +3,7 @@ import * as path from "path"
 import { app } from "electron"
 import { ConflictLog, L0Profile, L1Profile, L2Memory, L2SyncStatus, MemoryConflictResolution, MemoryEvidence, MemoryStore, ReflectionLog } from "./memory-types"
 import { appendMemoryTrace } from "./memory-trace"
+import { getActiveCharacterState } from "../character/character-state"
 
 const CURRENT_SCHEMA_VERSION = 2
 const QUOTE_SNIPPET_MAX = 300
@@ -48,7 +49,8 @@ export type L1WritableField = keyof L1Profile
 export type L2Input = Omit<L2Memory, "id" | "createdAt" | "lastAccessedAt" | "accessCount" | "weight" | "status">
 
 function getMemoryPath(): string {
-  return path.join(app.getPath("userData"), "memory.json")
+  return getActiveCharacterState()?.memoryFile
+    ?? path.join(app.getPath("userData"), "memory.json")
 }
 
 function cloneDefaultStore(): MemoryStore {

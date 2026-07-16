@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { app } from "electron"
+import { getActiveCharacterState } from "../character/character-state"
 
 export type RelationshipChannel = "desktop" | "wechat" | "feishu"
 
@@ -42,7 +43,8 @@ const MAX_ENTRIES = 500
 const MAX_DAILY_SUMMARIES = 90
 
 function defaultFilePath(): string {
-  return path.join(app.getPath("userData"), "relationship-log.json")
+  return getActiveCharacterState()?.relationshipFile
+    ?? path.join(app.getPath("userData"), "relationship-log.json")
 }
 
 function localDate(ts: number): string {

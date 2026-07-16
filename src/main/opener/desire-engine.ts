@@ -2,6 +2,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
+import { getActiveCharacterState } from "../character/character-state";
 import type { OpenerState } from "./opener-types";
 import {
   DESIRE_THRESHOLD, AFFINITY_MIN, AFFINITY_MAX,
@@ -34,7 +35,8 @@ export function defaultState(): OpenerState {
 }
 
 function getStatePath(): string {
-  return path.join(app.getPath("userData"), "opener-state.json");
+  return getActiveCharacterState()?.proactiveStateFile
+    ?? path.join(app.getPath("userData"), "opener-state.json");
 }
 
 function rolloverIfNewDay(state: OpenerState): OpenerState {
@@ -69,7 +71,9 @@ export function loadState(): OpenerState {
 
 export function saveState(state: OpenerState): void {
   try {
-    fs.writeFileSync(getStatePath(), JSON.stringify(state, null, 2), "utf8");
+    const statePath = getStatePath();
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
   } catch (err) {
     console.warn("[Opener] save state failed:", err);
   }

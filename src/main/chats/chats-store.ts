@@ -22,6 +22,7 @@ import {
   type ChatSessionMeta,
   type ChatSessionPurpose,
 } from "../../shared/chat-types";
+import { getActiveCharacterState } from "../character/character-state";
 
 const ROOT_DIR_NAME = "cyrene-chats";
 const SESSIONS_SUBDIR = "sessions";
@@ -132,9 +133,11 @@ function deriveTitle(messages: ChatMessage[]): string {
 
 // ── public API ──────────────────────────────────────────────
 
-export function initialize(): void {
+export function initialize(options?: { rootDir?: string }): void {
   if (initialized) return;
-  rootDir = path.join(app.getPath("userData"), ROOT_DIR_NAME);
+  rootDir = options?.rootDir
+    ?? getActiveCharacterState()?.chatsRoot
+    ?? path.join(app.getPath("userData"), ROOT_DIR_NAME);
   sessionsDir = path.join(rootDir, SESSIONS_SUBDIR);
   indexPath = path.join(rootDir, INDEX_FILE);
   ensureDirs();
