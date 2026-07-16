@@ -107,6 +107,12 @@ const systemApi = {
 
 contextBridge.exposeInMainWorld("system", systemApi);
 
+const characterApi = {
+  getActive: () => ipcRenderer.invoke(IPC.CHARACTER_ACTIVE_GET),
+};
+
+contextBridge.exposeInMainWorld("character", characterApi);
+
 const schedulerEventsApi = {
   onEvent: (callback: (event: unknown) => void) => {
     const listener = (_e: unknown, event: unknown) => {

@@ -9,6 +9,7 @@
 
 import { addMemory, searchHistoryEntries } from "../rag";
 import { toolRegistry } from "./tool-registry";
+import { peekActiveCharacterText } from "../character/active-character";
 
 const LOG_PREFIX = "[History]";
 
@@ -86,7 +87,9 @@ export function registerRecallHistoryTool(): void {
 
       const lines = sorted.map(h => {
         const date = new Date(h.createdAt).toLocaleString("zh-CN");
-        const role = h.metadata?.role === "user" ? "用户" : "昔涟";
+        const role = h.metadata?.role === "user"
+          ? "用户"
+          : (peekActiveCharacterText()?.displayName ?? "活动角色");
         // 截断过长内容，避免吃太多 token
         const text = h.text.length > 300 ? h.text.slice(0, 300) + "..." : h.text;
         return `[${date}] ${role}：${text}`;

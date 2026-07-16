@@ -382,6 +382,18 @@ describe("CharacterRuntime", () => {
           identityPath: path.join(fixtureRoot, "content", "identity.md"),
           soulPath: path.join(fixtureRoot, "content", "soul.md"),
           avatarPath: path.join(fixtureRoot, "avatar.svg"),
+          examplesPath: path.join(fixtureRoot, "content", "examples.md"),
+          toneRulesPath: path.join(fixtureRoot, "content", "tone-rules.md"),
+          stylesDirectoryPath: path.join(fixtureRoot, "content", "styles"),
+          scenesDirectoryPath: path.join(fixtureRoot, "content", "scenes"),
+          phoneIdentityPath: path.join(fixtureRoot, "content", "phone-identity.md"),
+          phoneStylePath: path.join(fixtureRoot, "content", "phone-style.md"),
+        },
+        capabilities: {
+          worldbook: {
+            status: "available",
+            directoryPath: path.join(fixtureRoot, "worldbook"),
+          },
         },
         stateRoot: path.join(userDataRoot, "characters", "fixture.lumen"),
       },

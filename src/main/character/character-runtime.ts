@@ -38,6 +38,13 @@ export type CharacterPackageManifest = Readonly<{
     identity: string;
     soul: string;
     avatar: string;
+    examples?: string;
+    canonQuotes?: string;
+    toneRules?: string;
+    stylesDirectory?: string;
+    scenesDirectory?: string;
+    phoneIdentity?: string;
+    phoneStyle?: string;
   }>;
   capabilities?: Readonly<{
     worldbook?: Readonly<{ directory: string }>;
@@ -76,6 +83,13 @@ export type ActiveCharacterContext = Readonly<{
     identityPath: string;
     soulPath: string;
     avatarPath: string;
+    examplesPath?: string;
+    canonQuotesPath?: string;
+    toneRulesPath?: string;
+    stylesDirectoryPath?: string;
+    scenesDirectoryPath?: string;
+    phoneIdentityPath?: string;
+    phoneStylePath?: string;
   }>;
   stateRoot: string;
   state: CharacterStateLayout;
@@ -374,6 +388,20 @@ function evaluatePackage(
   if (!isNonEmptyString(rawContent.identity)) invalidField("content.identity");
   if (!isNonEmptyString(rawContent.soul)) invalidField("content.soul");
   if (!isNonEmptyString(rawContent.avatar)) invalidField("content.avatar");
+  const optionalContentResources: Array<readonly [string, "file" | "directory"]> = [
+    ["examples", "file"],
+    ["canonQuotes", "file"],
+    ["toneRules", "file"],
+    ["stylesDirectory", "directory"],
+    ["scenesDirectory", "directory"],
+    ["phoneIdentity", "file"],
+    ["phoneStyle", "file"],
+  ];
+  for (const [field] of optionalContentResources) {
+    if (rawContent[field] !== undefined && !isNonEmptyString(rawContent[field])) {
+      invalidField(`content.${field}`);
+    }
+  }
   const rawCapabilities = rawManifest.capabilities === undefined
     ? undefined
     : isRecord(rawManifest.capabilities)
@@ -392,6 +420,29 @@ function evaluatePackage(
   if (isNonEmptyString(rawContent.identity)) coreResources.push(["content.identity", rawContent.identity]);
   if (isNonEmptyString(rawContent.soul)) coreResources.push(["content.soul", rawContent.soul]);
   if (isNonEmptyString(rawContent.avatar)) coreResources.push(["content.avatar", rawContent.avatar]);
+
+  for (const [field, kind] of optionalContentResources) {
+    const relativePath = rawContent[field];
+    if (!isNonEmptyString(relativePath)) continue;
+    const resourcePath = path.resolve(source.rootPath, relativePath);
+    if (!isPathInside(source.rootPath, resourcePath)) {
+      diagnostics.push({
+        code: "character.resource.outside_package",
+        message: `角色包资源必须位于包目录内：content.${field}`,
+        characterId: source.manifest.id,
+        field: `content.${field}`,
+        resourcePath,
+      });
+      continue;
+    }
+    const exists = fs.existsSync(resourcePath);
+    const hasExpectedKind = exists && (kind === "file"
+      ? fs.statSync(resourcePath).isFile()
+      : fs.statSync(resourcePath).isDirectory());
+    if (!hasExpectedKind) {
+      diagnostics.push(resourceDiagnostic(source, `content.${field}`, relativePath));
+    }
+  }
 
   for (const [field, relativePath] of coreResources) {
     const resourcePath = path.resolve(source.rootPath, relativePath);
@@ -549,6 +600,27 @@ function buildActiveContext(
       identityPath: path.resolve(source.rootPath, manifest.content.identity),
       soulPath: path.resolve(source.rootPath, manifest.content.soul),
       avatarPath: path.resolve(source.rootPath, manifest.content.avatar),
+      ...(manifest.content.examples
+        ? { examplesPath: path.resolve(source.rootPath, manifest.content.examples) }
+        : {}),
+      ...(manifest.content.canonQuotes
+        ? { canonQuotesPath: path.resolve(source.rootPath, manifest.content.canonQuotes) }
+        : {}),
+      ...(manifest.content.toneRules
+        ? { toneRulesPath: path.resolve(source.rootPath, manifest.content.toneRules) }
+        : {}),
+      ...(manifest.content.stylesDirectory
+        ? { stylesDirectoryPath: path.resolve(source.rootPath, manifest.content.stylesDirectory) }
+        : {}),
+      ...(manifest.content.scenesDirectory
+        ? { scenesDirectoryPath: path.resolve(source.rootPath, manifest.content.scenesDirectory) }
+        : {}),
+      ...(manifest.content.phoneIdentity
+        ? { phoneIdentityPath: path.resolve(source.rootPath, manifest.content.phoneIdentity) }
+        : {}),
+      ...(manifest.content.phoneStyle
+        ? { phoneStylePath: path.resolve(source.rootPath, manifest.content.phoneStyle) }
+        : {}),
     },
     stateRoot: state.root,
     state,
@@ -1009,6 +1081,12 @@ export function createDefaultCharacterRuntime(
       identity: "prompts/identity.md",
       soul: "prompts/soul.md",
       avatar: "assets/icon-presets/cyrene-sun.png",
+      canonQuotes: "prompts/canon_quotes.md",
+      toneRules: "prompts/tone-rules.md",
+      stylesDirectory: "prompts/styles",
+      scenesDirectory: "skills/cyrene-original-voice/references",
+      phoneIdentity: "prompts/phone_identity.md",
+      phoneStyle: "prompts/phone_style.md",
     },
     capabilities: {
       worldbook: { directory: "prompts/worldbook" },

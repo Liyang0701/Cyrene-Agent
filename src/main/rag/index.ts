@@ -12,6 +12,7 @@ import { feedEntityNamesToJieba } from "../memory/entity-graph";
 import { isL2LocallyRecallable } from "../memory/memory-types";
 import type { DocumentImportControl } from "./file-ingest";
 import { getActiveCharacterState } from "../character/character-state";
+import { peekActiveCharacterText } from "../character/active-character";
 
 // ── Global RAG instances ──
 let store: JsonVectorStore | null = null;
@@ -39,7 +40,8 @@ export async function initRAG(
     retriever = new HybridRetriever(store, provider);
   }
   worldbook = new WorldbookManager(
-    path.join(app.getAppPath(), "prompts", "worldbook"),
+    peekActiveCharacterText()?.worldbookDirectoryPath
+      ?? path.join(app.getAppPath(), "prompts", "worldbook"),
     { stateFile: getActiveCharacterState()?.worldbookStateFile ?? path.join(app.getPath("userData"), "worldbook-state.json") }
   );
   await worldbook.loadFromDirectory();

@@ -717,14 +717,14 @@ const NAV_LABELS: Record<string, { emoji: string; title: string; hint: string }>
   chat: { emoji: "💬", title: "聊天", hint: "管理聊天窗口与会话" },
   user: { emoji: "👤", title: "用户信息", hint: "编辑你的个人资料" },
   tasks: { emoji: "⏰", title: "定时任务", hint: "管理定时提醒与日程" },
-  identity: { emoji: "💼", title: "职位", hint: "自定义昔涟的身份定位与工作职责" },
+  identity: { emoji: "💼", title: "职位", hint: "自定义活动角色的身份定位与工作职责" },
   skills: { emoji: "✨", title: "Skill", hint: "管理 agent 的 skill 指令（约束如何用工具）" },
   plugins: { emoji: "🔌", title: "插件", hint: "扩展功能与第三方集成" },
   preferences: { emoji: "🫧", title: "偏好设置", hint: "设置聊天窗口和输出行为的默认偏好" },
-  appearance: { emoji: "🎨", title: "外观设置", hint: "调整窗口布局、界面主题与昔涟桌宠" },
+  appearance: { emoji: "🎨", title: "外观设置", hint: "调整窗口布局、界面主题与活动角色桌宠" },
   general: { emoji: "⚙️", title: "通用设置", hint: "管理窗口、音频和系统行为" },
   api: { emoji: "🔑", title: "API 设置", hint: "选择预设后只需要填写 API Key。" },
-  cyrene: { emoji: "🌸", title: "昔涟设置", hint: "管理 Agent 行为、记忆、RAG 与权限" },
+  cyrene: { emoji: "🌸", title: "角色行为", hint: "管理 Agent 行为、记忆、RAG 与权限" },
   characters: { emoji: "🎭", title: "角色", hint: "安全导入并检查本地角色包" },
   tts: { emoji: "🎙️", title: "TTS 设置", hint: "语音合成与朗读偏好" },
   asr: { emoji: "🎧", title: "ASR 设置", hint: "语音识别与通话配置" },
@@ -3422,7 +3422,7 @@ function renderL2List(query = ""): void {
       meta: `状态：${item.status} · 权重：${item.weight.toFixed(1)} · 创建于：${formatDateTime(item.createdAt)}`,
     })),
     normalized ? "没有匹配的事件记忆" : "暂无事件记忆",
-    normalized ? "换个关键词试试" : "聊天后昔涟会自动提炼重要信息",
+    normalized ? "换个关键词试试" : "聊天后活动角色会自动提炼重要信息",
   );
 }
 
@@ -3731,10 +3731,10 @@ const permissionBlocksWrap = document.getElementById("plugin-file-permission") a
 const permissionNote = document.getElementById("plugin-file-note") as HTMLElement | null;
 
 const PERMISSION_NOTES: Record<PermissionLevel, string> = {
-  "read-only": "只读：昔涟不会修改本地任何文件，也不能为你安装新工具。",
-  "scoped": "指定目录：昔涟只能在你授权的目录里读写文件（白名单后续在此面板配置）。",
-  "per-action": "每次审批：每次涉及文件或安装的操作，昔涟都会在聊天里弹卡片让你确认。",
-  "full": "完全访问：昔涟可以自由调用本地命令（含 git/npm/pip）。请只在你完全信任的情况下使用。",
+  "read-only": "只读：活动角色不会修改本地任何文件，也不能为你安装新工具。",
+  "scoped": "指定目录：活动角色只能在你授权的目录里读写文件（白名单后续在此面板配置）。",
+  "per-action": "每次审批：每次涉及文件或安装的操作，活动角色都会在聊天里弹卡片让你确认。",
+  "full": "完全访问：活动角色可以自由调用本地命令（含 git/npm/pip）。请只在你完全信任的情况下使用。",
 };
 
 function paintPermissionUI(level: PermissionLevel): void {
@@ -3763,7 +3763,7 @@ async function confirmFullAccess(): Promise<boolean> {
   const confirmBtn = _cyModalOverlay.querySelector("#cy-modal-confirm") as HTMLButtonElement;
   iconEl.textContent = "⚠️";
   titleEl.textContent = "切换到完全访问？";
-  msgEl.textContent = "这意味着昔涟可以在你的电脑上自由执行命令，包括 git clone、npm install、删除文件等。请只在你完全信任她的判断时启用。";
+  msgEl.textContent = "这意味着活动角色可以在你的电脑上自由执行命令，包括 git clone、npm install、删除文件等。请只在你完全信任当前角色时启用。";
   cancelBtn.textContent = "再想想";
   _cyModalOverlay.classList.remove("is-hidden");
 

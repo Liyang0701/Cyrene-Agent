@@ -11,6 +11,7 @@ import { canUseMinimaxStreamingEarly, extractEarlyTtsSegment } from "../../share
 import { getStickerSrcForId } from "./sticker-src";
 import { formatAttachmentTagDetail, getAttachmentIcon } from "./attachment-labels";
 import { resolveAsset } from "../../shared/renderer-base";
+import { hydrateActiveCharacterIdentity } from "../ui/active-character";
 import {
   getAssistantReplyBubbleTexts,
   MAX_ASSISTANT_REPLY_BUBBLES,
@@ -243,16 +244,17 @@ const chatRailEmpty = document.getElementById("chat-rail-empty") as HTMLElement 
 // 旧版 localStorage key——首次启动时检测到老数据会迁移到主进程 chats 存储再清掉。
 const LEGACY_STORAGE_KEY = "cyrene.chat.history.v1";
 const FRONTEND_REPLY_TIMEOUT_MS = 35000;
+let activeCharacterName = "活动角色";
 
 /**
  * Avatar source per role. Empty string = use the gradient placeholder
  * baked into the CSS background of `.msg--user .msg__avatar`.
  *
- * Model side: 昔涟的 PNG，由 CSS border-radius: 50% 自动裁圆。
+ * Model side: 活动角色头像，由 CSS border-radius: 50% 自动裁圆。
  * User side: 暂留空，等设置页里上传用户头像后再把 user 改成 file:// 或 data: URL。
  */
 const AVATAR_SRC: Record<Role, string> = {
-  model: resolveAsset("avatars/cyrene-avatar.png"),
+  model: "",
   user: "",
 };
 
@@ -1198,8 +1200,7 @@ function hideTransientStatus(): void {
 }
 
 function render(preserveScroll = false): void {
-  // 空态：当前会话还没有消息时（新建/全清）显示"昔涟期待与你聊天哦 ✨"占位
-  // thinking 状态（昔涟主动开场/流式回复中）也算有消息，胶囊应立即消失
+  // 空态：当前会话还没有消息时显示活动角色占位；thinking 状态也算有消息。
   const emptyEl = document.getElementById("chat-empty");
   const hasMessages = messages.some((m) =>
     m.content.trim()
@@ -1275,7 +1276,7 @@ function render(preserveScroll = false): void {
         const sticker = document.createElement("img");
         sticker.className = "msg__sticker";
         sticker.src = stickerSrc;
-        sticker.alt = m.role === "user" ? "用户表情" : "昔涟表情";
+        sticker.alt = m.role === "user" ? "用户表情" : `${activeCharacterName}表情`;
         sticker.draggable = false;
         // <img> 高度异步加载，render() 末尾的滚动会在图片撑开前就执行，
         // 导致 sticker 底部被输入框挡住。加载完成后再补一次滚到底。
@@ -2424,7 +2425,7 @@ interface QuickPreset {
 }
 
 const QUICK_PRESETS: QuickPreset[] = [
-  { id: "chat",     label: "和昔涟聊天", icon: "💬",  mode: "chat" },
+  { id: "chat",     label: "和活动角色聊天", icon: "💬",  mode: "chat" },
   { id: "schedule", label: "设置定时任务", icon: "⏰", mode: "fill", prompt: "帮我设置一个定时任务：" },
   { id: "weather",  label: "查看天气",   icon: "🌤️", mode: "fill", prompt: "帮我查一下今天的天气" },
   { id: "document", label: "生成文档",   icon: "📄", mode: "fill", prompt: "帮我生成一份文档：" },
@@ -2641,7 +2642,7 @@ async function triggerCyreneGreeting(): Promise<void> {
 
     // 种子消息：不推入 messages 数组、不渲染，只作为 agent 输入触发昔涟主动开口
     const ack = await window.agui!.run({
-      messages: [{ role: "user", content: "[internal] 用户点击了「和昔涟聊天」，请你主动开口聊几句，像朋友打招呼一样自然开场。" }],
+      messages: [{ role: "user", content: `[internal] 用户点击了「和${activeCharacterName}聊天」，请以当前活动角色身份主动开口聊几句，像朋友打招呼一样自然开场。` }],
       style: getCurrentStyle(),
       sessionId: currentSessionId || undefined,
     });
@@ -3650,6 +3651,12 @@ if (particlesCtx) {
 // 先把用户贴纸目录拉到内存，再 bootstrap 渲染历史消息——否则首屏里
 // 纯贴纸消息（气泡已隐藏）会因 enabledStickers 还没加载而渲染成空白。
 void (async () => {
+  const identity = await hydrateActiveCharacterIdentity("chat").catch(() => null);
+  if (identity) {
+    activeCharacterName = identity.displayName;
+    AVATAR_SRC.model = identity.avatarUrl;
+    QUICK_PRESETS[0].label = `和${identity.displayName}聊天`;
+  }
   await loadEnabledStickers();
   await bootstrap();
   buildQuickPresets();

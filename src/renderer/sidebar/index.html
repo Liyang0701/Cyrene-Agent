@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>昔涟 · 状态</title>
+  <title>Cyrene Agent · 状态</title>
   <link rel="stylesheet" href="../ui/tokens.css" />
   <link rel="stylesheet" href="../ui/fonts.css" />
   <link rel="stylesheet" href="../ui/base.css" />
@@ -14,7 +14,7 @@
     <header class="sidebar__titlebar">
       <button type="button" class="sidebar__icon-btn" id="pin-btn" aria-label="置顶" title="置顶">📌</button>
       <div class="sidebar__title">
-        <span class="sidebar__name">昔涟</span>
+        <span class="sidebar__name" data-character-name>活动角色</span>
         <span class="sidebar__hint">状态面板</span>
       </div>
       <div class="sidebar__titlebar-actions">
@@ -32,8 +32,8 @@
 
     <main class="sidebar__body">
       <section class="profile">
-        <img class="profile__avatar" src="/avatars/cyrene-avatar.png" alt="昔涟" draggable="false" />
-        <div class="profile__name">昔涟</div>
+        <img class="profile__avatar" data-character-avatar alt="活动角色" draggable="false" />
+        <div class="profile__name" data-character-name>活动角色</div>
         <div class="profile__online">
           <span class="profile__dot" aria-hidden="true"></span>
           <span id="online-status-label">在线</span>
@@ -91,7 +91,7 @@
 
       <hr class="sidebar__divider" />
 
-      <div class="sidebar__version">昔涟 v0.1.1</div>
+      <div class="sidebar__version">Cyrene Agent v0.1.1</div>
     </main>
   </div>
   <script type="module" src="./sidebar.ts"></script>

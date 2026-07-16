@@ -14,7 +14,7 @@ describe("character settings markup", () => {
 
   it("states that switching remains unavailable instead of exposing a partial control", () => {
     const panel = html.match(/<section[^>]+id="characters-panel"[\s\S]*?<\/section>/)?.[0] ?? "";
-    expect(panel).toContain("角色切换将在对话、语音、Live2D 与独立状态全部接入后开放");
+    expect(panel).toContain("角色切换入口将在对话、语音、Live2D 与独立状态全部接入后开放");
     expect(panel).not.toContain("切换角色</button>");
   });
 });

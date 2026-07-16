@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>昔涟 · 语音通话</title>
+  <title>Cyrene Agent · 语音通话</title>
   <link rel="stylesheet" href="../ui/tokens.css" />
   <link rel="stylesheet" href="../ui/fonts.css" />
   <link rel="stylesheet" href="../ui/base.css" />
@@ -22,9 +22,9 @@
       <!-- 状态文字 -->
       <div class="call__status" id="call-status">正在连接...</div>
 
-      <!-- 头衔区：昔涟名字 + 在线指示 -->
+      <!-- 头衔区：活动角色名字 + 在线指示 -->
       <div class="call__identity">
-        <span class="call__name">昔涟</span>
+        <span class="call__name" data-character-name>活动角色</span>
         <span class="call__presence" aria-hidden="true"></span>
       </div>
 
@@ -37,7 +37,7 @@
           <span></span>
         </div>
         <canvas class="call__waveform" id="waveform-canvas"></canvas>
-        <img class="call__avatar" src="/avatars/cyrene-avatar.png" alt="昔涟" draggable="false" />
+        <img class="call__avatar" data-character-avatar alt="活动角色" draggable="false" />
       </div>
 
       <!-- 转写区（可关闭，只显示当前一轮） -->
