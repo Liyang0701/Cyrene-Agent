@@ -16,8 +16,7 @@
 //   history-log 是精确窗口 (sliding window), 短期明确
 import * as fs from "fs";
 import * as path from "path";
-import { app } from "electron";
-import { getActiveCharacterState } from "../character/character-state";
+import { requireActiveCharacterState } from "../character/character-state";
 
 const LOG = "[ChannelHistory]";
 
@@ -31,8 +30,7 @@ export interface HistoryEntry {
 const MAX_FILE_LINES = 200; // 最近 200 条, 远大于滑动窗口 16
 
 function dir(): string {
-  return getActiveCharacterState()?.channelHistoryRoot
-    ?? path.join(app.getPath("userData"), "channels", "history");
+  return requireActiveCharacterState().channelHistoryRoot;
 }
 
 /** sessionId 可能不安全做文件名, 用 sha256 hex 兜底. dispatcher 给的已是 hash+prefix 形式也 OK. */

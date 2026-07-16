@@ -11,8 +11,8 @@ import { chunkText } from "./chunk";
 import { feedEntityNamesToJieba } from "../memory/entity-graph";
 import { isL2LocallyRecallable } from "../memory/memory-types";
 import type { DocumentImportControl } from "./file-ingest";
-import { getActiveCharacterState } from "../character/character-state";
-import { peekActiveCharacterText } from "../character/active-character";
+import { requireActiveCharacterState } from "../character/character-state";
+import { getActiveCharacterText } from "../character/active-character";
 import { resolveGlobalUserDataLayout } from "../character/global-user-data";
 
 // ── Global RAG instances ──
@@ -24,8 +24,7 @@ let worldbook: WorldbookManager | null = null;
 let provider: EmbeddingProvider | null = null;
 
 function getDataDir(): string {
-  return getActiveCharacterState()?.ragRoot
-    ?? path.join(app.getPath("userData"), "rag-data");
+  return requireActiveCharacterState().ragRoot;
 }
 
 function getGlobalDocumentDataDir(): string {
@@ -93,15 +92,14 @@ export async function initRAG(
     retriever = new HybridRetriever(store, provider);
     documentRetriever = new HybridRetriever(documentStore, provider);
   }
-  worldbook = new WorldbookManager(
-    peekActiveCharacterText()?.worldbookDirectoryPath
-      ?? path.join(app.getAppPath(), "prompts", "worldbook"),
-    { stateFile: getActiveCharacterState()?.worldbookStateFile ?? path.join(app.getPath("userData"), "worldbook-state.json") }
-  );
+  const activeText = getActiveCharacterText();
+  worldbook = new WorldbookManager(activeText.worldbookDirectoryPath, {
+    stateFile: requireActiveCharacterState().worldbookStateFile,
+  });
   await worldbook.loadFromDirectory();
 
   // 把实体图谱中的已有实体名灌入 jieba 自定义词典
-  // 防止 "昔涟"、"小鹿" 等 AI 伴侣核心名词被错误切分
+  // 防止角色名、昵称等 AI 伴侣核心名词被错误切分
   await feedEntityNamesToJieba();
 
   console.log(

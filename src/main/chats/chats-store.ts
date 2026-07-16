@@ -1,6 +1,6 @@
 // 聊天会话持久化存储
 //
-// 布局：<userData>/cyrene-chats/
+// 布局：<userData>/characters/<character-id>/chats/
 //   index.json              — ChatSessionMeta[]，按 updatedAt desc 排序
 //   sessions/<id>.json      — 完整 ChatSession（含 messages）
 //
@@ -9,9 +9,9 @@
 // - 写时先写 .tmp 再 rename，避免 crash 中间态损坏文件；
 // - index.json 在内存里有缓存（initialize() 时一次性加载），
 //   后续 list 直接返回缓存的 deep clone；任何写操作后同步刷新缓存；
-// - 删除文件夹整体可移植：用户拷贝 cyrene-chats/ 到新机器即可恢复。
+// - 删除文件夹整体可移植：用户拷贝角色 chats/ 到新机器即可恢复。
 
-import { app, shell } from "electron";
+import { shell } from "electron";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -22,9 +22,8 @@ import {
   type ChatSessionMeta,
   type ChatSessionPurpose,
 } from "../../shared/chat-types";
-import { getActiveCharacterState } from "../character/character-state";
+import { requireActiveCharacterState } from "../character/character-state";
 
-const ROOT_DIR_NAME = "cyrene-chats";
 const SESSIONS_SUBDIR = "sessions";
 const INDEX_FILE = "index.json";
 
@@ -136,8 +135,7 @@ function deriveTitle(messages: ChatMessage[]): string {
 export function initialize(options?: { rootDir?: string }): void {
   if (initialized) return;
   rootDir = options?.rootDir
-    ?? getActiveCharacterState()?.chatsRoot
-    ?? path.join(app.getPath("userData"), ROOT_DIR_NAME);
+    ?? requireActiveCharacterState().chatsRoot;
   sessionsDir = path.join(rootDir, SESSIONS_SUBDIR);
   indexPath = path.join(rootDir, INDEX_FILE);
   ensureDirs();

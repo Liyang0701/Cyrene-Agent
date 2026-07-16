@@ -249,7 +249,7 @@ export async function endTurn(): Promise<void> {
       return;
     }
     if (tts.ttsEngine === "mimo" && (!tts.ttsMimoKey || !tts.ttsMimoVoiceAudioPath)) {
-      sendError("TTS 未配置：请在设置中配置小米 MiMo API Key 和昔涟克隆音频");
+      sendError("TTS 未配置：请在设置中配置小米 MiMo API Key 和角色参考音频");
       await restartAsr();
       return;
     }

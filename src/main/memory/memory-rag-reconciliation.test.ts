@@ -116,15 +116,20 @@ describe("memory/RAG reconciliation backups", () => {
   it("backs up both stores and caps retained snapshots", () => {
     const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-rag-backup-"));
     backupTempDirs.push(userDataDir);
-    fs.mkdirSync(path.join(userDataDir, "rag-data"), { recursive: true });
-    fs.writeFileSync(path.join(userDataDir, "memory.json"), "memory", "utf8");
-    fs.writeFileSync(path.join(userDataDir, "rag-data", "memory-store.json"), "vectors", "utf8");
+    const memoryFile = path.join(userDataDir, "character", "memory.json");
+    const vectorFile = path.join(userDataDir, "character", "rag", "memory-store.json");
+    const backupDir = path.join(userDataDir, "character", "reconcile-backups");
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.mkdirSync(path.dirname(vectorFile), { recursive: true });
+    fs.writeFileSync(memoryFile, "memory", "utf8");
+    fs.writeFileSync(vectorFile, "vectors", "utf8");
 
-    backupMemoryRagFiles(userDataDir, 100, 2);
-    backupMemoryRagFiles(userDataDir, 200, 2);
-    backupMemoryRagFiles(userDataDir, 300, 2);
+    const statePaths = { memoryFile, vectorFile, backupDir };
+    backupMemoryRagFiles(statePaths, 100, 2);
+    backupMemoryRagFiles(statePaths, 200, 2);
+    backupMemoryRagFiles(statePaths, 300, 2);
 
-    const backups = fs.readdirSync(path.join(userDataDir, "memory-reconcile-backups")).sort();
+    const backups = fs.readdirSync(backupDir).sort();
     expect(backups).toEqual([
       "memory-store.200.json",
       "memory-store.300.json",

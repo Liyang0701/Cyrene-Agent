@@ -24,7 +24,7 @@ describe("chats store", () => {
 
   it("includes messageCount in paged session metadata", async () => {
     const { createSession, getSessionPage, initialize } = await import("./chats-store");
-    initialize();
+    initialize({ rootDir: path.join(electronMock.userDataDir, "characters", "test", "chats") });
 
     const session = createSession({
       initialMessages: [
@@ -42,7 +42,7 @@ describe("chats store", () => {
 
   it("persists and indexes a session purpose", async () => {
     let store = await import("./chats-store");
-    store.initialize();
+    store.initialize({ rootDir: path.join(electronMock.userDataDir, "characters", "test", "chats") });
 
     const created = store.createSession({
       title: "昔涟的主动消息",
@@ -56,7 +56,7 @@ describe("chats store", () => {
 
     vi.resetModules();
     store = await import("./chats-store");
-    store.initialize();
+    store.initialize({ rootDir: path.join(electronMock.userDataDir, "characters", "test", "chats") });
 
     expect(store.getSessionByPurpose("proactive-chat")?.id).toBe(created.id);
     expect(store.getSession(created.id)?.purpose).toBe("proactive-chat");
@@ -64,7 +64,7 @@ describe("chats store", () => {
 
   it("returns one proactive session for repeated singleton requests", async () => {
     const store = await import("./chats-store");
-    store.initialize();
+    store.initialize({ rootDir: path.join(electronMock.userDataDir, "characters", "test", "chats") });
 
     const sessions = await Promise.all(Array.from({ length: 8 }, async () => (
       store.getOrCreateSessionByPurpose("proactive-chat", { title: "昔涟的主动消息" })
@@ -79,7 +79,7 @@ describe("chats store", () => {
 
   it("recreates the proactive singleton after it is deleted", async () => {
     const store = await import("./chats-store");
-    store.initialize();
+    store.initialize({ rootDir: path.join(electronMock.userDataDir, "characters", "test", "chats") });
 
     const first = store.getOrCreateSessionByPurpose("proactive-chat", { title: "昔涟的主动消息" });
     expect(store.deleteSession(first.id)).toBe(true);

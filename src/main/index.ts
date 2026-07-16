@@ -157,7 +157,7 @@ import {
   requestCharacterSwitch,
   uninstallCharacterPackage,
 } from "./character/character-ipc";
-import { configureActiveCharacterState, getActiveCharacterState } from "./character/character-state";
+import { configureActiveCharacterState, requireActiveCharacterState } from "./character/character-state";
 import { resolveGlobalUserDataLayout } from "./character/global-user-data";
 import {
   configureActiveCharacter,
@@ -185,12 +185,12 @@ async function reconcileUserMemoryIndex(): Promise<void> {
     getMemories: () => memoryStore.getAllL2(),
     getVectors: () => getEntriesBySource("user_memory"),
     backup: async () => {
-      const state = getActiveCharacterState();
-      backupMemoryRagFiles(app.getPath("userData"), Date.now(), 3, state ? {
+      const state = requireActiveCharacterState();
+      backupMemoryRagFiles({
         memoryFile: state.memoryFile,
         vectorFile: path.join(state.ragRoot, "memory-store.json"),
         backupDir: path.join(path.dirname(state.memoryFile), "reconcile-backups"),
-      } : undefined);
+      }, Date.now(), 3);
     },
     addVector: addL2MemoryVector,
     markSynced: (l2Id, ragId) => memoryStore.markL2SyncStatus(l2Id, "synced", ragId),
@@ -285,8 +285,7 @@ function appendMimoTtsLog(entry: Record<string, unknown>): void {
 }
 
 function getTtsCacheDir(): string {
-  return getActiveCharacterState()?.ttsCacheRoot
-    ?? path.join(app.getPath("userData"), "cyrene-tts-cache");
+  return requireActiveCharacterState().ttsCacheRoot;
 }
 
 function assertTtsCacheKey(cacheKey: string): string {
@@ -817,7 +816,7 @@ const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   asrLocalRoot: path.join(os.homedir(), "Documents", "local-llms", "qwen3-asr-1.7b"),
   asrLocalModelPath: path.join(os.homedir(), "Documents", "local-llms", "qwen3-asr-1.7b", "model"),
   asrLocalTimeoutMs: 30000,
-  asrLocalSystemPrompt: "以下是语音转写。角色名可能包括：昔涟。技术名词可能包括：Qwen3.5、Cyrene。请忠实转写，不要改写。",
+  asrLocalSystemPrompt: "以下是语音转写。技术名词可能包括：Qwen3.5、Cyrene。请忠实转写，不要改写。",
   asrLanguage: "zh",
   asrVadSilenceMs: 1000,
   asrVadThreshold: 0.01,
@@ -3996,13 +3995,15 @@ app.whenReady().then(async () => {
     `[CharacterRuntime] Active Character ready: ${characterSnapshot.activeCharacter.displayName} (${characterSnapshot.activeCharacter.id})`,
   );
   configureActiveCharacter(characterSnapshot.activeCharacter);
+  configureActiveCharacterState(characterSnapshot.activeCharacter.state);
   const stateMigrationFailed = characterSnapshot.diagnostics.some(({ code }) => (
     code.startsWith("character.state_migration.")
   ));
   if (stateMigrationFailed) {
-    console.warn("[CharacterRuntime] 状态迁移失败，本次启动继续使用昔涟旧状态路径", characterSnapshot.diagnostics);
-  } else {
-    configureActiveCharacterState(characterSnapshot.activeCharacter.state);
+    console.warn(
+      "[CharacterRuntime] 状态迁移存在诊断；本次启动保持角色状态目录隔离，旧全局路径不会重新挂载",
+      characterSnapshot.diagnostics,
+    );
   }
 
   // 注册 local-sticker:// 协议处理器：将请求映射到 userData/stickers/ 下的文件
@@ -4592,7 +4593,7 @@ app.whenReady().then(async () => {
     };
   });
 
-  // 聊天会话存储 IPC（chats-store.initialize 会建好 cyrene-chats 目录并加载 index）
+  // 聊天会话存储 IPC（chats-store.initialize 会创建活动角色的 chats 目录并加载 index）
   registerChatsIpc();
   initializeProactiveChatService();
 
@@ -4720,6 +4721,7 @@ app.whenReady().then(async () => {
       text: msg.text,
       attachments: msg.attachments,
       enabledToolIds: filteredTools.map((tool) => tool.id),
+      characterNames: getActiveCharacter().speechRecognitionHints.terms,
     });
     options.executionMode = executionPlan.mode === "soul-only" ? "soul-only" : "two-phase";
     options.softNoThink = shouldUseWechatQwenSoftNoThink({

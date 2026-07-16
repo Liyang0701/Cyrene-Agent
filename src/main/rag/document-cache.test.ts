@@ -120,7 +120,7 @@ describe("document cache", () => {
   });
 
   it("treats malformed cache records as cache misses", async () => {
-    const cachePath = path.join(tmpDir, "rag-data", "document-cache.json");
+    const cachePath = path.join(tmpDir, "global", "documents", "document-cache.json");
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
 
     const malformedRecords = [
@@ -135,5 +135,26 @@ describe("document cache", () => {
       fs.writeFileSync(cachePath, JSON.stringify({ records: { "cache-key": record } }), "utf8");
       await expect(getValidDocumentCacheRecord("cache-key", () => true)).resolves.toBeNull();
     }
+  });
+
+  it("copies the legacy global cache into the explicit Global Document Library", async () => {
+    const legacyPath = path.join(tmpDir, "rag-data", "document-cache.json");
+    const targetPath = path.join(tmpDir, "global", "documents", "document-cache.json");
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(legacyPath, JSON.stringify({
+      records: {
+        "cache-key": {
+          key: "cache-key",
+          importId: "import-1",
+          chunkCount: 1,
+          fileName: "cached.md",
+          createdAt: new Date().toISOString(),
+        },
+      },
+    }), "utf8");
+
+    await expect(getValidDocumentCacheRecord("cache-key", () => true))
+      .resolves.toMatchObject({ importId: "import-1" });
+    expect(fs.existsSync(targetPath)).toBe(true);
   });
 });

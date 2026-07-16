@@ -8,6 +8,11 @@ import {
 } from "./character-state";
 
 describe("Character State Root", () => {
+  it("fails closed when business code asks for state before the active character is configured", async () => {
+    const state = await import("./character-state");
+    expect(() => state.requireActiveCharacterState()).toThrow("活动角色状态目录尚未就绪");
+  });
+
   it("resolves physically distinct state layouts for different Character IDs", () => {
     const userDataRoot = "/tmp/cyrene-user-data";
 

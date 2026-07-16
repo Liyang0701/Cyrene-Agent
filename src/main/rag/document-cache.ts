@@ -4,6 +4,7 @@ import path from "node:path";
 import { app } from "electron";
 import { DOCUMENT_CHUNK_OVERLAP, DOCUMENT_CHUNK_SIZE } from "./chunk";
 import { getEmbeddingProviderIdentity } from "./embedding";
+import { resolveGlobalUserDataLayout } from "../character/global-user-data";
 
 const CHUNK_STRATEGY_VERSION = "document-chunks-v1";
 
@@ -61,11 +62,30 @@ export async function buildDocumentCacheIdentityFromTextSha(textSha256: string):
 }
 
 function cachePath(): string {
-  return path.join(app.getPath("userData"), "rag-data", "document-cache.json");
+  return resolveGlobalUserDataLayout(app.getPath("userData")).documentCacheFile;
+}
+
+async function migrateLegacyDocumentCache(): Promise<void> {
+  const target = cachePath();
+  const legacy = path.join(app.getPath("userData"), "rag-data", "document-cache.json");
+  try {
+    await fs.access(target);
+    return;
+  } catch {
+    // The global cache has not been migrated yet.
+  }
+  try {
+    await fs.access(legacy);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.copyFile(legacy, target);
+  } catch {
+    // A missing legacy cache is a normal first-run state.
+  }
 }
 
 async function readDocumentCache(): Promise<DocumentCacheFile> {
   try {
+    await migrateLegacyDocumentCache();
     const raw = await fs.readFile(cachePath(), "utf8");
     const parsed = JSON.parse(raw) as Partial<DocumentCacheFile>;
     if (!parsed.records || typeof parsed.records !== "object" || Array.isArray(parsed.records)) {

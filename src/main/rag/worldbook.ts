@@ -142,7 +142,7 @@ export interface WorldbookManagerOptions {
 
 export class WorldbookManager {
   private entries: WorldbookEntry[] = [];
-  private worldbookDir: string;
+  private worldbookDir?: string;
   private state = new Map<string, EntryState>();
   // ── One-Shot cascade：本轮用户命中后连带触发的条目（不入 DMAE 状态表，只本轮有效）──
   private lastCascadeEntries: WorldbookEntry[] = [];
@@ -158,7 +158,7 @@ export class WorldbookManager {
   // .md 未写 intrinsic value 时的 fallback（详见 worldbook-constants.ts）
   private static readonly DEFAULT_INTRINSIC_VALUE = WORLDBOOK_CONSTANTS.DEFAULT_INTRINSIC_VALUE;
 
-  constructor(worldbookDir: string, options?: WorldbookManagerOptions) {
+  constructor(worldbookDir?: string, options?: WorldbookManagerOptions) {
     this.worldbookDir = worldbookDir;
     this.params = { ...DEFAULT_DMAE_PARAMS, ...(options?.params ?? {}) };
     this.rewardStrategy = options?.rewardStrategy ?? new DefaultRewardStrategy();
@@ -169,6 +169,11 @@ export class WorldbookManager {
 
   // Load all .md files from the worldbook directory
   async loadFromDirectory(): Promise<void> {
+    if (!this.worldbookDir) {
+      this.entries = [];
+      this.state.clear();
+      return;
+    }
     if (!fs.existsSync(this.worldbookDir)) {
       console.warn("[Worldbook] directory not found:", this.worldbookDir);
       return;

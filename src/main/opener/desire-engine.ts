@@ -1,8 +1,7 @@
 // Desire 累积 + 概率门 + affinity 反馈 + 持久化
 import * as fs from "fs";
 import * as path from "path";
-import { app } from "electron";
-import { getActiveCharacterState } from "../character/character-state";
+import { requireActiveCharacterState } from "../character/character-state";
 import type { OpenerState } from "./opener-types";
 import {
   DESIRE_THRESHOLD, AFFINITY_MIN, AFFINITY_MAX,
@@ -35,8 +34,7 @@ export function defaultState(): OpenerState {
 }
 
 function getStatePath(): string {
-  return getActiveCharacterState()?.proactiveStateFile
-    ?? path.join(app.getPath("userData"), "opener-state.json");
+  return requireActiveCharacterState().proactiveStateFile;
 }
 
 function rolloverIfNewDay(state: OpenerState): OpenerState {
