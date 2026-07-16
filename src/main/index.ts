@@ -154,6 +154,10 @@ import {
   getActiveCharacterText,
 } from "./character/active-character";
 import { composeCharacterSystemPrompt } from "./character/character-text-context";
+import {
+  prepareLive2dModelJsonForProtocol,
+  resolveCharacterResourceRequest,
+} from "./character/character-resource";
 
 let characterRuntime: CharacterRuntime | null = null;
 
@@ -3871,7 +3875,13 @@ ipcMain.handle(IPC.EMBEDDING_DELETE, async (_event, payload: unknown) => {
 protocol.registerSchemesAsPrivileged([
   { scheme: "local-sticker", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
   { scheme: "local-font", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } },
-  { scheme: "local-character", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  { scheme: "local-character", privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+    corsEnabled: true,
+  } },
 ]);
 
 app.whenReady().then(async () => {
@@ -3924,19 +3934,21 @@ app.whenReady().then(async () => {
     }));
   });
   protocol.handle("local-character", (request) => {
-    let requestUrl: URL;
-    try {
-      requestUrl = new URL(request.url);
-    } catch {
-      return new Response("Invalid character URL", { status: 404 });
-    }
     const active = getActiveCharacter();
-    if (requestUrl.hostname !== "active"
-      || requestUrl.pathname !== "/avatar"
-      || requestUrl.searchParams.get("character") !== active.id) {
-      return new Response("Invalid character resource", { status: 403 });
+    const resolved = resolveCharacterResourceRequest(active, request.url);
+    if (!resolved.ok) {
+      return new Response("Invalid character resource", { status: resolved.status });
     }
-    return net.fetch(pathToFileURL(active.content.avatarPath).toString());
+    if (!fs.existsSync(resolved.filePath) || !fs.statSync(resolved.filePath).isFile()) {
+      return new Response("Character resource not found", { status: 404 });
+    }
+    if (active.capabilities.live2d.status === "available"
+      && resolved.filePath === active.capabilities.live2d.modelPath) {
+      return new Response(prepareLive2dModelJsonForProtocol(fs.readFileSync(resolved.filePath, "utf8")), {
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
+    return net.fetch(pathToFileURL(resolved.filePath).toString());
   });
   // Token 用量查询 IPC
   ipcMain.handle(IPC.TOKEN_USAGE_GET, (_event, days: number) => {

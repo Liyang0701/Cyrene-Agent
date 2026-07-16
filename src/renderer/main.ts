@@ -2,16 +2,18 @@ import { Live2DManager } from "./live2d/manager";
 import "./ui/theme";
 import { InteractionController } from "./live2d/interaction";
 import { MouseFocusController } from "./live2d/focus";
-import { ExpressionResetController } from "./live2d/expression-reset";
+import { NeutralResetController } from "./live2d/neutral-reset";
 import { MouthSyncController } from "./live2d/mouth-sync";
 import { SpeakingMotionController } from "./live2d/speaking-motion";
 import { OpenerBubbleController } from "./live2d/opener-bubble";
 import { ClickThroughController } from "./live2d/click-through";
 import { Live2DRendererLifecycleTracker } from "./live2d/lifecycle-diagnostics";
-import { resolveAsset } from "../shared/renderer-base";
+import { applyCharacterPresentation } from "./live2d/presentation";
 
 const canvas = document.getElementById("live2d-canvas") as HTMLCanvasElement;
 if (!canvas) throw new Error("Canvas #live2d-canvas not found");
+const staticAvatar = document.getElementById("static-avatar") as HTMLImageElement | null;
+if (!staticAvatar) throw new Error("Image #static-avatar not found");
 
 if (!window.cyrene) {
   (window as unknown as { cyrene: unknown }).cyrene = {
@@ -37,14 +39,14 @@ declare global {
       onMouthStop: (callback: () => void) => () => void;
     };
     live2dAction?: {
-      onPlayAction: (callback: (target: import("../shared/live2d-actions").Live2DTarget) => void) => () => void;
+      onPlayAction: (callback: (target: import("../shared/semantic-actions").Live2DTarget) => void) => () => void;
     };
   }
 }
 
 let interaction: InteractionController | null = null;
 let focus: MouseFocusController | null = null;
-let expressionReset: ExpressionResetController | null = null;
+let expressionReset: NeutralResetController | null = null;
 let mouthSync: MouthSyncController | null = null;
 let speakingMotion: SpeakingMotionController | null = null;
 let clickThrough: ClickThroughController | null = null;
@@ -52,6 +54,14 @@ let openerBubble: OpenerBubbleController | null = null;
 let petZoomOff: (() => void) | null = null;
 let petVisibilityOff: (() => void) | null = null;
 let petVisible = true;
+let isDragging = false;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
+let pendingPosition: { x: number; y: number } | null = null;
+let rafId: number | null = null;
+let dragOverlay: HTMLImageElement | null = null;
+let dragToken = 0;
+let activeVisualKind: "live2d" | "static" = "live2d";
 let live2dSpeechOffs: Array<() => void> = [];
 const live2dLifecycle = new Live2DRendererLifecycleTracker();
 
@@ -69,123 +79,165 @@ function addTrackedEventListener(
   live2dLifecycle.track("listener", label, () => target.removeEventListener(type, listener));
 }
 
-const manager = new Live2DManager({
-  canvas,
-  width: window.innerWidth,
-  height: window.innerHeight,
-  modelPath: resolveAsset("models/cyrene/Cyrene.model3.json"),
-  onLoad: () => {
-    console.log("[Cyrene] Model loaded");
-    const model = manager.getModel();
-    if (!model) return;
+function addPetSurfaceEventListener(
+  label: string,
+  type: string,
+  listener: EventListenerOrEventListenerObject,
+): void {
+  addTrackedEventListener(canvas, `canvas:${label}`, type, listener);
+  addTrackedEventListener(staticAvatar, `static-avatar:${label}`, type, listener);
+}
 
-    expressionReset = new ExpressionResetController(model);
-    mouthSync = new MouthSyncController(model);
-    speakingMotion = new SpeakingMotionController(model);
-    // Opener 主动开口气泡
-    const speechOffs: Array<() => void> = [];
-    const openerBubbleEl = document.getElementById("opener-bubble");
-    if (openerBubbleEl) {
-      openerBubble = new OpenerBubbleController(openerBubbleEl);
-      speechOffs.push(trackSubscription("live2dSpeech:onShowBubble", openerBubble.attach()));
-    }
-    speechOffs.push(
-      trackSubscription("live2dSpeech:onPrepare", window.live2dSpeech?.onPrepare(() => {
-        void expressionReset?.resetNow();
-        mouthSync?.stop();
-        speakingMotion?.stop();
-      }) ?? (() => {})),
-      trackSubscription("live2dSpeech:onMouthStart", window.live2dSpeech?.onMouthStart((payload) => {
-        mouthSync?.start(Number(payload.durationMs ?? 0));
-        speakingMotion?.start();
-      }) ?? (() => {})),
-      trackSubscription("live2dSpeech:onMouthStop", window.live2dSpeech?.onMouthStop(() => {
-        mouthSync?.stop();
-        speakingMotion?.stop();
-      }) ?? (() => {})),
-    );
-    // LLM-driven action bridge: when Main sends a resolved Live2DTarget, play it.
-    speechOffs.push(
-      trackSubscription("live2dAction:onPlayAction", window.live2dAction?.onPlayAction((target) => {
-        void manager.playAction(target);
-      }) ?? (() => {})),
-    );
-    live2dSpeechOffs = speechOffs;
-    interaction = new InteractionController(canvas, model, manager.getHitAreaDefs(), {
-      onTrigger: (area) => {
-        expressionReset?.restart();
-        console.log("[Cyrene] hit", area.name, "->", area.group + ":" + area.motionName);
-      },
-      onMiss: (area) =>
-        console.warn("[Cyrene] hit", area.name, "has no resolvable motion"),
-    });
+let manager: Live2DManager | null = null;
 
-    focus = new MouseFocusController(canvas, model);
-    focus.focusCenter(true);
-
-    clickThrough = new ClickThroughController(canvas, manager, {
-      onInteractive: (interactive) => void window.cyrene.setInteractive(interactive),
-    });
-
-    // Apply the persisted zoom on load and track future changes. The main
-    // process has already resized the window to base × zoom; this rescales
-    // the model to match.
-    petZoomOff = trackSubscription("cyrene:onPetZoom", window.cyrene.onPetZoom((zoom) => manager.applyZoom(zoom)));
+async function initializeCharacterVisual(): Promise<void> {
+  const identity = await window.character?.getActive();
+  if (!identity) throw new Error("活动角色视觉身份尚未就绪");
+  const applied = applyCharacterPresentation(identity, { canvas, avatar: staticAvatar });
+  activeVisualKind = applied.kind;
+  if (applied.kind === "static") {
+    void window.cyrene.setInteractive(true);
     petVisibilityOff = trackSubscription("cyrene:onPetVisibilityChanged", window.cyrene.onPetVisibilityChanged((visible) => {
       petVisible = visible;
-      if (!visible) {
-        clickThrough?.pause();
-        focus?.pause();
-        manager.pause();
-        return;
-      }
-      if (!isDragging) {
-        manager.resume();
-        focus?.resume();
-        clickThrough?.resume();
-      }
+      staticAvatar.hidden = !visible;
+      void window.cyrene.setInteractive(visible);
     }));
-
-    // 启动竞态修复：主进程在渲染进程就绪前发的 PET_ZOOM 事件会被丢弃。
-    // 注册监听后主动从磁盘读一次 petZoom 并应用，确保重启后模型大小生效。
-    window.settings?.getGeneral().then((cfg) => {
-      if (cfg?.petZoom && cfg.petZoom !== 1) {
-        manager.applyZoom(cfg.petZoom);
-      }
-    }).catch(() => { /* 设置读取失败不影响加载 */ });
-
     (window as unknown as { __cyrene: unknown }).__cyrene = {
-      manager,
-      interaction,
-      focus,
-      expressionReset,
-      resetExpression: () => expressionReset?.resetNow(),
+      visual: "static",
       getLive2DDiagnostics: () => ({
-        resources: manager.getResourceMetrics(),
+        resources: { appActive: false, modelLoaded: false, disposed: false },
         lifecycle: live2dLifecycle.getDiagnostics(),
-        controllers: {
-          interaction: interaction !== null,
-          focus: focus !== null,
-          expressionReset: expressionReset !== null,
-          mouthSync: mouthSync !== null,
-          speakingMotion: speakingMotion !== null,
-          clickThrough: clickThrough !== null,
-          openerBubble: openerBubble !== null,
-        },
+        controllers: {},
         petVisible,
         isDragging,
       }),
     };
-  },
-  onError: (err) => {
-    console.error("[Cyrene] Failed to load model:", err);
-  },
-});
+    return;
+  }
 
-manager.init();
+  const presentation = identity.visual;
+  manager = new Live2DManager({
+    canvas,
+    width: window.innerWidth,
+    height: window.innerHeight,
+    modelPath: applied.modelUrl,
+    onLoad: () => {
+      console.log("[CharacterVisual] Model loaded:", identity.displayName);
+      const model = manager?.getModel();
+      if (!model || !manager) return;
+
+      expressionReset = presentation.neutralTarget
+        ? new NeutralResetController(async () => { await manager?.playAction(presentation.neutralTarget!); })
+        : null;
+      mouthSync = new MouthSyncController(model);
+      // 角色未声明专用说话动作时只驱动口型，绝不借用另一模型的表达式名称。
+      speakingMotion = null;
+      // Opener 主动开口气泡
+      const speechOffs: Array<() => void> = [];
+      const openerBubbleEl = document.getElementById("opener-bubble");
+      if (openerBubbleEl) {
+        openerBubble = new OpenerBubbleController(openerBubbleEl);
+        speechOffs.push(trackSubscription("live2dSpeech:onShowBubble", openerBubble.attach()));
+      }
+      speechOffs.push(
+        trackSubscription("live2dSpeech:onPrepare", window.live2dSpeech?.onPrepare(() => {
+          void expressionReset?.resetNow();
+          mouthSync?.stop();
+          speakingMotion?.stop();
+        }) ?? (() => {})),
+        trackSubscription("live2dSpeech:onMouthStart", window.live2dSpeech?.onMouthStart((payload) => {
+          mouthSync?.start(Number(payload.durationMs ?? 0));
+          speakingMotion?.start();
+        }) ?? (() => {})),
+        trackSubscription("live2dSpeech:onMouthStop", window.live2dSpeech?.onMouthStop(() => {
+          mouthSync?.stop();
+          speakingMotion?.stop();
+        }) ?? (() => {})),
+      );
+      // LLM-driven action bridge: when Main sends a resolved Live2DTarget, play it.
+      speechOffs.push(
+        trackSubscription("live2dAction:onPlayAction", window.live2dAction?.onPlayAction((target) => {
+          void manager?.playAction(target);
+        }) ?? (() => {})),
+      );
+      live2dSpeechOffs = speechOffs;
+      interaction = new InteractionController(canvas, model, manager.getHitAreaDefs(), {
+        onTrigger: (area) => {
+          expressionReset?.restart();
+          console.log("[Cyrene] hit", area.name, "->", area.group + ":" + area.motionName);
+        },
+        onMiss: (area) =>
+          console.warn("[Cyrene] hit", area.name, "has no resolvable motion"),
+      });
+
+      focus = new MouseFocusController(canvas, model);
+      focus.focusCenter(true);
+
+      clickThrough = new ClickThroughController(canvas, manager, {
+        onInteractive: (interactive) => void window.cyrene.setInteractive(interactive),
+      });
+
+    // Apply the persisted zoom on load and track future changes. The main
+    // process has already resized the window to base × zoom; this rescales
+    // the model to match.
+      petZoomOff = trackSubscription("cyrene:onPetZoom", window.cyrene.onPetZoom((zoom) => manager?.applyZoom(zoom)));
+      petVisibilityOff = trackSubscription("cyrene:onPetVisibilityChanged", window.cyrene.onPetVisibilityChanged((visible) => {
+        petVisible = visible;
+        if (!visible) {
+          clickThrough?.pause();
+          focus?.pause();
+          manager?.pause();
+          return;
+        }
+        if (!isDragging) {
+          manager?.resume();
+          focus?.resume();
+          clickThrough?.resume();
+        }
+      }));
+
+    // 启动竞态修复：主进程在渲染进程就绪前发的 PET_ZOOM 事件会被丢弃。
+    // 注册监听后主动从磁盘读一次 petZoom 并应用，确保重启后模型大小生效。
+      window.settings?.getGeneral().then((cfg) => {
+        if (cfg?.petZoom && cfg.petZoom !== 1) {
+          manager?.applyZoom(cfg.petZoom);
+        }
+      }).catch(() => { /* 设置读取失败不影响加载 */ });
+
+      (window as unknown as { __cyrene: unknown }).__cyrene = {
+        manager,
+        interaction,
+        focus,
+        expressionReset,
+        resetExpression: () => expressionReset?.resetNow(),
+        getLive2DDiagnostics: () => ({
+          resources: manager?.getResourceMetrics(),
+          lifecycle: live2dLifecycle.getDiagnostics(),
+          controllers: {
+            interaction: interaction !== null,
+            focus: focus !== null,
+            expressionReset: expressionReset !== null,
+            mouthSync: mouthSync !== null,
+            speakingMotion: speakingMotion !== null,
+            clickThrough: clickThrough !== null,
+            openerBubble: openerBubble !== null,
+          },
+          petVisible,
+          isDragging,
+        }),
+      };
+    },
+    onError: (err) => {
+      console.error("[CharacterVisual] Failed to load model:", err);
+    },
+  });
+  await manager.init();
+}
+
+void initializeCharacterVisual();
 
 addTrackedEventListener(window, "window:resize", "resize", () => {
-  manager.resize(window.innerWidth, window.innerHeight);
+  manager?.resize(window.innerWidth, window.innerHeight);
   focus?.focusCenter(true);
 });
 
@@ -210,27 +262,21 @@ window.addEventListener("beforeunload", () => {
   petVisibilityOff = null;
   interaction?.dispose();
   interaction = null;
-  manager.dispose();
+  manager?.dispose();
+  manager = null;
   live2dLifecycle.disposeAll();
 });
-
-let isDragging = false;
-let dragOffsetX = 0;
-let dragOffsetY = 0;
-let pendingPosition: { x: number; y: number } | null = null;
-let rafId: number | null = null;
-let dragOverlay: HTMLImageElement | null = null;
-let dragToken = 0;
 
 function clearDragOverlay(): void {
   if (dragOverlay) {
     dragOverlay.remove();
     dragOverlay = null;
   }
-  canvas.style.visibility = "";
+  canvas.style.visibility = activeVisualKind === "static" ? "hidden" : "";
 }
 
 async function showDragOverlay(token: number): Promise<void> {
+  if (activeVisualKind === "static") return;
   const frame = await window.cyrene.captureFrame();
   if (!frame || token !== dragToken || !isDragging) return;
 
@@ -287,7 +333,7 @@ function finishDrag(): void {
   cancelPendingMove();
   clearDragOverlay();
   if (petVisible) {
-    manager.resume();
+    manager?.resume();
     focus?.resume();
   }
   window.cyrene.setDragging(false);
@@ -298,20 +344,20 @@ function finishDrag(): void {
 // We only need enter/leave to bookend the cursor's stay in the window:
 // entering hands control to the controller, leaving the window entirely
 // means there's nothing to capture (and no move will fire), so pass through.
-addTrackedEventListener(canvas, "canvas:pointerenter", "pointerenter", () => {
+addPetSurfaceEventListener("pointerenter", "pointerenter", () => {
   clickThrough?.resume();
 });
 
-addTrackedEventListener(canvas, "canvas:pointercancel", "pointercancel", () => {
+addPetSurfaceEventListener("pointercancel", "pointercancel", () => {
   if (isDragging) finishDrag();
 });
 
-addTrackedEventListener(canvas, "canvas:pointerleave", "pointerleave", () => {
+addPetSurfaceEventListener("pointerleave", "pointerleave", () => {
   if (isDragging) return;
   void window.cyrene.setInteractive(false);
 });
 
-addTrackedEventListener(canvas, "canvas:pointerdown", "pointerdown", (e) => {
+addPetSurfaceEventListener("pointerdown", "pointerdown", (e) => {
   const event = e as PointerEvent;
   if (isDragging) return;
   if (!Number.isFinite(event.screenX) || !Number.isFinite(event.screenY)) return;
@@ -324,7 +370,7 @@ addTrackedEventListener(canvas, "canvas:pointerdown", "pointerdown", (e) => {
   cancelPendingMove();
   clickThrough?.pause();
   focus?.pause(true);
-  manager.pause();
+  manager?.pause();
   void window.cyrene.setInteractive(true);
   window.cyrene.setDragging(true);
   try {
@@ -333,13 +379,13 @@ addTrackedEventListener(canvas, "canvas:pointerdown", "pointerdown", (e) => {
   void showDragOverlay(token);
 });
 
-addTrackedEventListener(canvas, "canvas:pointermove", "pointermove", (e) => {
+addPetSurfaceEventListener("pointermove", "pointermove", (e) => {
   const event = e as PointerEvent;
   if (!isDragging) return;
   scheduleMoveTo(event.screenX, event.screenY);
 });
 
-addTrackedEventListener(canvas, "canvas:pointerup", "pointerup", (e) => {
+addPetSurfaceEventListener("pointerup", "pointerup", (e) => {
   const event = e as PointerEvent;
   if (!isDragging) return;
   scheduleMoveTo(event.screenX, event.screenY);
@@ -354,7 +400,7 @@ addTrackedEventListener(canvas, "canvas:pointerup", "pointerup", (e) => {
     (event.target as Element).releasePointerCapture(event.pointerId);
   } catch {}
 
-  const rect = canvas.getBoundingClientRect();
+  const rect = (event.currentTarget as Element).getBoundingClientRect();
   const outside =
     event.clientX < rect.left ||
     event.clientX > rect.right ||

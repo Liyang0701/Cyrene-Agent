@@ -1,7 +1,7 @@
 import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display/cubism4";
 import type { HitAreaDef } from "./interaction";
-import { type Live2DTarget } from "../../shared/live2d-actions";
+import { type Live2DTarget } from "../../shared/semantic-actions";
 
 export type { HitAreaDef } from "./interaction";
 
@@ -44,12 +44,19 @@ interface MotionEntry {
 interface ModelJsonShape {
   HitAreas?: { Name?: string; Id?: string; Motion?: string }[];
   Motions?: Record<string, MotionEntry[]>;
+  FileReferences?: {
+    Motions?: Record<string, MotionEntry[]>;
+  };
+}
+
+function getMotions(json: ModelJsonShape): Record<string, MotionEntry[]> {
+  return json.FileReferences?.Motions ?? json.Motions ?? {};
 }
 
 function buildHitAreaDefs(json: ModelJsonShape): HitAreaDef[] {
   const out: HitAreaDef[] = [];
   const hitAreas = json.HitAreas ?? [];
-  const motions = json.Motions ?? {};
+  const motions = getMotions(json);
   for (const area of hitAreas) {
     const name = area.Name;
     const id = area.Id;
@@ -70,7 +77,7 @@ function buildHitAreaDefs(json: ModelJsonShape): HitAreaDef[] {
 
 function buildMotionIndexMap(json: ModelJsonShape): Map<string, Map<string, number>> {
   const out = new Map<string, Map<string, number>>();
-  const motions = json.Motions ?? {};
+  const motions = getMotions(json);
   for (const [group, list] of Object.entries(motions)) {
     const inner = new Map<string, number>();
     list.forEach((entry, i) => {
@@ -245,8 +252,8 @@ export class Live2DManager {
    *
    * - motion target: looks up the motion's index in the group's
    *   internalModel.motionManager.definitions and calls model.motion().
-   *   Falls back to model.expression(motionName) if the motion isn't
-   *   registered (matches the same fallback the hit-area controller uses).
+   *   Missing mappings are a diagnostic no-op; a motion never borrows an
+   *   expression with the same model-specific name.
    * - expression target: calls model.expression(name) directly.
    *
    * Swallows errors so a broken animation never crashes the renderer.
@@ -262,8 +269,7 @@ export class Live2DManager {
           await this.model.motion(target.group, index);
           return;
         }
-        // Not registered as a motion — fall back to expression semantics.
-        await this.model.expression(target.motionName);
+        console.warn("[CharacterVisual] mapped motion is unavailable", target);
         return;
       }
       // expression target
