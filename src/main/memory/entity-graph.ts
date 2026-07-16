@@ -7,9 +7,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { app } from "electron";
 import { registerJiebaCustomWord, registerJiebaCustomWords } from "../rag/retriever";
-import { getActiveCharacterState } from "../character/character-state";
+import { requireActiveCharacterState } from "../character/character-state";
 
 // ── 类型 ──
 
@@ -101,8 +100,7 @@ export function extractEntitiesFromText(text: string): Array<{ type: EntityNode[
 
 // ── 实体图谱管理器 ──
 
-const getPath = () => getActiveCharacterState()?.entityGraphFile
-  ?? path.join(app.getPath("userData"), "entity-graph.json");
+const getPath = () => requireActiveCharacterState().entityGraphFile;
 
 class EntityGraph {
   private cache: EntityGraphData | null = null;
@@ -235,7 +233,7 @@ export function getAllEntityNames(): string[] {
 /**
  * 将实体图谱中的所有实体名注册到 jieba 自定义词表。
  * 调用时机：应用启动后、图谱有更新时。
- * 这样 "昔涟"、"小鹿" 等 AI 伴侣核心名词不会被错误切分。
+ * 这样角色名、昵称等 AI 伴侣核心名词不会被错误切分。
  *
  * @node-rs/jieba 没有运行时 insertWord() —— 走「后处理重组」方案：
  * 词表存到 retriever.ts 的 customWords Set，tokenize() 切完后合并回去。

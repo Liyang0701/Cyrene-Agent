@@ -4841,7 +4841,7 @@ declare global {
   }
 }
 
-const TTS_TEST_TEXT = "你好，我是昔涟，很高兴见到你。";
+const TTS_TEST_TEXT = "你好，这是当前角色的语音合成测试。";
 
 // 获取 DOM 元素的辅助函数
 function ttsEl(id: string): HTMLInputElement {
@@ -5231,7 +5231,7 @@ document.getElementById("tts-gptsovits-test")?.addEventListener("click", async (
   }
 });
 
-// 小米 MiMo 选择昔涟克隆参考音频
+// 小米 MiMo 选择角色克隆参考音频
 document.getElementById("tts-mimo-voice-pick")?.addEventListener("click", async () => {
   if (!window.tts) return;
   const filePath = await window.tts.pickAudioFile();
@@ -5278,7 +5278,7 @@ document.getElementById("tts-mimo-test")?.addEventListener("click", async () => 
   const voiceAudioPath = ttsEl("tts-mimo-voice-audio").value.trim();
   const stylePrompt = ttsEl("tts-mimo-style").value.trim();
   if (!apiKey) { window.alert("请先填写小米 MiMo API Key"); return; }
-  if (!voiceAudioPath) { window.alert("请先选择昔涟克隆参考音频"); return; }
+  if (!voiceAudioPath) { window.alert("请先选择角色克隆参考音频"); return; }
 
   const btn = document.getElementById("tts-mimo-test") as HTMLButtonElement;
   btn.disabled = true;

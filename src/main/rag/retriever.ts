@@ -53,7 +53,7 @@ export interface RetrieveOptions {
 
 // ── 自定义词表（entity-graph 维护） ──
 // @node-rs/jieba 没有运行时 insertWord()，改用「后处理重组」方案：
-// jieba 切完后，把被切散的自定义词（如"昔涟"→"昔","涟"）重新合并。
+// jieba 切完后，把被切散的自定义角色名或昵称重新合并。
 const customWords = new Set<string>();
 
 /** 注册一个自定义词（让分词时不被切散） */
@@ -72,7 +72,7 @@ export function registerJiebaCustomWords(words: Iterable<string>): void {
 function mergeCustomWords(tokens: string[]): string[] {
   if (customWords.size === 0 || tokens.length < 2) return tokens;
 
-  // 按长度倒序排序，优先匹配长词（避免"昔涟小助手"被错误合并成"昔涟小助手"）
+  // 按长度倒序排序，优先匹配长词，避免昵称前缀抢先匹配。
   const sortedWords = [...customWords].sort((a, b) => b.length - a.length);
 
   // 用"窗口匹配"扫描：找到第一个能匹配的位置，合并若干个 token 为一个词
@@ -117,8 +117,8 @@ function tokenize(text: string): TokenInfo[] {
   }
 
   try {
-    // 第二个参数 hmm=true 让 jieba 用 HMM 模型识别未登录词（如角色名"昔涟"）
-    // 默认词典不含"昔涟"等角色名，但 HMM 能根据上下文判断这是个整体
+    // 第二个参数 hmm=true 让 jieba 用 HMM 模型识别未登录的角色名。
+    // 默认词典通常不含角色名，但 HMM 能根据上下文判断这是个整体。
     // 再叠加后处理：把 jieba 切散的自定义词重组
     const rawCuts = jieba.cut(text, true);
     const mergedCuts = mergeCustomWords(rawCuts);

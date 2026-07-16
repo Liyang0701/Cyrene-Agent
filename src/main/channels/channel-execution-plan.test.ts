@@ -8,7 +8,12 @@ describe("planChannelExecution", () => {
     "谢谢你一直陪着我",
     "你觉得我今天表现怎么样？",
   ])("高置信度纯聊天直接进入 soul-only：%s", (text) => {
-    expect(planChannelExecution({ text }).mode).toBe("soul-only");
+    expect(planChannelExecution({ text, characterNames: ["昔涟"] }).mode).toBe("soul-only");
+  });
+
+  it("uses the active character name instead of a built-in name for pure-chat routing", () => {
+    expect(planChannelExecution({ text: "流明，你好呀", characterNames: ["流明"] }).mode).toBe("soul-only");
+    expect(planChannelExecution({ text: "昔涟，你好呀", characterNames: ["流明"] }).mode).toBe("full-tool-loop");
   });
 
   it.each([

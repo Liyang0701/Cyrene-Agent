@@ -22,7 +22,7 @@ vi.mock("electron", () => ({
 vi.mock("../rag/index", () => ragMock)
 
 function readTraceEvents(): Array<Record<string, unknown>> {
-  const tracePath = path.join(electronMock.userDataDir, "memory-trace.log")
+  const tracePath = path.join(electronMock.userDataDir, "characters", "test", "memory", "memory-trace.log")
   if (!fs.existsSync(tracePath)) return []
   return fs.readFileSync(tracePath, "utf8")
     .trim()
@@ -32,12 +32,14 @@ function readTraceEvents(): Array<Record<string, unknown>> {
 }
 
 describe("MemoryManager L2 sync", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     electronMock.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-manager-"))
     ragMock.addL2MemoryVector.mockReset()
     ragMock.searchMemoryEntries.mockReset()
     ragMock.searchMemoryEntries.mockResolvedValue([])
     vi.resetModules()
+    const state = await import("../character/character-state")
+    state.configureActiveCharacterState(state.resolveCharacterStateLayout(electronMock.userDataDir, "test"))
   })
 
   it("creates L2 first, syncs it to RAG with l2Id metadata, then marks it synced", async () => {

@@ -6,6 +6,7 @@ export type GlobalUserDataLayout = Readonly<{
   avatarFile: string;
   appSettingsFile: string;
   documentRagRoot: string;
+  documentCacheFile: string;
   todoFile: string;
   scheduledTasksFile: string;
   scheduledTaskHistoryFile: string;
@@ -19,6 +20,7 @@ export function resolveGlobalUserDataLayout(userDataRoot: string): GlobalUserDat
     avatarFile: path.join(userDataRoot, "avatar.png"),
     appSettingsFile: path.join(userDataRoot, "app-settings.json"),
     documentRagRoot: path.join(userDataRoot, "global", "documents", "rag"),
+    documentCacheFile: path.join(userDataRoot, "global", "documents", "document-cache.json"),
     todoFile: path.join(userDataRoot, "current-todos.json"),
     scheduledTasksFile: path.join(userDataRoot, "scheduled-tasks.json"),
     scheduledTaskHistoryFile: path.join(userDataRoot, "scheduled-tasks-history.jsonl"),

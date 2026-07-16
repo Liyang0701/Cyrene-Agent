@@ -777,7 +777,7 @@
             </div>
             <div class="chat-sessions__footer">
               <button type="button" class="ghost-btn" id="chat-open-folder-btn">📂 打开存储位置</button>
-              <span class="chat-sessions__footer-hint">所有会话保存在 userData/cyrene-chats/ 下，可整体迁移</span>
+              <span class="chat-sessions__footer-hint">所有会话保存在当前角色的独立状态目录下，可整体迁移</span>
             </div>
           </div>
         </section>
@@ -1209,7 +1209,7 @@
                   </div>
                   <div class="tts-field">
                     <label for="email-from-name">发件人名称（可选）</label>
-                    <input type="text" id="email-from-name" placeholder="如 昔涟" autocomplete="off" />
+                    <input type="text" id="email-from-name" placeholder="如 角色助手" autocomplete="off" />
                   </div>
                   <p class="user-field-hint">QQ邮箱 → 设置 → 账户 → 开启 SMTP → 获取授权码；163/Gmail 同理。</p>
                 </div>
@@ -1592,7 +1592,7 @@
               <!-- 音色快速复刻 -->
               <div class="tts-clone-section">
                 <h3 class="tts-clone-title">🎙️ 音色快速复刻</h3>
-                <p class="tts-clone-hint">上传昔涟配音（mp3/m4a/wav，10秒~5分钟，≤20MB），训练专属音色</p>
+                <p class="tts-clone-hint">上传角色配音（mp3/m4a/wav，10秒~5分钟，≤20MB），训练专属音色</p>
                 <div class="tts-field">
                   <label>配音文件</label>
                   <input type="text" id="tts-clone-file" placeholder="点击右侧选择音频文件" readonly />
@@ -1609,7 +1609,7 @@
                 </div>
                 <div class="tts-field">
                   <label>复刻文本</label>
-                  <input type="text" id="tts-clone-text" placeholder="训练时合成这句做对比" value="你好，我是昔涟，很高兴见到你。" />
+                  <input type="text" id="tts-clone-text" placeholder="训练时合成这句做对比" value="你好，这是当前角色的语音合成测试。" />
                 </div>
                 <div class="tts-field">
                   <label>音色命名</label>
@@ -1633,7 +1633,7 @@
               </div>
               <div class="tts-field">
                 <label>参考音频对应的文本</label>
-                <input type="text" id="tts-gptsovits-prompt-text" placeholder="例：你好，我是昔涟" />
+                <input type="text" id="tts-gptsovits-prompt-text" placeholder="例：你好，很高兴见到你" />
               </div>
               <div class="tts-field">
                 <label>参考音频语言</label>
@@ -1710,8 +1710,8 @@
                 <input type="password" id="tts-mimo-key" placeholder="小米 MiMo API Key" />
               </div>
               <div class="tts-field">
-                <label>昔涟克隆音频</label>
-                <input type="text" id="tts-mimo-voice-audio" placeholder="选择昔涟参考音频（mp3/wav/m4a）" readonly />
+                <label>角色克隆音频</label>
+                <input type="text" id="tts-mimo-voice-audio" placeholder="选择角色参考音频（mp3/wav/m4a）" readonly />
                 <button type="button" class="ghost-btn tts-pick-btn" id="tts-mimo-voice-pick">选择</button>
               </div>
               <div class="tts-field">
@@ -1727,12 +1727,12 @@
               </div>
             </div>
 
-            <p class="tts-hint">💡 MiniMax 需在控制台训练音色并填写音色 ID。GPT-SoVITS 需自行启动本地服务并提供参考音频。自定义云端会 POST 固定 JSON 到你的 Endpoint。小米 MiMo 当前使用昔涟参考音频走 voiceclone 非流式 wav 合成。</p>
+            <p class="tts-hint">💡 MiniMax 需在控制台训练音色并填写音色 ID。GPT-SoVITS 需自行启动本地服务并提供参考音频。自定义云端会 POST 固定 JSON 到你的 Endpoint。小米 MiMo 当前使用角色参考音频走 voiceclone 非流式 wav 合成。</p>
 
             <hr class="api-section-divider" />
             <div class="tts-section">
               <h2 class="tts-section__title">主动开口</h2>
-              <p class="tts-hint">昔涟会在你没主动聊天时，偶尔自己冒一句话关心你（基于时间/空闲/天气）。走预合成音频，0 token。</p>
+              <p class="tts-hint">当前角色会在你没主动聊天时，偶尔自己冒一句话关心你（基于时间/空闲/天气）。走预合成音频，0 token。</p>
               <div class="tts-engines" role="radiogroup" aria-label="主动开口档位">
                 <button type="button" class="opener-mode tts-engine is-active" data-mode="off" role="radio" aria-checked="true">
                   <span class="tts-engine__icon">🔇</span>

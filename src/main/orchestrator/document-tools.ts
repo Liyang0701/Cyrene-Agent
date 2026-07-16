@@ -1,4 +1,4 @@
-// 文档生成工具 —— 让昔涟能产出可交付物（Excel/Word/PDF/Markdown）。
+// 文档生成工具 —— 让 Cyrene Agent 能产出可交付物（Excel/Word/PDF/Markdown）。
 //
 // 设计要点：
 // - 所有文档默认存到桌面（app.getPath("desktop")），用户最容易找到

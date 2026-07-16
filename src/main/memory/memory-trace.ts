@@ -1,7 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
-import { app } from "electron"
-import { getActiveCharacterState } from "../character/character-state"
+import { requireActiveCharacterState } from "../character/character-state"
 
 export interface MemoryTraceEvent {
   ts?: number
@@ -15,8 +14,7 @@ export interface MemoryTraceEvent {
 }
 
 function getTracePath(): string {
-  return getActiveCharacterState()?.memoryTraceFile
-    ?? path.join(app.getPath("userData"), "memory-trace.log")
+  return requireActiveCharacterState().memoryTraceFile
 }
 
 export function appendMemoryTrace(event: MemoryTraceEvent): void {

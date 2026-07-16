@@ -329,7 +329,7 @@ toolRegistry.register({
   id: "install_mcp_server",
   name: "安装 MCP",
   description:
-    "把一个 MCP server 加到昔涟的工具盘里：写入配置 → 启动 → 发现工具。\n\n" +
+    "把一个 MCP server 加到 Cyrene Agent 的工具列表：写入配置 → 启动 → 发现工具。\n\n" +
     "何时用：\n" +
     "- 用户明确要装某个 MCP server（'帮我装 xxx mcp'）\n" +
     "- 用户给了 MCP 的 GitHub 仓库或配置\n\n" +
@@ -890,7 +890,7 @@ toolRegistry.register({
 });
 
 // ── 工具：todo_write ──────────────────────────────────────
-// 任务拆解可视化工具。让昔涟能像 Claude Code 一样把复杂任务拆成步骤展示给用户。
+// 任务拆解可视化工具。让 Cyrene Agent 能把复杂任务拆成步骤展示给用户。
 // 每次调用整体覆盖当前清单（不是增量）。store 持久化 + 通知主进程转发 CUSTOM 事件。
 
 import { setTodos, getTodos, clearTodos, type TodoItem } from "./todo-store";

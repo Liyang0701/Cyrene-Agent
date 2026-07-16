@@ -4,6 +4,8 @@ import * as os from "os";
 import * as path from "path";
 import type { EmbeddingProvider } from "./embedding";
 import { configureActiveCharacterState, resolveCharacterStateLayout } from "../character/character-state";
+import { configureActiveCharacter } from "../character/active-character";
+import { createDefaultCharacterRuntime } from "../character/character-runtime";
 
 const provider: EmbeddingProvider = {
   name: "deterministic",
@@ -50,7 +52,15 @@ beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rag-index-test-"));
   userDataDir.value = tmpDir;
   appPath.value = tmpDir;
-  configureActiveCharacterState(resolveCharacterStateLayout(tmpDir, "cyrene"));
+  const snapshot = await createDefaultCharacterRuntime({
+    appRoot: process.cwd(),
+    userDataRoot: tmpDir,
+  }).initialize();
+  if (snapshot.status !== "ready" || !snapshot.activeCharacter) {
+    throw new Error(`测试角色初始化失败: ${JSON.stringify(snapshot.diagnostics)}`);
+  }
+  configureActiveCharacter(snapshot.activeCharacter);
+  configureActiveCharacterState(snapshot.activeCharacter.state);
   await initRAG();
 });
 

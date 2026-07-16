@@ -14,6 +14,7 @@ export interface ChannelExecutionInput {
   text: string;
   attachments?: Array<Pick<ChannelAttachment, "kind">>;
   enabledToolIds?: readonly string[];
+  characterNames?: readonly string[];
 }
 
 interface ToolRoute {
@@ -48,11 +49,20 @@ const TOOL_ROUTES: ToolRoute[] = [
 ];
 
 const PURE_CHAT_PATTERNS = [
-  /^(?:昔涟[，,、 ]*)?(?:你好|嗨|哈喽|早安|早上好|午安|晚上好|晚安)[呀啊哦～~！!。.？?]*$/i,
+  /^(?:你好|嗨|哈喽|早安|早上好|午安|晚上好|晚安)[呀啊哦～~！!。.？?]*$/i,
   /(抱抱|抱紧|亲亲|想你|爱你|喜欢你|陪陪我|陪着我|安慰我|撒个娇|辛苦[了啦呀]|谢谢你|感谢你)/i,
   /(开心|难过|伤心|委屈|孤单|寂寞|累了|好累|困了|害怕|紧张|焦虑|生气).*(?:吗|呀|啊|了|呢|。|！|!|？|\?|$)/i,
-  /^(?:昔涟[，,、 ]*)?(?:你觉得|你会不会|你愿意|可以陪我|能陪我|今天过得|我今天).{0,60}[？?。！!～~]?$/i,
+  /^(?:你觉得|你会不会|你愿意|可以陪我|能陪我|今天过得|我今天).{0,60}[？?。！!～~]?$/i,
 ];
+
+function stripActiveCharacterAddress(text: string, names: readonly string[] | undefined): string {
+  for (const name of names ?? []) {
+    const trimmed = name.trim();
+    if (!trimmed || !text.startsWith(trimmed)) continue;
+    return text.slice(trimmed.length).replace(/^[，,、\s]+/, "");
+  }
+  return text;
+}
 
 /**
  * 微信/飞书进入模型前的保守快速路由。
@@ -86,7 +96,8 @@ export function planChannelExecution(input: ChannelExecutionInput): ChannelExecu
       ...(finishAfterFirstToolBatch ? { finishAfterFirstToolBatch } : {}),
     };
   }
-  if (PURE_CHAT_PATTERNS.some((pattern) => pattern.test(text))) {
+  const chatText = stripActiveCharacterAddress(text, input.characterNames);
+  if (PURE_CHAT_PATTERNS.some((pattern) => pattern.test(chatText))) {
     return { mode: "soul-only", reason: "pure_chat" };
   }
   return { mode: "full-tool-loop", reason: "uncertain" };

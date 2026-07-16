@@ -2134,7 +2134,7 @@ async function synthesizeAndPlayCached(
 
   if (settings.ttsEngine === "mimo") {
     if (!settings.ttsMimoKey || !settings.ttsMimoVoiceAudioPath) {
-      console.warn("[TTS] 缺少小米 MiMo API Key 或昔涟克隆音频");
+      console.warn("[TTS] 缺少小米 MiMo API Key 或角色参考音频");
       return null;
     }
     try {
@@ -2414,7 +2414,7 @@ let sending = false;
 // ── 快捷预设胶囊 ──────────────────────────────────────────
 // 空对话时在 empty-state 下方显示的半透明胶囊，点击后：
 // - fill 模式：预设提示词填入输入框，用户修改后发送
-// - chat 模式：昔涟主动开口（注入隐藏种子消息触发 agent）
+// - chat 模式：活动角色主动开口（注入隐藏种子消息触发 agent）
 
 interface QuickPreset {
   id: string;
@@ -2468,7 +2468,7 @@ function onPresetClick(preset: QuickPreset): void {
 }
 
 /**
- * 「和昔涟聊天」胶囊：让昔涟主动开口。
+ * 主动聊天胶囊：让活动角色主动开口。
  * 注入隐藏种子消息触发 agent（不推入 messages 数组、不渲染），
  * 复用现有 AG-UI 流式回复机制。
  */
@@ -2640,7 +2640,7 @@ async function triggerCyreneGreeting(): Promise<void> {
       }
     });
 
-    // 种子消息：不推入 messages 数组、不渲染，只作为 agent 输入触发昔涟主动开口
+    // 种子消息：不推入 messages 数组、不渲染，只作为 agent 输入触发活动角色主动开口
     const ack = await window.agui!.run({
       messages: [{ role: "user", content: `[internal] 用户点击了「和${activeCharacterName}聊天」，请以当前活动角色身份主动开口聊几句，像朋友打招呼一样自然开场。` }],
       style: getCurrentStyle(),

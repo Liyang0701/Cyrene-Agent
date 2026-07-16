@@ -14,7 +14,7 @@ vi.mock("electron", () => ({
 }))
 
 function readTraceEvents(): Array<Record<string, unknown>> {
-  const tracePath = path.join(electronMock.userDataDir, "memory-trace.log")
+  const tracePath = path.join(electronMock.userDataDir, "characters", "test", "memory", "memory-trace.log")
   if (!fs.existsSync(tracePath)) return []
   return fs.readFileSync(tracePath, "utf8")
     .trim()
@@ -24,9 +24,11 @@ function readTraceEvents(): Array<Record<string, unknown>> {
 }
 
 describe("memoryStore", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     electronMock.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-store-"))
     vi.resetModules()
+    const state = await import("../character/character-state")
+    state.configureActiveCharacterState(state.resolveCharacterStateLayout(electronMock.userDataDir, "test"))
   })
 
   it("persists L2 conflict markers and status changes", async () => {
@@ -45,7 +47,7 @@ describe("memoryStore", () => {
     expect(marked?.status).toBe("aging")
 
     const persisted = JSON.parse(
-      fs.readFileSync(path.join(electronMock.userDataDir, "memory.json"), "utf8"),
+      fs.readFileSync(path.join(electronMock.userDataDir, "characters", "test", "memory", "memory.json"), "utf8"),
     )
     expect(persisted.l2[0].conflictWith).toEqual(["rag_new"])
     expect(persisted.l2[0].status).toBe("aging")
@@ -97,7 +99,7 @@ describe("memoryStore", () => {
 
     const changed = await memoryStore.decayL2Weights()
     const persisted = JSON.parse(
-      fs.readFileSync(path.join(electronMock.userDataDir, "memory.json"), "utf8"),
+      fs.readFileSync(path.join(electronMock.userDataDir, "characters", "test", "memory", "memory.json"), "utf8"),
     )
 
     expect(changed).toBe(1)
@@ -227,7 +229,7 @@ describe("memoryStore", () => {
 
     const synced = await memoryStore.markL2SyncStatus(memory.id, "synced", "rag_synced")
     const persisted = JSON.parse(
-      fs.readFileSync(path.join(electronMock.userDataDir, "memory.json"), "utf8"),
+      fs.readFileSync(path.join(electronMock.userDataDir, "characters", "test", "memory", "memory.json"), "utf8"),
     )
     const traceEvents = readTraceEvents()
 
@@ -256,7 +258,7 @@ describe("memoryStore", () => {
     const conflictLogs = await memoryStore.getConflictLogs()
     const reflectionLogs = await memoryStore.getReflectionLogs()
     const persisted = JSON.parse(
-      fs.readFileSync(path.join(electronMock.userDataDir, "memory.json"), "utf8"),
+      fs.readFileSync(path.join(electronMock.userDataDir, "characters", "test", "memory", "memory.json"), "utf8"),
     )
 
     expect(conflictLogs).toHaveLength(100)
@@ -535,7 +537,8 @@ describe("memoryStore", () => {
   })
 
   it("migrates legacy memory files with a backup", async () => {
-    const memoryPath = path.join(electronMock.userDataDir, "memory.json")
+    const memoryPath = path.join(electronMock.userDataDir, "characters", "test", "memory", "memory.json")
+    fs.mkdirSync(path.dirname(memoryPath), { recursive: true })
     fs.writeFileSync(
       memoryPath,
       JSON.stringify({
@@ -564,7 +567,7 @@ describe("memoryStore", () => {
     const { memoryStore } = await import("./memory-store")
     const store = await memoryStore.load()
     const persisted = JSON.parse(fs.readFileSync(memoryPath, "utf8"))
-    const backups = fs.readdirSync(electronMock.userDataDir).filter((name) => name.startsWith("memory.backup."))
+    const backups = fs.readdirSync(path.dirname(memoryPath)).filter((name) => name.startsWith("memory.backup."))
 
     expect(store.schemaVersion).toBe(2)
     expect(persisted.schemaVersion).toBe(2)

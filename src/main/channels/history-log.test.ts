@@ -15,11 +15,15 @@ vi.mock("electron", () => ({
 }));
 
 import { appendHistory, loadRecentHistory } from "./history-log";
+import { configureActiveCharacterState, resolveCharacterStateLayout } from "../character/character-state";
+
+const HISTORY_LAYOUT = resolveCharacterStateLayout(HISTORY_TMP, "test");
 
 describe("channels/history-log", () => {
   beforeEach(() => {
+    configureActiveCharacterState(HISTORY_LAYOUT);
     // 清理测试目录
-    const dir = path.join(HISTORY_TMP, "channels", "history");
+    const dir = HISTORY_LAYOUT.channelHistoryRoot;
     if (fs.existsSync(dir)) {
       for (const f of fs.readdirSync(dir)) {
         fs.unlinkSync(path.join(dir, f));

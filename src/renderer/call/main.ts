@@ -1,11 +1,11 @@
 // 通话窗口渲染端 —— 粒子背景 + 麦克风采集 + VAD 静默检测 + 状态机 + TTS 播放。
 //
-// 状态：LISTENING（用户说话）→ THINKING（agent 思考）→ SPEAKING（昔涟说话）→ LISTENING
+// 状态：LISTENING（用户说话）→ THINKING（agent 思考）→ SPEAKING（活动角色说话）→ LISTENING
 
 import { computeRmsLevel } from "./vad-level";
 import { buildActiveCharacterUiText, hydrateActiveCharacterIdentity } from "../ui/active-character";
 // 用户说话时：柱状胶囊波形跳动 + 头像外圈音量波形
-// 昔涟说话时：电波环脉冲扩散 + 波形隐藏
+// 活动角色说话时：电波环脉冲扩散 + 波形隐藏
 import "../ui/theme";
 
 // ── 粒子背景 ──

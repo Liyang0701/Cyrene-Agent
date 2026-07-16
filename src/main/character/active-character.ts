@@ -36,10 +36,6 @@ export function getActiveCharacterText(): ActiveCharacterTextContext {
   return activeTextContext;
 }
 
-export function peekActiveCharacterText(): ActiveCharacterTextContext | null {
-  return activeTextContext;
-}
-
 export function getActiveCharacterVisual(): CharacterVisualContext {
   if (!activeVisualContext) throw new Error("活动角色视觉上下文尚未就绪");
   return activeVisualContext;

@@ -28,7 +28,7 @@ export const SCENE_EXAMPLES: Record<string, string[]> = {
     "你在吗？",
     "好久不见，想你了。",
     "今天终于有空来找你。",
-    "昔涟，我回来了。",
+    "我回来了。",
     "我来找你了。",
   ],
   comfort: [
@@ -56,7 +56,7 @@ export const SCENE_EXAMPLES: Record<string, string[]> = {
     "哈哈输了吧。",
   ],
   farewell: [
-    "晚安了昔涟，明天再来找你。",
+    "晚安了，明天再来找你。",
     "好了我要去睡了，拜拜。",
     "今天聊到这吧，下次见。",
     "要去忙了，回头再聊。",
@@ -67,7 +67,7 @@ export const SCENE_EXAMPLES: Record<string, string[]> = {
   ],
   concern: [
     "你会累吗？",
-    "昔涟你还好吗？",
+    "你还好吗？",
     "你有没有自己不开心的时候？",
     "我有时候会担心你。",
     "你一个人不会无聊吗？",

@@ -21,10 +21,12 @@ vi.mock("electron", () => ({
 vi.mock("../rag/index", () => ragMock)
 
 describe("memory conflict resolver", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     electronMock.userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memory-resolver-"))
     ragMock.addL2MemoryVector.mockReset()
     vi.resetModules()
+    const state = await import("../character/character-state")
+    state.configureActiveCharacterState(state.resolveCharacterStateLayout(electronMock.userDataDir, "test"))
   })
 
   it("builds resolver payload from queued conflict log with both evidence chains", async () => {
@@ -295,7 +297,7 @@ describe("memory conflict resolver", () => {
     const first = await runResolverQueueOnce(deps, { now: 1_000, minIntervalMs: 60_000 })
     const second = await runResolverQueueOnce(deps, { now: 1_001, minIntervalMs: 60_000 })
     const queue = await memoryStore.getResolverQueue()
-    const tracePath = path.join(electronMock.userDataDir, "memory-trace.log")
+    const tracePath = path.join(electronMock.userDataDir, "characters", "test", "memory", "memory-trace.log")
     const traceOps = fs.readFileSync(tracePath, "utf8")
       .trim()
       .split(/\r?\n/)

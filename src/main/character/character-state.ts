@@ -45,7 +45,8 @@ export function configureActiveCharacterState(layout: CharacterStateLayout): voi
   configuredStateLayout = layout;
 }
 
-export function getActiveCharacterState(): CharacterStateLayout | null {
+export function requireActiveCharacterState(): CharacterStateLayout {
+  if (!configuredStateLayout) throw new Error("活动角色状态目录尚未就绪");
   return configuredStateLayout;
 }
 
