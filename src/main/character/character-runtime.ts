@@ -141,7 +141,7 @@ export type CharacterPackageSnapshot = Readonly<{
 }>;
 
 export type CharacterRuntimeSnapshot = Readonly<{
-  status: "ready" | "failed";
+  status: "ready" | "safe-mode" | "failed";
   activeCharacter: ActiveCharacterContext | null;
   packages: readonly CharacterPackageSnapshot[];
   diagnostics: readonly CharacterRuntimeDiagnostic[];
@@ -152,12 +152,13 @@ export type CharacterPackageSource = Readonly<{
   rootPath: string;
   manifest: CharacterPackageManifest;
   digest?: string;
+  loadDiagnostics?: readonly CharacterRuntimeDiagnostic[];
 }>;
 
 export type CharacterImportResult =
   | Readonly<{
       ok: true;
-      operation: "installed" | "upgraded" | "modified";
+      operation: "installed" | "upgraded" | "modified" | "repaired";
       package: CharacterPackageSnapshot;
       snapshot: CharacterRuntimeSnapshot;
     }>
@@ -435,7 +436,7 @@ function evaluatePackage(
   reservedCharacterIds: ReadonlySet<string>,
   appVersion: string,
 ): EvaluatedPackage {
-  const diagnostics: CharacterRuntimeDiagnostic[] = [];
+  const diagnostics: CharacterRuntimeDiagnostic[] = [...(source.loadDiagnostics ?? [])];
   const rawManifest = source.manifest as unknown as Record<string, unknown>;
   const rawContent = isRecord(rawManifest.content) ? rawManifest.content : {};
   const characterId = typeof rawManifest.id === "string" ? rawManifest.id : undefined;
@@ -972,10 +973,58 @@ function loadInstalledPackageSources(
   const registry = readCharacterRegistry(registryPath);
   return registry.packages.map((record) => {
     const rootPath = path.join(installedRoot, record.installedDirectory);
-    const manifest = JSON.parse(
-      fs.readFileSync(path.join(rootPath, "character.json"), "utf8"),
-    ) as CharacterPackageManifest;
-    return { source: "local", rootPath, manifest, digest: record.digest };
+    const fallbackManifest: CharacterPackageManifest = {
+      schemaVersion: 1,
+      id: record.id,
+      version: "0.0.0",
+      displayName: record.id,
+      distributionStatus: "local-only",
+      compatibility: { minimumAppVersion: "0.1.0" },
+      assetProvenance: [{
+        assetClass: "character-content",
+        source: "Character Registry recovery placeholder",
+        license: "unknown",
+        distributionStatus: "local-only",
+      }],
+      content: {
+        identity: ".missing/identity.md",
+        soul: ".missing/soul.md",
+        avatar: ".missing/avatar.png",
+      },
+    };
+    if (!fs.existsSync(rootPath)) {
+      return {
+        source: "local",
+        rootPath,
+        manifest: fallbackManifest,
+        digest: record.digest,
+        loadDiagnostics: [{
+          code: "character.package.missing",
+          message: `Character Registry 中的角色包目录不存在：${record.id}`,
+          characterId: record.id,
+          resourcePath: rootPath,
+        }],
+      };
+    }
+    try {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(rootPath, "character.json"), "utf8"),
+      ) as CharacterPackageManifest;
+      return { source: "local", rootPath, manifest, digest: record.digest };
+    } catch (error) {
+      return {
+        source: "local",
+        rootPath,
+        manifest: fallbackManifest,
+        digest: record.digest,
+        loadDiagnostics: [{
+          code: "character.package.manifest_unreadable",
+          message: `角色包 manifest 无法读取：${error instanceof Error ? error.message : String(error)}`,
+          characterId: record.id,
+          resourcePath: path.join(rootPath, "character.json"),
+        }],
+      };
+    }
   });
 }
 
@@ -1183,6 +1232,7 @@ export class CharacterRuntime {
   private readonly archivedStateRoot: string;
   private packageSources: CharacterPackageSource[];
   private installedSourcesLoaded = false;
+  private startupDiagnostics: CharacterRuntimeDiagnostic[] = [];
   private readonly importLimits: CharacterImportLimits;
   private readonly appVersion: string;
   private readonly switchAdapters: CharacterSwitchAdapters;
@@ -1205,9 +1255,17 @@ export class CharacterRuntime {
     if (this.snapshot) return this.snapshot;
 
     if (!this.installedSourcesLoaded) {
-      const installedSources = loadInstalledPackageSources(this.registryPath, this.installedRoot);
-      const knownRoots = new Set(this.packageSources.map(({ rootPath }) => path.resolve(rootPath)));
-      this.packageSources.push(...installedSources.filter(({ rootPath }) => !knownRoots.has(path.resolve(rootPath))));
+      try {
+        const installedSources = loadInstalledPackageSources(this.registryPath, this.installedRoot);
+        const knownRoots = new Set(this.packageSources.map(({ rootPath }) => path.resolve(rootPath)));
+        this.packageSources.push(...installedSources.filter(({ rootPath }) => !knownRoots.has(path.resolve(rootPath))));
+      } catch (error) {
+        this.startupDiagnostics.push({
+          code: "character.registry.unreadable",
+          message: `Character Registry 无法读取：${error instanceof Error ? error.message : String(error)}`,
+          resourcePath: this.registryPath,
+        });
+      }
       this.installedSourcesLoaded = true;
     }
 
@@ -1221,12 +1279,18 @@ export class CharacterRuntime {
     const requestedCharacterId = runtimeState?.pendingCharacterId
       ?? runtimeState?.activeCharacterId
       ?? this.options.activeCharacterId;
-    const matchingActivePackages = evaluated.filter(
-      ({ source }) => source.manifest.id === requestedCharacterId,
-    );
-    let active: EvaluatedPackage | undefined = matchingActivePackages.find(({ source }) => source.source === "builtin")
-      ?? matchingActivePackages[0];
-    const diagnostics: CharacterRuntimeDiagnostic[] = evaluated.flatMap(({ health }) => health.diagnostics);
+    const diagnostics: CharacterRuntimeDiagnostic[] = [
+      ...this.startupDiagnostics,
+      ...evaluated.flatMap(({ health }) => health.diagnostics),
+    ];
+    const findPackage = (characterId: string | undefined): EvaluatedPackage | undefined => {
+      if (!characterId) return undefined;
+      const matches = evaluated.filter(({ source }) => source.manifest.id === characterId);
+      return matches.find(({ source }) => source.source === "builtin") ?? matches[0];
+    };
+    const fallback = findPackage(BUILT_IN_CYRENE_ID);
+    let active = findPackage(requestedCharacterId);
+    let fallbackRequired = false;
 
     if (runtimeState?.pendingCharacterId && (!active || active.health.status !== "healthy")) {
       diagnostics.push({
@@ -1235,8 +1299,7 @@ export class CharacterRuntime {
         characterId: runtimeState.pendingCharacterId,
       });
       const rollbackCharacterId = runtimeState.previousCharacterId ?? runtimeState.activeCharacterId;
-      const rollbackPackages = evaluated.filter(({ source }) => source.manifest.id === rollbackCharacterId);
-      const rollback = rollbackPackages.find(({ source }) => source.source === "builtin") ?? rollbackPackages[0];
+      const rollback = findPackage(rollbackCharacterId);
       if (rollback?.health.status === "healthy") {
         active = rollback;
         try {
@@ -1252,9 +1315,16 @@ export class CharacterRuntime {
             resourcePath: this.runtimeStatePath,
           });
           active = undefined;
+          fallbackRequired = true;
         }
       } else {
-        active = rollback;
+        diagnostics.push({
+          code: "character.startup.previous_unavailable",
+          message: `上一角色也不可用，将尝试恢复内置昔涟：${rollbackCharacterId}`,
+          characterId: rollbackCharacterId,
+        });
+        active = undefined;
+        fallbackRequired = true;
       }
     } else if (runtimeState?.pendingCharacterId && active?.health.status === "healthy") {
       try {
@@ -1270,10 +1340,54 @@ export class CharacterRuntime {
           resourcePath: this.runtimeStatePath,
         });
         active = undefined;
+        fallbackRequired = true;
+      }
+    } else if (!active) {
+      if (fallback) {
+        diagnostics.push({
+          code: "character.startup.active_missing",
+          message: `持久化活动角色不存在：${requestedCharacterId}`,
+          characterId: requestedCharacterId,
+        });
+        fallbackRequired = true;
+      }
+    } else if (active.health.status !== "healthy") {
+      if (fallback && active !== fallback) {
+        diagnostics.push({
+          code: "character.startup.active_unhealthy",
+          message: `持久化活动角色不健康：${requestedCharacterId}`,
+          characterId: requestedCharacterId,
+        });
+        active = undefined;
+        fallbackRequired = true;
+      } else if (active === fallback) {
+        active = undefined;
       }
     }
 
-    if (!active) {
+    if (fallbackRequired && fallback?.health.status === "healthy") {
+      active = fallback;
+      diagnostics.push({
+        code: "character.startup.fallback_activated",
+        message: "已临时回退到内置昔涟，故障角色及其私有状态保持原位。",
+        characterId: BUILT_IN_CYRENE_ID,
+      });
+      try {
+        writeRuntimeState(this.runtimeStatePath, {
+          schemaVersion: 1,
+          activeCharacterId: BUILT_IN_CYRENE_ID,
+        });
+      } catch (error) {
+        diagnostics.push({
+          code: "character.startup.fallback_persist_failed",
+          message: `回退角色状态写入失败：${error instanceof Error ? error.message : String(error)}`,
+          characterId: BUILT_IN_CYRENE_ID,
+          resourcePath: this.runtimeStatePath,
+        });
+      }
+    }
+
+    if (!active && !fallbackRequired) {
       diagnostics.push({
         code: "character.active.missing",
         message: `找不到活动角色：${requestedCharacterId}`,
@@ -1290,8 +1404,17 @@ export class CharacterRuntime {
     }
 
     const ready = Boolean(active && active.health.status === "healthy");
+    const safeMode = !ready && Boolean(fallback) && fallback?.health.status !== "healthy";
+    if (safeMode) {
+      diagnostics.push({
+        code: "character.startup.safe_mode",
+        message: "内置昔涟角色包也不可用，已进入诊断安全模式；不会加载部分角色资源。",
+        characterId: BUILT_IN_CYRENE_ID,
+        resourcePath: fallback?.source.rootPath,
+      });
+    }
     this.snapshot = deepFreeze({
-      status: ready ? "ready" : "failed",
+      status: ready ? "ready" : safeMode ? "safe-mode" : "failed",
       activeCharacter: ready && active ? buildActiveContext(active, this.options.userDataRoot) : null,
       packages: evaluated.map(toPackageSnapshot),
       diagnostics,
@@ -1829,8 +1952,9 @@ export class CharacterRuntime {
       }
 
       const digest = await calculatePackageDigest(stagingPath);
-      let operation: "installed" | "upgraded" | "modified" = "installed";
+      let operation: "installed" | "upgraded" | "modified" | "repaired" = "installed";
       if (existingSource) {
+        const repairingUnavailablePackage = Boolean(existingSource.loadDiagnostics?.length);
         const currentDigest = existingSource.digest ?? await calculatePackageDigest(existingSource.rootPath);
         if (manifest.version === existingSource.manifest.version && digest === currentDigest) {
           return {
@@ -1842,9 +1966,11 @@ export class CharacterRuntime {
             }]),
           };
         }
-        operation = compareSemver(manifest.version, existingSource.manifest.version) > 0
-          ? "upgraded"
-          : "modified";
+        operation = repairingUnavailablePackage
+          ? "repaired"
+          : compareSemver(manifest.version, existingSource.manifest.version) > 0
+            ? "upgraded"
+            : "modified";
         const currentSnapshot = toPackageSnapshot(evaluatePackage(
           existingSource,
           reservedCharacterIds,
@@ -1856,7 +1982,7 @@ export class CharacterRuntime {
             currentSnapshot.capabilities[capability] !== targetSnapshot.capabilities[capability]
           ));
         const replacement: CharacterReplacementPlan = {
-          kind: operation === "upgraded" ? "upgrade" : "modified",
+          kind: operation === "modified" ? "modified" : "upgrade",
           characterId: manifest.id,
           displayName: manifest.displayName,
           currentVersion: existingSource.manifest.version,
@@ -1880,18 +2006,20 @@ export class CharacterRuntime {
           manifest.id,
           `${Date.now()}-${existingSource.manifest.version}-${currentDigest.slice(0, 12)}`,
         );
-        await fs.promises.mkdir(path.dirname(backupRoot), { recursive: true });
-        await fs.promises.cp(existingSource.rootPath, backupRoot, {
-          recursive: true,
-          errorOnExist: true,
-          force: false,
-          preserveTimestamps: true,
-        });
-        rollbackPackagePath = path.join(
-          this.packageStorageRoot,
-          `.rollback-${manifest.id}-${randomUUID()}`,
-        );
-        await fs.promises.rename(existingSource.rootPath, rollbackPackagePath);
+        if (fs.existsSync(existingSource.rootPath)) {
+          await fs.promises.mkdir(path.dirname(backupRoot), { recursive: true });
+          await fs.promises.cp(existingSource.rootPath, backupRoot, {
+            recursive: true,
+            errorOnExist: true,
+            force: false,
+            preserveTimestamps: true,
+          });
+          rollbackPackagePath = path.join(
+            this.packageStorageRoot,
+            `.rollback-${manifest.id}-${randomUUID()}`,
+          );
+          await fs.promises.rename(existingSource.rootPath, rollbackPackagePath);
+        }
       }
 
       await fs.promises.rename(stagingPath, installedPath);

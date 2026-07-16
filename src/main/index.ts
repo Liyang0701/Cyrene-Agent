@@ -149,6 +149,7 @@ import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
 import { createElectronCharacterSwitchAdapters } from "./character/character-electron-switch";
 import { getCharacterBoundActivitySnapshot } from "./character/character-bound-activity";
+import { buildCharacterSafeModeDialog } from "./character/character-safe-mode";
 import {
   deleteArchivedCharacterState,
   getCharacterSettingsSnapshot,
@@ -3981,8 +3982,14 @@ app.whenReady().then(async () => {
   });
   const characterSnapshot = await characterRuntime.initialize();
   if (characterSnapshot.status !== "ready" || !characterSnapshot.activeCharacter) {
-    console.error("[CharacterRuntime] 内置昔涟角色包初始化失败:", characterSnapshot.diagnostics);
-    app.quit();
+    console.error("[CharacterRuntime] 已进入诊断安全模式:", characterSnapshot.diagnostics);
+    const result = await dialog.showMessageBox(buildCharacterSafeModeDialog(characterSnapshot));
+    if (result.response === 0) {
+      app.relaunch();
+      app.exit(0);
+    } else {
+      app.quit();
+    }
     return;
   }
   console.log(
