@@ -30,6 +30,7 @@ import {
   deleteImportedDoc,
   deleteUserMemoryVectors,
   getEntriesBySource,
+  getGlobalDocumentStorePath,
   initRAG,
   isUserMemoryVectorStoreReady,
   switchEmbeddingModel,
@@ -147,6 +148,7 @@ import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/p
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
 import { configureActiveCharacterState, getActiveCharacterState } from "./character/character-state";
+import { resolveGlobalUserDataLayout } from "./character/global-user-data";
 import {
   configureActiveCharacter,
   getActiveCharacter,
@@ -818,23 +820,20 @@ function getSettingsPath(): string {
 }
 
 function getGeneralSettingsPath(): string {
-  return path.join(app.getPath("userData"), "app-settings.json");
+  return resolveGlobalUserDataLayout(app.getPath("userData")).appSettingsFile;
 }
 
 
 function getUserProfilePath(): string {
-  return path.join(app.getPath("userData"), "user-profile.json");
+  return resolveGlobalUserDataLayout(app.getPath("userData")).profileFile;
 }
 
 function getAvatarPath(): string {
-  return path.join(app.getPath("userData"), "avatar.png");
+  return resolveGlobalUserDataLayout(app.getPath("userData")).avatarFile;
 }
 
 function getRagStorePath(): string {
-  return path.join(
-    getActiveCharacterState()?.ragRoot ?? path.join(app.getPath("userData"), "rag-data"),
-    "memory-store.json",
-  );
+  return getGlobalDocumentStorePath();
 }
 
 const DEFAULT_USER_PROFILE: UserProfile = {
@@ -850,7 +849,15 @@ function loadUserProfile(): UserProfile {
   try {
     const filePath = getUserProfilePath();
     if (!fs.existsSync(filePath)) return DEFAULT_USER_PROFILE;
-    return { ...DEFAULT_USER_PROFILE, ...JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<UserProfile> };
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
+    return {
+      nickname: typeof raw.nickname === "string" ? raw.nickname : DEFAULT_USER_PROFILE.nickname,
+      callPreference: typeof raw.callPreference === "string" ? raw.callPreference : DEFAULT_USER_PROFILE.callPreference,
+      birthday: typeof raw.birthday === "string" ? raw.birthday : DEFAULT_USER_PROFILE.birthday,
+      timezone: typeof raw.timezone === "string" ? raw.timezone : DEFAULT_USER_PROFILE.timezone,
+      avatarPath: typeof raw.avatarPath === "string" ? raw.avatarPath : DEFAULT_USER_PROFILE.avatarPath,
+      defaultCity: typeof raw.defaultCity === "string" ? raw.defaultCity : DEFAULT_USER_PROFILE.defaultCity,
+    };
   } catch {
     return DEFAULT_USER_PROFILE;
   }
@@ -858,7 +865,18 @@ function loadUserProfile(): UserProfile {
 
 function saveUserProfile(profile: Partial<UserProfile>): UserProfile {
   const existing = loadUserProfile();
-  const merged = { ...existing, ...profile };
+  const merged = { ...existing };
+  const explicitKeys: Array<keyof UserProfile> = [
+    "nickname",
+    "callPreference",
+    "birthday",
+    "timezone",
+    "avatarPath",
+    "defaultCity",
+  ];
+  for (const key of explicitKeys) {
+    if (typeof profile[key] === "string") merged[key] = profile[key].trim();
+  }
   const filePath = getUserProfilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(merged, null, 2), "utf8");
@@ -2017,6 +2035,9 @@ function recordProactiveDeliveryMetadata(input: ProactiveCommitInput): void {
 }
 
 async function commitLocalProactiveMessage(input: ProactiveCommitInput): Promise<ProactiveCommitResult> {
+  if (getActiveCharacter().id !== input.ownerCharacterId) {
+    return { kind: "cancelled", reason: "inactive_character" };
+  }
   const initialDecision = getProactiveCommitDecision(input.candidate, input.generationEpoch);
   if (!initialDecision.allowed) return { kind: "cancelled", reason: initialDecision.reason };
 
@@ -2057,6 +2078,9 @@ async function commitLocalProactiveMessage(input: ProactiveCommitInput): Promise
 }
 
 async function commitSelectedProactiveMessage(input: ProactiveCommitInput): Promise<ProactiveCommitResult> {
+  if (getActiveCharacter().id !== input.ownerCharacterId) {
+    return { kind: "cancelled", reason: "inactive_character" };
+  }
   const settings = loadGeneralSettings();
   const target = settings.proactiveDeliveryTarget;
   const result = await routeProactiveDelivery(target, {
@@ -2068,6 +2092,7 @@ async function commitSelectedProactiveMessage(input: ProactiveCommitInput): Prom
         mobileMessageSegmentation: settings.mobileMessageSegmentation,
         manager: channelManager,
         canContinue: () => {
+          if (getActiveCharacter().id !== input.ownerCharacterId) return false;
           if (loadGeneralSettings().proactiveDeliveryTarget !== channel) return false;
           return getProactiveCommitDecision(input.candidate, input.generationEpoch).allowed;
         },
@@ -2078,7 +2103,9 @@ async function commitSelectedProactiveMessage(input: ProactiveCommitInput): Prom
     },
   });
 
-  if (result.kind === "committed") recordProactiveDeliveryMetadata(input);
+  if (result.kind === "committed" && getActiveCharacter().id === input.ownerCharacterId) {
+    recordProactiveDeliveryMetadata(input);
+  }
   return result;
 }
 
@@ -2114,6 +2141,7 @@ function initializeProactiveChatService(): void {
       return target === "local" || canStartProactiveChannelDelivery(target, channelManager);
     },
     commitMessage: commitSelectedProactiveMessage,
+    getActiveCharacterId: () => getActiveCharacter().id,
     log: (event, detail) => console.log(`[Proactive] ${event}`, detail ?? ""),
   });
 

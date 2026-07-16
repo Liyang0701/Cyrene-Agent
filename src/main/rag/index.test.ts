@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { EmbeddingProvider } from "./embedding";
+import { configureActiveCharacterState, resolveCharacterStateLayout } from "../character/character-state";
 
 const provider: EmbeddingProvider = {
   name: "deterministic",
@@ -49,6 +50,7 @@ beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rag-index-test-"));
   userDataDir.value = tmpDir;
   appPath.value = tmpDir;
+  configureActiveCharacterState(resolveCharacterStateLayout(tmpDir, "cyrene"));
   await initRAG();
 });
 
@@ -79,6 +81,53 @@ describe("turn document imports", () => {
     const result = await importDocumentForTurn("one paragraph", "turn-doc.md");
 
     expect(hasImportedDocumentChunks(result.importId)).toBe(true);
+  });
+
+  it("shares imported documents across characters while keeping inferred memory private", async () => {
+    const imported = await importDocumentForTurn("shared paragraph about launch procedures", "shared.md");
+    await addMemory("Cyrene-only inferred preference", "user_memory");
+
+    resetRAG();
+    configureActiveCharacterState(resolveCharacterStateLayout(tmpDir, "fixture.lumen"));
+    await initRAG();
+
+    const chunks = await searchImportedDocumentChunksForImportIds("paragraph", [imported.importId], 3);
+    expect(chunks.map((chunk) => chunk.fileName)).toContain("shared.md");
+    expect(getEntriesBySource("user_memory")).toEqual([]);
+    expect(fs.existsSync(path.join(tmpDir, "global", "documents", "rag", "memory-store.json"))).toBe(true);
+  });
+
+  it("copies legacy imported chunks into the Global Document Library without moving private data", async () => {
+    resetRAG();
+    const legacyFile = path.join(tmpDir, "characters", "cyrene", "memory", "rag", "memory-store.json");
+    fs.mkdirSync(path.dirname(legacyFile), { recursive: true });
+    fs.writeFileSync(legacyFile, JSON.stringify([{
+      id: "legacy-doc-chunk",
+      text: "legacy paragraph",
+      embedding: [0, 1],
+      source: "imported_doc",
+      weight: 1,
+      createdAt: 1,
+      lastRecalledAt: 1,
+      metadata: { fileName: "legacy.md", importId: "legacy-import", chunkIndex: 0 },
+    }, {
+      id: "private-memory",
+      text: "Cyrene private",
+      embedding: [1, 0],
+      source: "user_memory",
+      weight: 1,
+      createdAt: 1,
+      lastRecalledAt: 1,
+    }]), "utf8");
+
+    await initRAG();
+
+    expect((await searchImportedDocumentChunksForImportIds("paragraph", ["legacy-import"], 3))[0]?.fileName)
+      .toBe("legacy.md");
+    const globalRaw = fs.readFileSync(path.join(tmpDir, "global", "documents", "rag", "memory-store.json"), "utf8");
+    expect(globalRaw).toContain("legacy-doc-chunk");
+    expect(globalRaw).not.toContain("private-memory");
+    expect(fs.readFileSync(legacyFile, "utf8")).toContain("private-memory");
   });
 });
 

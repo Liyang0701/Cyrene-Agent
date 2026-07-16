@@ -27,6 +27,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   const saveState = vi.fn();
   const runModel = vi.fn(async () => ({ kind: "send" as const, text: "休息一下吧♪" }));
   const getFallback = vi.fn(async () => ({ text: "预设关心", payload: { audio: true } }));
+  let activeCharacterId = "cyrene";
   const service = createProactiveChatService({
     loadState: () => state,
     saveState,
@@ -35,9 +36,19 @@ function setup(overrides: Record<string, unknown> = {}) {
     runModel,
     getFallback,
     commitMessage,
+    getActiveCharacterId: () => activeCharacterId,
     ...overrides,
   });
-  return { service, state, commitMessage, saveState, runModel, getFallback, setSnapshot: (next: Partial<ProactiveRuntimeSnapshot>) => { snapshot = { ...snapshot, ...next }; } };
+  return {
+    service,
+    state,
+    commitMessage,
+    saveState,
+    runModel,
+    getFallback,
+    setActiveCharacterId: (id: string) => { activeCharacterId = id; },
+    setSnapshot: (next: Partial<ProactiveRuntimeSnapshot>) => { snapshot = { ...snapshot, ...next }; },
+  };
 }
 
 describe("proactive chat service", () => {
@@ -63,6 +74,23 @@ describe("proactive chat service", () => {
     pending.resolve({ kind: "send", text: "too late" });
     await evaluation;
     expect(ctx.commitMessage).not.toHaveBeenCalled();
+  });
+
+  it("discards an in-flight casual message when its owner is no longer active", async () => {
+    const pending = deferred<{ kind: "send"; text: string }>();
+    const log = vi.fn();
+    const ctx = setup({ runModel: vi.fn(() => pending.promise), log });
+    const evaluation = ctx.service.evaluateCandidate(candidate);
+
+    ctx.setActiveCharacterId("fixture.lumen");
+    pending.resolve({ kind: "send", text: "Cyrene-only stale message" });
+    await evaluation;
+
+    expect(ctx.commitMessage).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("generation_discarded", expect.objectContaining({
+      reason: "inactive_character",
+      ownerCharacterId: "cyrene",
+    }));
   });
 
   it("never falls back or creates a message for explicit silent", async () => {

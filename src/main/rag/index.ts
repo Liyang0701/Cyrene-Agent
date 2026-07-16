@@ -13,16 +13,67 @@ import { isL2LocallyRecallable } from "../memory/memory-types";
 import type { DocumentImportControl } from "./file-ingest";
 import { getActiveCharacterState } from "../character/character-state";
 import { peekActiveCharacterText } from "../character/active-character";
+import { resolveGlobalUserDataLayout } from "../character/global-user-data";
 
 // ── Global RAG instances ──
 let store: JsonVectorStore | null = null;
 let retriever: HybridRetriever | null = null;
+let documentStore: JsonVectorStore | null = null;
+let documentRetriever: HybridRetriever | null = null;
 let worldbook: WorldbookManager | null = null;
 let provider: EmbeddingProvider | null = null;
 
 function getDataDir(): string {
   return getActiveCharacterState()?.ragRoot
     ?? path.join(app.getPath("userData"), "rag-data");
+}
+
+function getGlobalDocumentDataDir(): string {
+  return resolveGlobalUserDataLayout(app.getPath("userData")).documentRagRoot;
+}
+
+export function getGlobalDocumentStorePath(): string {
+  return path.join(getGlobalDocumentDataDir(), "memory-store.json");
+}
+
+function migrateGlobalDocumentEntries(): void {
+  const target = getGlobalDocumentStorePath();
+  if (fs.existsSync(target)) return;
+
+  const userDataRoot = app.getPath("userData");
+  const candidates = [path.join(userDataRoot, "rag-data", "memory-store.json")];
+  const charactersRoot = path.join(userDataRoot, "characters");
+  try {
+    for (const characterId of fs.readdirSync(charactersRoot)) {
+      candidates.push(path.join(charactersRoot, characterId, "memory", "rag", "memory-store.json"));
+    }
+  } catch {
+    // No character roots have been created yet.
+  }
+
+  const migrated = new Map<string, MemoryEntry>();
+  for (const candidate of candidates) {
+    try {
+      const entries = JSON.parse(fs.readFileSync(candidate, "utf8")) as unknown;
+      if (!Array.isArray(entries)) continue;
+      for (const value of entries) {
+        if (!value || typeof value !== "object") continue;
+        const entry = value as Partial<MemoryEntry>;
+        if (entry.source !== "imported_doc" || typeof entry.id !== "string" || typeof entry.text !== "string") continue;
+        if (!Array.isArray(entry.embedding) || !entry.embedding.every(Number.isFinite)) continue;
+        migrated.set(entry.id, entry as MemoryEntry);
+      }
+    } catch {
+      // Missing or malformed legacy stores are ignored; character-private data stays untouched.
+    }
+  }
+
+  if (migrated.size === 0) return;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify([...migrated.values()], null, 2), "utf8");
+  fs.renameSync(temporary, target);
+  console.log(`[RAG] migrated ${migrated.size} imported document chunks into Global Document Library`);
 }
 
 // ── Init ──
@@ -35,9 +86,12 @@ export async function initRAG(
   const dataDir = getDataDir();
   provider = getEmbeddingProvider(ragMode, cloudBaseUrl, cloudApiKey, embeddingModel);
   store = new JsonVectorStore(dataDir);
+  migrateGlobalDocumentEntries();
+  documentStore = new JsonVectorStore(getGlobalDocumentDataDir());
   // 只有 provider 存在时才创建 retriever（向量检索依赖 embedding）
   if (provider) {
     retriever = new HybridRetriever(store, provider);
+    documentRetriever = new HybridRetriever(documentStore, provider);
   }
   worldbook = new WorldbookManager(
     peekActiveCharacterText()?.worldbookDirectoryPath
@@ -99,31 +153,29 @@ export async function switchEmbeddingModel(modelKey: string): Promise<{ ok: bool
     
     const newDims = newProvider.dims;
 
-    // Check existing entries for dimension mismatch
+    // Character memory and Global Document Library share the runtime, but own separate indexes.
     let clearedEntries = 0;
-    if (store) {
-      const entries = (store as any).entries as Array<{ embedding: number[] }> | undefined;
-      if (entries && entries.length > 0) {
-        const oldDims = entries[0].embedding.length;
-        if (oldDims !== newDims) {
-          // Dimension mismatch — clear the vector store
-          const dataDir = getDataDir();
-          const storePath = path.join(dataDir, "memory-store.json");
-          if (fs.existsSync(storePath)) {
-            clearedEntries = entries.length;
-            fs.writeFileSync(storePath, "[]", "utf8");
-            console.log("[RAG] dimension mismatch (" + oldDims + " → " + newDims + "), cleared " + clearedEntries + " entries");
-          }
-          // Reload store from the now-empty file
-          store = new JsonVectorStore(dataDir);
-        }
+    const resetIfDimensionsChanged = (current: JsonVectorStore | null, dataDir: string): JsonVectorStore | null => {
+      if (!current) return null;
+      const entries = (current as any).entries as Array<{ embedding: number[] }> | undefined;
+      if (!entries?.length || entries[0].embedding.length === newDims) return current;
+      const storePath = path.join(dataDir, "memory-store.json");
+      if (fs.existsSync(storePath)) {
+        clearedEntries += entries.length;
+        fs.writeFileSync(storePath, "[]", "utf8");
       }
-    }
+      return new JsonVectorStore(dataDir);
+    };
+    store = resetIfDimensionsChanged(store, getDataDir());
+    documentStore = resetIfDimensionsChanged(documentStore, getGlobalDocumentDataDir());
 
     // Update provider reference and retriever
     provider = newProvider;
     if (store) {
       retriever = new HybridRetriever(store, provider);
+    }
+    if (documentStore) {
+      documentRetriever = new HybridRetriever(documentStore, provider);
     }
 
     console.log("[RAG] switched embedding model to", modelKey, "dims:", newDims, "cleared:", clearedEntries);
@@ -195,7 +247,9 @@ export async function searchMemoryEntries(
       return [];
     }
   }
-  const results = await retriever.retrieve(query, source, topK, { allowedEntryIds });
+  const selectedRetriever = source === "imported_doc" ? documentRetriever : retriever;
+  if (!selectedRetriever) return [];
+  const results = await selectedRetriever.retrieve(query, source, topK, { allowedEntryIds });
   if (options?.recordRecall !== false) {
     await recordUserMemoryRecalls(results);
   }
@@ -294,8 +348,8 @@ export async function appendPreparedDocumentBatch(
   importId: string,
   prepared: PreparedDocumentEmbedding[],
 ): Promise<void> {
-  if (!store) throw new Error("RAG not initialized");
-  store.addPreparedBatch(prepared.map((entry) => ({
+  if (!documentStore) throw new Error("Global Document Library not initialized");
+  documentStore.addPreparedBatch(prepared.map((entry) => ({
     text: entry.text,
     embedding: entry.embedding,
     source: "imported_doc",
@@ -307,7 +361,7 @@ export async function importPreparedDocumentForTurn(
   fileName: string,
   prepared: PreparedDocumentEmbedding[],
 ): Promise<ImportedDocumentResult> {
-  if (!store) throw new Error("RAG not initialized");
+  if (!documentStore) throw new Error("Global Document Library not initialized");
   const id = typeof crypto !== "undefined" && crypto.randomUUID
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2, 8);
@@ -321,7 +375,7 @@ export async function importDocumentForTurn(
   fileName: string,
   control?: DocumentImportControl,
 ): Promise<ImportedDocumentResult> {
-  if (!store || !provider) throw new Error("RAG not initialized");
+  if (!documentStore || !provider) throw new Error("Global Document Library not initialized");
   const chunks = chunkText(text, "doc_" + fileName);
   control?.onProgress?.({ status: "chunking", completedChunks: chunks.length, totalChunks: chunks.length });
   if (control?.isCancelled?.()) throw new Error("cancelled");
@@ -330,7 +384,7 @@ export async function importDocumentForTurn(
     : Math.random().toString(36).slice(2, 8);
   const importId = `import-${Date.now()}-${id}`;
   control?.onProgress?.({ status: "embedding", completedChunks: 0, totalChunks: chunks.length });
-  await store.addBatch(
+  await documentStore.addBatch(
     chunks.map((c) => ({ text: c.text, source: "imported_doc", metadata: { fileName, chunkIndex: c.index, importId } })),
     provider,
     { isCancelled: control?.isCancelled },
@@ -348,8 +402,8 @@ export async function searchImportedDocumentChunksForImportIds(
   importIds: string[],
   topK = 6,
 ): Promise<ImportedDocumentChunk[]> {
-  if (!retriever || !query.trim() || importIds.length === 0) return [];
-  const results = await retriever.retrieve(query, "imported_doc", topK, { importIds });
+  if (!documentRetriever || !query.trim() || importIds.length === 0) return [];
+  const results = await documentRetriever.retrieve(query, "imported_doc", topK, { importIds });
   return results.map((result) => ({
     text: result.entry.text,
     score: result.score,
@@ -391,13 +445,27 @@ export async function buildMemoryContext(userInput: string): Promise<string> {
 export function resetRAG(): void {
   store = null;
   retriever = null;
+  documentStore = null;
+  documentRetriever = null;
   worldbook = null;
   provider = null;
   resetEmbeddingProvider();
 }
 
 export function getRAGStats() {
-  return store?.stats ?? { total: 0, sources: {} };
+  const characterStats = store?.stats ?? { total: 0, sources: {} };
+  const documentStats = documentStore?.stats ?? { total: 0, sources: {} };
+  const characterSources = { ...characterStats.sources };
+  // Pre-split stores may still contain an inert imported_doc copy; retrieval no longer reads it.
+  delete characterSources.imported_doc;
+  const sources: Record<string, number> = { ...characterSources };
+  for (const [source, count] of Object.entries(documentStats.sources)) {
+    sources[source] = (sources[source] ?? 0) + count;
+  }
+  return {
+    total: Object.values(sources).reduce((sum, count) => sum + count, 0),
+    sources,
+  };
 }
 
 export function isUserMemoryVectorStoreReady(): boolean {
@@ -421,10 +489,10 @@ export function deleteUserMemoryVectors(ragIds: string[]): number {
 }
 
 export function deleteImportedDoc(importId: string, fileName?: string): number {
-  if (!store) throw new Error("RAG not initialized");
-  return store.deleteImportedDoc(importId, fileName);
+  if (!documentStore) throw new Error("Global Document Library not initialized");
+  return documentStore.deleteImportedDoc(importId, fileName);
 }
 
 export function hasImportedDocumentChunks(importId: string): boolean {
-  return store?.hasImportedDocumentChunks(importId) ?? false;
+  return documentStore?.hasImportedDocumentChunks(importId) ?? false;
 }

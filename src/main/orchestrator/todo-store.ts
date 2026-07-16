@@ -12,6 +12,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
+import { resolveGlobalUserDataLayout } from "../character/global-user-data";
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 export type TodoPriority = "high" | "medium" | "low";
@@ -35,7 +36,7 @@ let listeners: Array<(s: TodoState) => void> = [];
 let loaded = false;
 
 function todoFilePath(): string {
-  return path.join(app.getPath("userData"), "current-todos.json");
+  return resolveGlobalUserDataLayout(app.getPath("userData")).todoFile;
 }
 
 function persist(): void {
