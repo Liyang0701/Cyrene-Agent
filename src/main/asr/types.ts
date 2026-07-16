@@ -11,6 +11,7 @@ export interface AsrConfig {
   localModelPath?: string;
   localTimeoutMs?: number;
   localSystemPrompt?: string;
+  speechRecognitionHints?: readonly string[];
 }
 export interface AsrCallbacks {
   onPartial?: (text: string) => void;

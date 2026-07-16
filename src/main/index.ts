@@ -158,6 +158,7 @@ import {
   prepareLive2dModelJsonForProtocol,
   resolveCharacterResourceRequest,
 } from "./character/character-resource";
+import { applyVoiceProfileToTtsSettings } from "./character/character-speech";
 
 let characterRuntime: CharacterRuntime | null = null;
 
@@ -1939,8 +1940,13 @@ async function buildProactiveAgentMessages(candidate: ProactiveCandidate) {
 }
 
 async function synthesizeProactiveSpeech(text: string): Promise<{ audioBase64: string; format: "wav" | "mp3"; durationMs: number } | null> {
-  const cfg = loadGeneralSettings();
-  if (!cfg.ttsAutoRead || cfg.ttsEngine === "off") return null;
+  const globalCfg = loadGeneralSettings();
+  if (!globalCfg.ttsAutoRead || globalCfg.ttsEngine === "off") return null;
+  const voice = getActiveCharacter().capabilities.voice;
+  if (voice.status !== "available") return null;
+  const voiceResolution = applyVoiceProfileToTtsSettings(voice.profile, globalCfg);
+  if (voiceResolution.status !== "available") return null;
+  const cfg = voiceResolution.settings;
   try {
     const result = await synthesizeByEngine(cfg.ttsEngine, {
       text,
@@ -4686,8 +4692,16 @@ app.whenReady().then(async () => {
 
   // Phase 3.1：注入 TTS 合成 —— dispatcher 在 reply 后会用这个生成渠道音频
   setDispatcherSynthesizeTts(async (text: string, context) => {
-    const cfg = loadGeneralSettings();
-    if (cfg.ttsEngine === "off") return null;
+    const globalCfg = loadGeneralSettings();
+    if (globalCfg.ttsEngine === "off") return null;
+    const voice = getActiveCharacter().capabilities.voice;
+    if (voice.status !== "available") return null;
+    const voiceResolution = applyVoiceProfileToTtsSettings(voice.profile, globalCfg);
+    if (voiceResolution.status !== "available") {
+      console.warn("[Channels] 当前角色 Voice Profile 所需服务不可用:", voiceResolution);
+      return null;
+    }
+    const cfg = voiceResolution.settings;
     if (cfg.ttsEngine === "minimax" && (!cfg.ttsMinimaxKey || !cfg.ttsMinimaxVoiceId)) return null;
     if (cfg.ttsEngine === "gptsovits" && (!cfg.ttsGptsovitsBaseUrl || !cfg.ttsGptsovitsRefAudioPath || !cfg.ttsGptsovitsPromptText)) return null;
     if (cfg.ttsEngine === "custom-cloud" && !cfg.ttsCustomCloudEndpointUrl) return null;

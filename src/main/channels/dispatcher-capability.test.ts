@@ -40,8 +40,8 @@ describe("buildTextOutgoingParts", () => {
 });
 
 describe("shouldAppendChannelTtsAudio", () => {
-  it("does not append TTS audio for WeChat even when TTS and audio capability are enabled", () => {
-    expect(shouldAppendChannelTtsAudio("wechat", true, true, true)).toBe(false);
+  it("can append character-routed TTS audio for WeChat when the adapter supports voice", () => {
+    expect(shouldAppendChannelTtsAudio("wechat", true, true, true)).toBe(true);
   });
 
   it("can append TTS audio for Feishu when TTS and audio capability are enabled", () => {

@@ -212,6 +212,14 @@ characters/
 
 渲染器根据 Active Character 身份选择 Live2D canvas 或静态头像。文本型角色会先清空旧模型表面，再显示自己的头像；完整 Live2D 角色加载自己的模型 URL。内置昔涟已补充独立的 Semantic Action 映射，真实 Electron 验收确认 model3、moc、纹理和动作可通过自定义协议加载，未授权包内路径返回 403。角色选择与受控重启仍由后续 Character Switch Transaction Issue 实现。
 
+## 已落地：角色音色与 ASR Hints（Issue #7）
+
+TTS 的 Endpoint、API Key、超时、模型和进程继续属于全局 TTS Service；角色包只能通过 `capabilities.voice.profile` 声明无密钥 Voice Profile。Profile 可选择 MiniMax/custom-cloud 的 voiceId，或引用包内 GPT-SoVITS/MiMo 参考音频及对应文本、语言、风格、速度和音量。任何 API Key、Endpoint 或包外参考音频都会使角色包 unhealthy。所需 Service 与当前全局 `ttsEngine` 不匹配时该角色 TTS 明确 unavailable，不会继续使用上一角色的音色。
+
+内置昔涟暂时使用唯一允许的 `legacy-global` 兼容 Profile，以保留用户当前已验证的临时音色配置；第三方和本地导入包不能声明该兼容模式。通话、主动语音和渠道回复在合成前统一把 Active Character Voice Profile 应用到全局 Service 配置。微信已有的 WAV→Silk 上传发送链路现已对 dispatcher 声明 audio 能力；渠道临时音频与桌面朗读缓存均写入当前 Character State Root 的 `tts/cache`，不会与其他角色共用。
+
+角色包可在 `speechRecognitionHints` 中声明最多 8 个别名和 24 个专有名词，每项最多 40 个字符且只允许名称型字符。Active Character Display Name 会自动加入。桌面通话与微信语音都在每次请求时把同一组 hints 复制到全局 ASR 配置；Qwen3-ASR 的模型路径、Worker、语言、超时和用户自定义基础指令保持全局不变。默认本地 ASR Prompt 已移除固定昔涟名称，角色 hints 只以“可能出现的专有名词”附加，不能携带改写指令。
+
 ## 实施顺序
 
 1. 建立角色包 schema、校验器、Cyrene 默认包和旧路径兼容层。

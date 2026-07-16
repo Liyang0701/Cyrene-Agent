@@ -28,6 +28,7 @@ function activeCharacter(input: Readonly<{
     packageRoot: root,
     content: { identityPath, soulPath, avatarPath },
     stateRoot,
+    speechRecognitionHints: { displayName: input.displayName, terms: [input.displayName] },
     state: {
       root: stateRoot,
       chatsRoot: path.join(stateRoot, "chats"),

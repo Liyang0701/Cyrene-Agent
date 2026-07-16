@@ -15,6 +15,11 @@ import type { TtsEngine } from "../../shared/tts-types";
 import { runFunctionCallingLoop } from "../orchestrator";
 import { getAdapter, buildVendorUrlByProvider } from "../orchestrator/vendors";
 import type { ChatMessage } from "../orchestrator/vendors/types";
+import { getActiveCharacter } from "../character/active-character";
+import {
+  applySpeechRecognitionHints,
+  applyVoiceProfileToTtsSettings,
+} from "../character/character-speech";
 
 const LOG_PREFIX = "[CallManager]";
 
@@ -129,7 +134,7 @@ export async function startCall(): Promise<void> {
   if (active) return;
   let cfg: AsrConfig;
   try {
-    cfg = requireAsrConfig();
+    cfg = applySpeechRecognitionHints(requireAsrConfig(), getActiveCharacter().speechRecognitionHints);
   } catch (error) {
     sendError(error instanceof Error ? error.message : String(error));
     sendState("ERROR");
@@ -207,12 +212,25 @@ export async function endTurn(): Promise<void> {
     }
 
     // TTS 合成（按 ttsEngine 分发到对应引擎）
-    const tts = ttsSettingsGetter?.();
-    if (!tts || tts.ttsEngine === "off") {
+    const globalTts = ttsSettingsGetter?.();
+    const voiceCapability = getActiveCharacter().capabilities.voice;
+    if (!globalTts || globalTts.ttsEngine === "off") {
       sendError("TTS 未配置：请在设置中启用 TTS 引擎");
       await restartAsr();
       return;
     }
+    if (voiceCapability.status !== "available") {
+      sendError(`当前角色 ${getActiveCharacter().displayName} 未提供 Voice Profile，已禁用 TTS`);
+      await restartAsr();
+      return;
+    }
+    const voiceResolution = applyVoiceProfileToTtsSettings(voiceCapability.profile, globalTts);
+    if (voiceResolution.status !== "available") {
+      sendError(`当前角色需要 TTS Service ${voiceResolution.requiredService ?? "已启用服务"}，当前为 ${voiceResolution.configuredService}`);
+      await restartAsr();
+      return;
+    }
+    const tts = voiceResolution.settings;
 
     // 引擎配置完整性检查
     if (tts.ttsEngine === "minimax" && (!tts.ttsMinimaxKey || !tts.ttsMinimaxVoiceId)) {
@@ -290,7 +308,10 @@ export function onTtsDone(): void {
 
 /** 重新开始一轮 ASR 识别。 */
 async function restartAsr(): Promise<void> {
-  const cfg = getAsrConfig();
+  const rawConfig = getAsrConfig();
+  const cfg = rawConfig
+    ? applySpeechRecognitionHints(rawConfig, getActiveCharacter().speechRecognitionHints)
+    : null;
   if (!cfg || cfg.engine === "off" || !active) return;
   asrStream?.dispose();
   asrStream = null;

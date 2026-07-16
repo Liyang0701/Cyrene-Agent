@@ -19,6 +19,12 @@
       "source": "Cyrene-Agent 测试夹具原创 SVG",
       "license": "MIT",
       "distributionStatus": "redistributable"
+    },
+    {
+      "assetClass": "voice",
+      "source": "Cyrene-Agent 测试夹具原创无密钥 Voice Profile",
+      "license": "MIT",
+      "distributionStatus": "redistributable"
     }
   ],
   "content": {
@@ -32,9 +38,16 @@
     "phoneIdentity": "content/phone-identity.md",
     "phoneStyle": "content/phone-style.md"
   },
+  "speechRecognitionHints": {
+    "aliases": ["Lumen"],
+    "terms": ["棱镜台", "晨光刻度", "Qwen3.5"]
+  },
   "capabilities": {
     "worldbook": {
       "directory": "worldbook"
+    },
+    "voice": {
+      "profile": "voice/profile.json"
     }
   }
 }

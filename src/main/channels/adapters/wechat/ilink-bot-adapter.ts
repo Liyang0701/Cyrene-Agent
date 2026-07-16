@@ -67,7 +67,7 @@ interface PendingInboundMedia {
 const CAPABILITY: ChannelCapability = {
   text: true,
   image: true,
-  audio: false,
+  audio: true,
   file: true,
   video: true,
   markdown: false,
@@ -603,7 +603,13 @@ async function transcribeInboundWechatVoice(
   const source = await downloadWechatMedia(item.media);
   const sampleRate = item.sampleRate ?? 16000;
 
-  return transcribeWechatVoiceSource(source, sampleRate, cfg);
+  const { getActiveCharacter } = await import("../../../character/active-character");
+  const { applySpeechRecognitionHints } = await import("../../../character/character-speech");
+  return transcribeWechatVoiceSource(
+    source,
+    sampleRate,
+    applySpeechRecognitionHints(cfg, getActiveCharacter().speechRecognitionHints),
+  );
 }
 
 function pickInboundExtension(item: InboundMediaDescriptor, data: Buffer): string {
