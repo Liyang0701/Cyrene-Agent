@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  deleteArchivedCharacterState,
   getCharacterSettingsSnapshot,
+  listArchivedCharacterStates,
   requestCharacterSwitch,
+  uninstallCharacterPackage,
 } from "./character-ipc";
 
 describe("character IPC boundary", () => {
@@ -43,5 +46,24 @@ describe("character IPC boundary", () => {
     });
     expect(requestSwitch).toHaveBeenCalledOnce();
     expect(requestSwitch).toHaveBeenCalledWith("fixture.lumen");
+  });
+
+  it("validates lifecycle ids and delegates archive operations", async () => {
+    const runtime = {
+      getSnapshot: vi.fn(),
+      getBlockingActivities: vi.fn(),
+      requestSwitch: vi.fn(),
+      uninstallPackage: vi.fn().mockResolvedValue({ ok: true }),
+      listArchivedCharacterStates: vi.fn().mockResolvedValue([{ characterId: "fixture.lumen" }]),
+      permanentlyDeleteArchivedState: vi.fn().mockResolvedValue({ ok: true }),
+    };
+
+    expect(() => uninstallCharacterPackage(runtime, "../lumen")).toThrow("角色 ID 格式无效");
+    expect(() => uninstallCharacterPackage(runtime, "fixture..lumen")).toThrow("角色 ID 格式无效");
+    await expect(uninstallCharacterPackage(runtime, "x")).resolves.toEqual({ ok: true });
+    await expect(uninstallCharacterPackage(runtime, "fixture.lumen")).resolves.toEqual({ ok: true });
+    await expect(listArchivedCharacterStates(runtime)).resolves.toEqual([{ characterId: "fixture.lumen" }]);
+    expect(() => deleteArchivedCharacterState(runtime, "fixture.lumen", 123)).toThrow("永久删除确认格式无效");
+    await expect(deleteArchivedCharacterState(runtime, "fixture.lumen", "fixture.lumen")).resolves.toEqual({ ok: true });
   });
 });

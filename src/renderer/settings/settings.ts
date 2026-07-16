@@ -25,8 +25,12 @@ import { normalizeUiIcon, type UiIcon } from "../../shared/ui-icon";
 import { buildAppearanceSettingsPatch } from "./appearance-settings-state";
 import { type ReasoningPreference } from "../../shared/reasoning";
 import {
+  buildCharacterReplacementConfirmation,
   buildCharacterSwitchConfirmation,
+  renderArchivedCharacterStates,
   renderCharacterPackages,
+  type ArchivedCharacterStateView,
+  type CharacterReplacementView,
   type CharacterSettingsSnapshot,
 } from "./character-settings-view";
 
@@ -116,6 +120,7 @@ function showInputModal(options: {
   icon?: string;
   confirmText?: string;
   cancelText?: string;
+  danger?: boolean;
 }): Promise<string | null> {
   _initInputOverlay();
   if (!_cyInputOverlay) return Promise.resolve(null);
@@ -132,6 +137,7 @@ function showInputModal(options: {
   inputEl.placeholder = options.placeholder || "";
   cancelBtn.textContent = options.cancelText || "取消";
   confirmBtn.textContent = options.confirmText || "确定";
+  confirmBtn.classList.toggle("is-danger", options.danger === true);
   _cyInputOverlay.classList.remove("is-hidden");
   setTimeout(() => inputEl.focus(), 30);
   return new Promise((resolve) => {
@@ -367,9 +373,20 @@ interface SettingsApi {
   saveGeneral: (config: Partial<GeneralSettings>) => Promise<GeneralSettings>;
   listCharacters: () => Promise<CharacterSettingsSnapshot>;
   pickCharacterImportFolder: () => Promise<string | null>;
-  importCharacter: (sourcePath: string) => Promise<
-    | { ok: true; snapshot: CharacterSettingsSnapshot; package: { displayName: string } }
-    | { ok: false; diagnostics: Array<{ code: string; message: string }> }
+  importCharacter: (sourcePath: string, confirmReplacement?: boolean) => Promise<
+    | {
+        ok: true;
+        operation: "installed" | "upgraded" | "modified";
+        snapshot: CharacterSettingsSnapshot;
+        package: { displayName: string };
+      }
+    | {
+        ok: false;
+        status: "confirmation-required";
+        replacement: CharacterReplacementView;
+        diagnostics: Array<{ code: string; message: string }>;
+      }
+    | { ok: false; status?: "failed"; diagnostics: Array<{ code: string; message: string }> }
   >;
   switchCharacter: (characterId: string) => Promise<
     | {
@@ -383,6 +400,18 @@ interface SettingsApi {
         blockingActivities?: Array<{ kind: string; reason: string }>;
         diagnostics: Array<{ code: string; message: string }>;
       }
+  >;
+  uninstallCharacter: (characterId: string) => Promise<
+    | { ok: true; characterId: string; state: "archived" | "none"; snapshot: CharacterSettingsSnapshot }
+    | { ok: false; diagnostics: Array<{ code: string; message: string }> }
+  >;
+  listArchivedCharacterStates: () => Promise<ArchivedCharacterStateView[]>;
+  deleteArchivedCharacterState: (
+    characterId: string,
+    confirmationCharacterId: string,
+  ) => Promise<
+    | { ok: true; characterId: string; deletedFiles: number; deletedBytes: number }
+    | { ok: false; diagnostics: Array<{ code: string; message: string }> }
   >;
   pickUiFont: () => Promise<string | null>;
   importUiFont: (sourcePath: string) => Promise<UiFont>;
@@ -623,6 +652,8 @@ const characterPackageList = document.getElementById("character-package-list") a
 const characterCount = document.getElementById("character-count") as HTMLElement;
 const characterImportButton = document.getElementById("character-import-btn") as HTMLButtonElement;
 const characterImportStatus = document.getElementById("character-import-status") as HTMLElement;
+const characterArchiveList = document.getElementById("character-archive-list") as HTMLElement;
+const characterArchiveCount = document.getElementById("character-archive-count") as HTMLElement;
 const disclaimerPanel = document.getElementById("disclaimer-panel") as HTMLElement;
 const pluginsPanel = document.getElementById("plugins-panel") as HTMLElement;
 const placeholderIcon = document.getElementById("placeholder-icon") as HTMLElement;
@@ -2524,9 +2555,16 @@ function showCharacterSnapshot(snapshot: CharacterSettingsSnapshot): void {
 
 async function loadCharacterPackages(): Promise<void> {
   try {
-    showCharacterSnapshot(await window.settings!.listCharacters());
+    const [snapshot, archives] = await Promise.all([
+      window.settings!.listCharacters(),
+      window.settings!.listArchivedCharacterStates(),
+    ]);
+    showCharacterSnapshot(snapshot);
+    characterArchiveCount.textContent = `${archives.length} 个`;
+    characterArchiveList.innerHTML = renderArchivedCharacterStates(archives);
   } catch (error) {
     characterPackageList.innerHTML = '<div class="character-empty">角色列表读取失败，请稍后重试。</div>';
+    characterArchiveList.innerHTML = '<div class="character-empty">归档状态读取失败，请稍后重试。</div>';
     characterImportStatus.textContent = error instanceof Error ? error.message : String(error);
     characterImportStatus.className = "character-import-status is-error";
   }
@@ -2545,10 +2583,31 @@ characterImportButton.addEventListener("click", async () => {
   characterImportStatus.textContent = "正在检查并安装角色包…";
   characterImportStatus.className = "character-import-status";
   try {
-    const result = await window.settings!.importCharacter(sourcePath);
+    let result = await window.settings!.importCharacter(sourcePath);
+    if (!result.ok && result.status === "confirmation-required") {
+      const confirmation = buildCharacterReplacementConfirmation(result.replacement);
+      const confirmed = await showModal({
+        title: confirmation.title,
+        message: confirmation.message,
+        icon: "📦",
+        confirmText: confirmation.confirmLabel,
+        cancelText: "保留现有版本",
+      });
+      if (!confirmed) {
+        characterImportStatus.textContent = "已取消角色包替换，现有版本保持不变。";
+        return;
+      }
+      characterImportStatus.textContent = "正在备份现有角色包并应用新内容…";
+      result = await window.settings!.importCharacter(sourcePath, true);
+    }
     if (result.ok) {
       await loadCharacterPackages();
-      characterImportStatus.textContent = `已安全安装「${result.package.displayName}」，可在下方确认后切换。`;
+      const action = result.operation === "installed"
+        ? "安装"
+        : result.operation === "upgraded"
+          ? "升级"
+          : "替换";
+      characterImportStatus.textContent = `已安全${action}「${result.package.displayName}」，角色私有状态保持不变。`;
       characterImportStatus.className = "character-import-status is-success";
     } else {
       characterImportStatus.textContent = result.diagnostics.map(({ message }) => message).join("；") || "角色包未通过检查";
@@ -2559,6 +2618,81 @@ characterImportButton.addEventListener("click", async () => {
     characterImportStatus.className = "character-import-status is-error";
   } finally {
     characterImportButton.disabled = false;
+  }
+});
+
+characterPackageList.addEventListener("click", async (event) => {
+  const target = event.target;
+  if (!(target instanceof Element) || characterSwitchInProgress) return;
+  const button = target.closest<HTMLButtonElement>("[data-character-uninstall]");
+  if (!button) return;
+  const characterId = button.dataset.characterUninstall;
+  const characterPackage = currentCharacterSnapshot?.packages.find(({ id }) => id === characterId);
+  if (!characterPackage) return;
+  const confirmed = await showModal({
+    title: `卸载「${characterPackage.displayName}」角色包？`,
+    message: `只会移除角色包资源。聊天、记忆、关系和语音缓存会保留为归档状态；以后重装角色 ID「${characterPackage.id}」即可恢复。`,
+    icon: "📦",
+    confirmText: "卸载并保留状态",
+    cancelText: "取消",
+  });
+  if (!confirmed) return;
+  button.disabled = true;
+  characterImportStatus.textContent = `正在卸载「${characterPackage.displayName}」并归档状态…`;
+  characterImportStatus.className = "character-import-status";
+  try {
+    const result = await window.settings!.uninstallCharacter(characterPackage.id);
+    if (result.ok) {
+      characterImportStatus.textContent = result.state === "archived"
+        ? `已卸载「${characterPackage.displayName}」，私有状态已归档。`
+        : `已卸载「${characterPackage.displayName}」，该角色没有已创建的私有状态。`;
+      characterImportStatus.className = "character-import-status is-success";
+      await loadCharacterPackages();
+    } else {
+      characterImportStatus.textContent = result.diagnostics.map(({ message }) => message).join("；");
+      characterImportStatus.className = "character-import-status is-error";
+      button.disabled = false;
+    }
+  } catch (error) {
+    characterImportStatus.textContent = `卸载失败：${error instanceof Error ? error.message : String(error)}`;
+    characterImportStatus.className = "character-import-status is-error";
+    button.disabled = false;
+  }
+});
+
+characterArchiveList.addEventListener("click", async (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const button = target.closest<HTMLButtonElement>("[data-character-archive-delete]");
+  if (!button) return;
+  const characterId = button.dataset.characterArchiveDelete;
+  if (!characterId) return;
+  const confirmation = await showInputModal({
+    title: "永久删除角色状态",
+    message: `这会永久删除该角色的聊天、记忆、关系和缓存，无法撤销。请输入角色 ID「${characterId}」继续。`,
+    placeholder: characterId,
+    icon: "⚠️",
+    confirmText: "永久删除",
+    cancelText: "保留归档",
+    danger: true,
+  });
+  if (confirmation === null) return;
+  button.disabled = true;
+  try {
+    const result = await window.settings!.deleteArchivedCharacterState(characterId, confirmation.trim());
+    if (result.ok) {
+      characterImportStatus.textContent = `已永久删除 ${result.deletedFiles} 个归档文件。`;
+      characterImportStatus.className = "character-import-status is-success";
+      await loadCharacterPackages();
+    } else {
+      characterImportStatus.textContent = result.diagnostics.map(({ message }) => message).join("；");
+      characterImportStatus.className = "character-import-status is-error";
+      button.disabled = false;
+    }
+  } catch (error) {
+    characterImportStatus.textContent = `永久删除失败：${error instanceof Error ? error.message : String(error)}`;
+    characterImportStatus.className = "character-import-status is-error";
+    button.disabled = false;
   }
 });
 

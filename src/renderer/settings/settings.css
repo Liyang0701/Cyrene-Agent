@@ -1237,6 +1237,16 @@ body {
   box-shadow: 0 8px 18px rgba(236, 72, 153, 0.28);
 }
 
+.btn-primary.is-danger {
+  background: #be123c;
+  color: #fff1f2;
+}
+
+.btn-primary.is-danger:hover {
+  background: #e11d48;
+  box-shadow: 0 6px 8px rgba(190, 18, 60, 0.28);
+}
+
 /* �Զ��嵯���������� */
 .cy-modal-overlay {
   position: fixed;
@@ -3405,12 +3415,35 @@ body {
   gap: 8px;
 }
 
+.character-archive-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .character-package-row {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   padding: 14px 16px;
+}
+
+.character-archive-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 182, 220, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.character-archive-row__impact {
+  margin: 4px 0 0;
+  color: var(--rb-text-muted);
+  font: var(--rb-text-micro);
 }
 
 .character-package-row__title,
@@ -3437,6 +3470,52 @@ body {
   font: var(--rb-text-small-em);
   cursor: pointer;
   transition: background-color 140ms ease-out, border-color 140ms ease-out;
+}
+
+.character-uninstall-btn,
+.character-archive-delete-btn {
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 9px;
+  font: var(--rb-text-small-em);
+  cursor: pointer;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out;
+}
+
+.character-uninstall-btn {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--rb-text-muted);
+}
+
+.character-uninstall-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--rb-text-strong);
+}
+
+.character-archive-delete-btn {
+  flex: 0 0 auto;
+  border: 1px solid rgba(251, 113, 133, 0.42);
+  background: rgba(244, 63, 94, 0.09);
+  color: #fecdd3;
+}
+
+.character-archive-delete-btn:hover:not(:disabled) {
+  border-color: rgba(251, 113, 133, 0.72);
+  background: rgba(244, 63, 94, 0.16);
+}
+
+.character-uninstall-btn:disabled,
+.character-archive-delete-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.character-uninstall-btn:focus-visible,
+.character-archive-delete-btn:focus-visible {
+  outline: 2px solid rgba(244, 114, 182, 0.9);
+  outline-offset: 3px;
 }
 
 .character-switch-btn:hover:not(:disabled) {
@@ -3515,6 +3594,11 @@ body {
     flex-direction: column;
   }
 
+  .character-archive-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .character-package-row__badges {
     justify-content: flex-start;
     max-width: none;
@@ -3527,6 +3611,11 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .character-switch-btn {
+    transition: none;
+  }
+
+  .character-uninstall-btn,
+  .character-archive-delete-btn {
     transition: none;
   }
 }

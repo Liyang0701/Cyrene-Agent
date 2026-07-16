@@ -1,11 +1,19 @@
 import type { CharacterRuntime } from "./character-runtime";
 
-type CharacterIpcRuntime = Pick<
-  CharacterRuntime,
-  "getSnapshot" | "getBlockingActivities" | "requestSwitch"
->;
+function requireCharacterId(characterId: unknown): string {
+  if (
+    typeof characterId !== "string"
+    || characterId.length > 64
+    || !/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/.test(characterId)
+  ) {
+    throw new Error("角色 ID 格式无效");
+  }
+  return characterId;
+}
 
-export function getCharacterSettingsSnapshot(runtime: CharacterIpcRuntime) {
+export function getCharacterSettingsSnapshot(
+  runtime: Pick<CharacterRuntime, "getSnapshot" | "getBlockingActivities">,
+) {
   return {
     ...runtime.getSnapshot(),
     switching: {
@@ -14,9 +22,34 @@ export function getCharacterSettingsSnapshot(runtime: CharacterIpcRuntime) {
   };
 }
 
-export function requestCharacterSwitch(runtime: CharacterIpcRuntime, characterId: unknown) {
-  if (typeof characterId !== "string" || !/^[a-z0-9][a-z0-9._-]{1,63}$/.test(characterId)) {
-    throw new Error("角色 ID 格式无效");
+export function requestCharacterSwitch(
+  runtime: Pick<CharacterRuntime, "requestSwitch">,
+  characterId: unknown,
+) {
+  return runtime.requestSwitch(requireCharacterId(characterId));
+}
+
+export function uninstallCharacterPackage(
+  runtime: Pick<CharacterRuntime, "uninstallPackage">,
+  characterId: unknown,
+) {
+  return runtime.uninstallPackage(requireCharacterId(characterId));
+}
+
+export function listArchivedCharacterStates(
+  runtime: Pick<CharacterRuntime, "listArchivedCharacterStates">,
+) {
+  return runtime.listArchivedCharacterStates();
+}
+
+export function deleteArchivedCharacterState(
+  runtime: Pick<CharacterRuntime, "permanentlyDeleteArchivedState">,
+  characterId: unknown,
+  confirmationCharacterId: unknown,
+) {
+  const validCharacterId = requireCharacterId(characterId);
+  if (typeof confirmationCharacterId !== "string") {
+    throw new Error("永久删除确认格式无效");
   }
-  return runtime.requestSwitch(characterId);
+  return runtime.permanentlyDeleteArchivedState(validCharacterId, confirmationCharacterId);
 }
