@@ -32,6 +32,7 @@
         <button type="button" class="nav-item is-active" data-section="general"><span>⚙️</span>通用设置</button>
         <button type="button" class="nav-item" data-section="api"><span>🔑</span>API 设置</button>
         <button type="button" class="nav-item" data-section="cyrene"><span>🌸</span>昔涟设置</button>
+        <button type="button" class="nav-item" data-section="characters"><span>🎭</span>角色</button>
         <button type="button" class="nav-item" data-section="channels"><span>📱</span>连接手机</button>
         <button type="button" class="nav-item" data-section="tts"><span>🎙️</span>TTS 设置</button>
         <button type="button" class="nav-item" data-section="asr"><span>🎧</span>ASR 设置</button>
@@ -579,6 +580,43 @@
             <button type="submit" class="save-btn">保存昔涟设置</button>
           </div>
         </form>
+
+
+        <section class="settings-panel is-hidden" id="characters-panel" data-panel="characters">
+          <div class="panel-heading">
+            <div class="panel-heading__icon">🎭</div>
+            <div>
+              <h1>角色</h1>
+              <p>查看当前角色，并从本地文件夹安全导入新的角色包。</p>
+            </div>
+          </div>
+
+          <div class="character-overview" aria-labelledby="character-current-title">
+            <div>
+              <span class="character-overview__eyebrow" id="character-current-title">当前角色</span>
+              <strong id="character-current-name">正在读取…</strong>
+              <span id="character-current-meta">请稍候</span>
+            </div>
+            <button type="button" class="save-btn character-import-btn" id="character-import-btn">导入角色包</button>
+          </div>
+
+          <div class="character-notice" role="note">
+            <strong>本版本先完成安全安装与健康检查</strong>
+            <span>角色切换将在对话、语音、Live2D 与独立状态全部接入后开放，当前角色仍为昔涟。</span>
+          </div>
+
+          <div class="character-section-heading">
+            <div>
+              <h2>已安装角色</h2>
+              <p>导入仅接受数据文件夹；脚本、符号链接和越界引用会被拒绝。</p>
+            </div>
+            <span class="character-count" id="character-count">0 个</span>
+          </div>
+          <div class="character-package-list" id="character-package-list" aria-live="polite">
+            <div class="character-empty">正在读取角色列表…</div>
+          </div>
+          <div class="character-import-status" id="character-import-status" role="status" aria-live="polite"></div>
+        </section>
 
 
                 <section class="settings-panel is-hidden" id="memory-panel" data-panel="memory">
