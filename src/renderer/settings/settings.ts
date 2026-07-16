@@ -376,7 +376,7 @@ interface SettingsApi {
   importCharacter: (sourcePath: string, confirmReplacement?: boolean) => Promise<
     | {
         ok: true;
-        operation: "installed" | "upgraded" | "modified";
+        operation: "installed" | "upgraded" | "modified" | "repaired";
         snapshot: CharacterSettingsSnapshot;
         package: { displayName: string };
       }
@@ -2606,6 +2606,8 @@ characterImportButton.addEventListener("click", async () => {
         ? "安装"
         : result.operation === "upgraded"
           ? "升级"
+          : result.operation === "repaired"
+            ? "修复"
           : "替换";
       characterImportStatus.textContent = `已安全${action}「${result.package.displayName}」，角色私有状态保持不变。`;
       characterImportStatus.className = "character-import-status is-success";

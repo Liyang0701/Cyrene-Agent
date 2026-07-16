@@ -7,7 +7,7 @@ export type CharacterCapabilityKey =
   | "openers";
 
 export interface CharacterSettingsSnapshot {
-  status: "ready" | "failed";
+  status: "ready" | "safe-mode" | "failed";
   activeCharacter: { id: string; displayName: string } | null;
   switching?: {
     blockingActivities: Array<{ kind: string; reason: string }>;
