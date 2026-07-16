@@ -145,6 +145,7 @@ import { buildProactiveMessages, type ProactiveHistoryTurn } from "./proactive/p
 import { runProactiveModel } from "./proactive/proactive-model";
 import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/proactive-types";
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
+import { createDefaultCharacterRuntime } from "./character/character-runtime";
 
 configureDocumentIndexQueue(runDocumentIndexJob);
 
@@ -3850,6 +3851,20 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 app.whenReady().then(async () => {
+  const characterRuntime = createDefaultCharacterRuntime({
+    appRoot: app.getAppPath(),
+    userDataRoot: app.getPath("userData"),
+  });
+  const characterSnapshot = await characterRuntime.initialize();
+  if (characterSnapshot.status !== "ready" || !characterSnapshot.activeCharacter) {
+    console.error("[CharacterRuntime] 内置昔涟角色包初始化失败:", characterSnapshot.diagnostics);
+    app.quit();
+    return;
+  }
+  console.log(
+    `[CharacterRuntime] Active Character ready: ${characterSnapshot.activeCharacter.displayName} (${characterSnapshot.activeCharacter.id})`,
+  );
+
   // 注册 local-sticker:// 协议处理器：将请求映射到 userData/stickers/ 下的文件
   protocol.handle("local-sticker", (request) => {
     const file = parseLocalStickerFileFromUrl(request.url);

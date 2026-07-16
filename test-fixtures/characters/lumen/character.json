@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "fixture.lumen",
+  "version": "1.0.0",
+  "displayName": "流明",
+  "distributionStatus": "redistributable",
+  "compatibility": {
+    "minimumAppVersion": "0.1.0"
+  },
+  "assetProvenance": [
+    {
+      "assetClass": "character-content",
+      "source": "Cyrene-Agent 测试夹具原创内容",
+      "license": "MIT",
+      "distributionStatus": "redistributable"
+    },
+    {
+      "assetClass": "avatar",
+      "source": "Cyrene-Agent 测试夹具原创 SVG",
+      "license": "MIT",
+      "distributionStatus": "redistributable"
+    }
+  ],
+  "content": {
+    "identity": "content/identity.md",
+    "soul": "content/soul.md",
+    "avatar": "avatar.svg"
+  }
+}
