@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCharacterReplacementConfirmation,
   buildCharacterSwitchConfirmation,
+  renderArchivedCharacterStates,
   renderCharacterPackages,
 } from "./character-settings-view";
 
@@ -117,6 +119,67 @@ describe("character settings view", () => {
       title: "切换到「流明」？",
       message: "应用将保存当前状态并自动重启。该角色暂不提供：Live2D、语义动作、表情包、主动开口。",
       confirmLabel: "切换并重启",
+    });
+  });
+
+  it("offers uninstall only for an inactive local package", () => {
+    const html = renderCharacterPackages({
+      status: "ready",
+      activeCharacter: { id: "cyrene", displayName: "昔涟" },
+      packages: [{
+        id: "fixture.lumen",
+        displayName: "流明",
+        version: "1.0.0",
+        source: "local",
+        readOnly: false,
+        distributionStatus: "redistributable",
+        capabilities: {
+          worldbook: "available",
+          live2d: "unavailable",
+          semanticActions: "unavailable",
+          voice: "available",
+          stickers: "unavailable",
+          openers: "unavailable",
+        },
+        health: { status: "healthy", diagnostics: [] },
+      }],
+    });
+
+    expect(html).toContain('data-character-uninstall="fixture.lumen"');
+    expect(html).toContain("卸载角色包");
+  });
+
+  it("renders archived state impact and a separate permanent-delete action", () => {
+    const html = renderArchivedCharacterStates([{
+      characterId: "fixture.lumen",
+      displayName: "流明",
+      packageVersion: "1.0.0",
+      archivedAt: "2026-07-16T00:00:00.000Z",
+      fileCount: 12,
+      totalBytes: 2_048,
+    }]);
+
+    expect(html).toContain("流明");
+    expect(html).toContain("12 个文件");
+    expect(html).toContain("2 KB");
+    expect(html).toContain('data-character-archive-delete="fixture.lumen"');
+    expect(html).toContain("永久删除状态");
+  });
+
+  it("explains version, digest and capability changes before replacement", () => {
+    expect(buildCharacterReplacementConfirmation({
+      kind: "upgrade",
+      characterId: "fixture.lumen",
+      displayName: "流明",
+      currentVersion: "1.0.0",
+      targetVersion: "1.1.0",
+      currentDigest: "a".repeat(64),
+      targetDigest: "b".repeat(64),
+      changedCapabilities: ["live2d", "voice"],
+    })).toEqual({
+      title: "升级「流明」？",
+      message: "版本：1.0.0 → 1.1.0。内容摘要：aaaaaaaaaaaa → bbbbbbbbbbbb。能力变化：Live2D、音色。旧角色包会先备份，聊天、记忆和关系状态不会被替换。",
+      confirmLabel: "确认升级",
     });
   });
 });

@@ -228,8 +228,15 @@ const settingsApi = {
   saveGeneral: (config: unknown) => ipcRenderer.invoke(IPC.SETTINGS_SAVE_GENERAL, config),
   listCharacters: () => ipcRenderer.invoke(IPC.CHARACTER_LIST),
   pickCharacterImportFolder: () => ipcRenderer.invoke(IPC.CHARACTER_PICK_IMPORT_FOLDER) as Promise<string | null>,
-  importCharacter: (sourcePath: string) => ipcRenderer.invoke(IPC.CHARACTER_IMPORT, sourcePath),
+  importCharacter: (sourcePath: string, confirmReplacement = false) => (
+    ipcRenderer.invoke(IPC.CHARACTER_IMPORT, sourcePath, confirmReplacement)
+  ),
   switchCharacter: (characterId: string) => ipcRenderer.invoke(IPC.CHARACTER_SWITCH, characterId),
+  uninstallCharacter: (characterId: string) => ipcRenderer.invoke(IPC.CHARACTER_UNINSTALL, characterId),
+  listArchivedCharacterStates: () => ipcRenderer.invoke(IPC.CHARACTER_ARCHIVE_LIST),
+  deleteArchivedCharacterState: (characterId: string, confirmationCharacterId: string) => (
+    ipcRenderer.invoke(IPC.CHARACTER_ARCHIVE_DELETE, characterId, confirmationCharacterId)
+  ),
   pickUiFont: () => ipcRenderer.invoke(IPC.SETTINGS_PICK_UI_FONT) as Promise<string | null>,
   importUiFont: (sourcePath: string) => ipcRenderer.invoke(IPC.SETTINGS_IMPORT_UI_FONT, sourcePath) as Promise<UiFont>,
   resetUiFont: () => ipcRenderer.invoke(IPC.SETTINGS_RESET_UI_FONT) as Promise<UiFont>,

@@ -155,7 +155,64 @@ export type CharacterPackageSource = Readonly<{
 }>;
 
 export type CharacterImportResult =
-  | Readonly<{ ok: true; package: CharacterPackageSnapshot; snapshot: CharacterRuntimeSnapshot }>
+  | Readonly<{
+      ok: true;
+      operation: "installed" | "upgraded" | "modified";
+      package: CharacterPackageSnapshot;
+      snapshot: CharacterRuntimeSnapshot;
+    }>
+  | Readonly<{
+      ok: false;
+      status: "confirmation-required";
+      replacement: CharacterReplacementPlan;
+      diagnostics: readonly CharacterRuntimeDiagnostic[];
+    }>
+  | Readonly<{
+      ok: false;
+      status?: "failed";
+      diagnostics: readonly CharacterRuntimeDiagnostic[];
+    }>;
+
+export type CharacterReplacementPlan = Readonly<{
+  kind: "upgrade" | "modified";
+  characterId: string;
+  displayName: string;
+  currentVersion: string;
+  targetVersion: string;
+  currentDigest: string;
+  targetDigest: string;
+  changedCapabilities: readonly CharacterCapabilityName[];
+}>;
+
+export type CharacterImportOptions = Readonly<{
+  confirmReplacement?: boolean;
+}>;
+
+export type CharacterUninstallResult =
+  | Readonly<{
+      ok: true;
+      characterId: string;
+      state: "archived" | "none";
+      snapshot: CharacterRuntimeSnapshot;
+    }>
+  | Readonly<{ ok: false; diagnostics: readonly CharacterRuntimeDiagnostic[] }>;
+
+export type ArchivedCharacterStateSnapshot = Readonly<{
+  characterId: string;
+  displayName: string;
+  packageVersion: string;
+  archivedAt: string;
+  fileCount: number;
+  totalBytes: number;
+}>;
+
+export type CharacterArchiveDeleteResult =
+  | Readonly<{
+      ok: true;
+      characterId: string;
+      deletedFiles: number;
+      deletedBytes: number;
+    }>
   | Readonly<{ ok: false; diagnostics: readonly CharacterRuntimeDiagnostic[] }>;
 
 export type CharacterActivityKind =
@@ -320,6 +377,21 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+const CHARACTER_ID_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+
+function isValidCharacterId(value: unknown): value is string {
+  return isNonEmptyString(value) && value.length <= 64 && CHARACTER_ID_PATTERN.test(value);
+}
+
+function invalidCharacterIdDiagnostic(characterId: string): CharacterRuntimeDiagnostic {
+  return {
+    code: "character.id.invalid",
+    message: `Character ID 格式无效：${characterId}`,
+    characterId,
+    field: "id",
+  };
+}
+
 function compareSemver(left: string, right: string): number {
   const parse = (version: string): number[] => version.split("-", 1)[0].split(".").map(Number);
   const leftParts = parse(left);
@@ -384,7 +456,7 @@ function evaluatePackage(
       field: "schemaVersion",
     });
   }
-  if (!isNonEmptyString(rawManifest.id) || !/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/.test(rawManifest.id)) {
+  if (!isValidCharacterId(rawManifest.id)) {
     invalidField("id");
   }
   if (!isNonEmptyString(rawManifest.version) || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(rawManifest.version)) {
@@ -857,6 +929,42 @@ function readCharacterRegistry(registryPath: string): CharacterRegistryFile {
   return parsed;
 }
 
+async function writeCharacterRegistryAtomic(
+  packageStorageRoot: string,
+  registryPath: string,
+  registry: CharacterRegistryFile,
+): Promise<void> {
+  await fs.promises.mkdir(packageStorageRoot, { recursive: true });
+  const temporary = path.join(packageStorageRoot, `.registry-${randomUUID()}.tmp`);
+  try {
+    await fs.promises.writeFile(temporary, `${JSON.stringify(registry, null, 2)}\n`, { flag: "wx" });
+    await fs.promises.rename(temporary, registryPath);
+  } finally {
+    if (fs.existsSync(temporary)) await fs.promises.rm(temporary, { force: true });
+  }
+}
+
+async function measureDirectory(directoryPath: string): Promise<{ fileCount: number; totalBytes: number }> {
+  let fileCount = 0;
+  let totalBytes = 0;
+  if (!fs.existsSync(directoryPath)) return { fileCount, totalBytes };
+  const visit = async (currentPath: string): Promise<void> => {
+    const entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = path.join(currentPath, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`归档状态包含不允许的符号链接：${entryPath}`);
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+      } else if (entry.isFile()) {
+        fileCount += 1;
+        totalBytes += (await fs.promises.stat(entryPath)).size;
+      }
+    }
+  };
+  await visit(directoryPath);
+  return { fileCount, totalBytes };
+}
+
 function loadInstalledPackageSources(
   registryPath: string,
   installedRoot: string,
@@ -1072,6 +1180,7 @@ export class CharacterRuntime {
   private readonly stagingRoot: string;
   private readonly registryPath: string;
   private readonly runtimeStatePath: string;
+  private readonly archivedStateRoot: string;
   private packageSources: CharacterPackageSource[];
   private installedSourcesLoaded = false;
   private readonly importLimits: CharacterImportLimits;
@@ -1085,6 +1194,7 @@ export class CharacterRuntime {
     this.stagingRoot = path.join(this.packageStorageRoot, ".staging");
     this.registryPath = path.join(this.packageStorageRoot, "registry.json");
     this.runtimeStatePath = path.join(this.packageStorageRoot, "runtime-state.json");
+    this.archivedStateRoot = path.join(options.userDataRoot, "archived-character-states");
     this.packageSources = [...options.packages];
     this.importLimits = options.importLimits ?? DEFAULT_CHARACTER_IMPORT_LIMITS;
     this.appVersion = options.appVersion ?? "0.1.0";
@@ -1376,14 +1486,276 @@ export class CharacterRuntime {
     });
   }
 
-  async importPackage(sourceRoot: string): Promise<CharacterImportResult> {
+  async uninstallPackage(characterId: string): Promise<CharacterUninstallResult> {
+    if (!isValidCharacterId(characterId)) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [invalidCharacterIdDiagnostic(characterId)],
+      });
+    }
+    const snapshot = await this.initialize();
+    const characterPackage = snapshot.packages.find(({ id }) => id === characterId);
+    if (!characterPackage) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.uninstall.not_found",
+          message: `找不到要卸载的角色包：${characterId}`,
+          characterId,
+        }],
+      });
+    }
+    if (characterPackage.source === "builtin") {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.uninstall.builtin_forbidden",
+          message: `内置角色不能卸载：${characterPackage.displayName}`,
+          characterId,
+        }],
+      });
+    }
+    if (snapshot.activeCharacter?.id === characterId) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.uninstall.active_forbidden",
+          message: `当前活动角色不能卸载：${characterPackage.displayName}`,
+          characterId,
+        }],
+      });
+    }
+
+    const source = this.packageSources.find(({ source: packageSource, manifest }) => (
+      packageSource === "local" && manifest.id === characterId
+    ));
+    if (!source) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.uninstall.source_missing",
+          message: `角色包注册信息不完整：${characterId}`,
+          characterId,
+        }],
+      });
+    }
+
+    const stateRoot = resolveCharacterStateLayout(this.options.userDataRoot, characterId).root;
+    const archiveRoot = path.join(this.archivedStateRoot, characterId);
+    const archivedStatePath = path.join(archiveRoot, "state");
+    const removalRoot = path.join(this.packageStorageRoot, `.removing-${characterId}-${randomUUID()}`);
+    const originalRegistry = readCharacterRegistry(this.registryPath);
+    const originalPackageSources = [...this.packageSources];
+    let packageMoved = false;
+    let stateArchived = false;
+    let registryUpdated = false;
+    try {
+      if (fs.existsSync(archiveRoot)) {
+        throw new Error(`归档状态已存在：${archiveRoot}`);
+      }
+      await fs.promises.rename(source.rootPath, removalRoot);
+      packageMoved = true;
+      if (fs.existsSync(stateRoot)) {
+        await fs.promises.mkdir(archiveRoot, { recursive: true });
+        await fs.promises.rename(stateRoot, archivedStatePath);
+        stateArchived = true;
+        await fs.promises.writeFile(path.join(archiveRoot, "archive.json"), `${JSON.stringify({
+          schemaVersion: 1,
+          characterId,
+          displayName: characterPackage.displayName,
+          packageVersion: characterPackage.version,
+          archivedAt: new Date().toISOString(),
+        }, null, 2)}\n`, { flag: "wx" });
+      }
+
+      await writeCharacterRegistryAtomic(this.packageStorageRoot, this.registryPath, {
+        schemaVersion: 1,
+        packages: originalRegistry.packages.filter(({ id }) => id !== characterId),
+      });
+      registryUpdated = true;
+      this.packageSources = this.packageSources.filter(({ source: packageSource, manifest }) => (
+        packageSource === "builtin" || manifest.id !== characterId
+      ));
+      this.snapshot = null;
+      const nextSnapshot = await this.initialize();
+      await fs.promises.rm(removalRoot, { recursive: true, force: true });
+      return deepFreeze({
+        ok: true,
+        characterId,
+        state: stateArchived ? "archived" : "none",
+        snapshot: nextSnapshot,
+      });
+    } catch (error) {
+      const rollbackDiagnostics: CharacterRuntimeDiagnostic[] = [];
+      if (stateArchived && fs.existsSync(archivedStatePath) && !fs.existsSync(stateRoot)) {
+        await fs.promises.mkdir(path.dirname(stateRoot), { recursive: true });
+        await fs.promises.rename(archivedStatePath, stateRoot).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.uninstall.rollback_state_failed",
+            message: `角色状态回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId,
+            resourcePath: stateRoot,
+          });
+        });
+        await fs.promises.rm(archiveRoot, { recursive: true, force: true }).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.uninstall.rollback_archive_failed",
+            message: `角色状态归档清理失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId,
+            resourcePath: archiveRoot,
+          });
+        });
+      }
+      if (packageMoved && fs.existsSync(removalRoot) && !fs.existsSync(source.rootPath)) {
+        await fs.promises.rename(removalRoot, source.rootPath).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.uninstall.rollback_package_failed",
+            message: `角色包资源回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId,
+            resourcePath: source.rootPath,
+          });
+        });
+      }
+      if (registryUpdated) {
+        await writeCharacterRegistryAtomic(
+          this.packageStorageRoot,
+          this.registryPath,
+          originalRegistry,
+        ).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.uninstall.rollback_registry_failed",
+            message: `角色注册表回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId,
+            resourcePath: this.registryPath,
+          });
+        });
+      }
+      this.packageSources = originalPackageSources;
+      this.snapshot = null;
+      await this.initialize().catch((rollbackError) => {
+        rollbackDiagnostics.push({
+          code: "character.uninstall.rollback_runtime_failed",
+          message: `角色运行时回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+          characterId,
+        });
+      });
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.uninstall.failed",
+          message: `角色包卸载失败：${error instanceof Error ? error.message : String(error)}`,
+          characterId,
+        }, ...rollbackDiagnostics],
+      });
+    }
+  }
+
+  async listArchivedCharacterStates(): Promise<readonly ArchivedCharacterStateSnapshot[]> {
+    if (!fs.existsSync(this.archivedStateRoot)) return [];
+    const entries = await fs.promises.readdir(this.archivedStateRoot, { withFileTypes: true });
+    const snapshots: ArchivedCharacterStateSnapshot[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const archiveRoot = path.join(this.archivedStateRoot, entry.name);
+      try {
+        const metadata = JSON.parse(
+          await fs.promises.readFile(path.join(archiveRoot, "archive.json"), "utf8"),
+        ) as Record<string, unknown>;
+        if (
+          metadata.schemaVersion !== 1
+          || metadata.characterId !== entry.name
+          || typeof metadata.displayName !== "string"
+          || typeof metadata.packageVersion !== "string"
+          || typeof metadata.archivedAt !== "string"
+        ) {
+          continue;
+        }
+        const measurement = await measureDirectory(path.join(archiveRoot, "state"));
+        snapshots.push({
+          characterId: entry.name,
+          displayName: metadata.displayName,
+          packageVersion: metadata.packageVersion,
+          archivedAt: metadata.archivedAt,
+          ...measurement,
+        });
+      } catch {
+        continue;
+      }
+    }
+    return deepFreeze(snapshots.sort((left, right) => left.characterId.localeCompare(right.characterId)));
+  }
+
+  async permanentlyDeleteArchivedState(
+    characterId: string,
+    confirmationCharacterId: string,
+  ): Promise<CharacterArchiveDeleteResult> {
+    if (!isValidCharacterId(characterId)) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [invalidCharacterIdDiagnostic(characterId)],
+      });
+    }
+    if (confirmationCharacterId !== characterId) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.archive.confirmation_mismatch",
+          message: `永久删除需要准确输入角色 ID：${characterId}`,
+          characterId,
+        }],
+      });
+    }
+    const archiveRoot = path.join(this.archivedStateRoot, characterId);
+    const statePath = path.join(archiveRoot, "state");
+    if (!fs.existsSync(archiveRoot)) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.archive.not_found",
+          message: `找不到归档角色状态：${characterId}`,
+          characterId,
+        }],
+      });
+    }
+    try {
+      const measurement = await measureDirectory(statePath);
+      await fs.promises.rm(archiveRoot, { recursive: true, force: false });
+      return deepFreeze({
+        ok: true,
+        characterId,
+        deletedFiles: measurement.fileCount,
+        deletedBytes: measurement.totalBytes,
+      });
+    } catch (error) {
+      return deepFreeze({
+        ok: false,
+        diagnostics: [{
+          code: "character.archive.delete_failed",
+          message: `归档角色状态删除失败：${error instanceof Error ? error.message : String(error)}`,
+          characterId,
+          resourcePath: archiveRoot,
+        }],
+      });
+    }
+  }
+
+  async importPackage(
+    sourceRoot: string,
+    options: CharacterImportOptions = {},
+  ): Promise<CharacterImportResult> {
     await this.initialize();
     let stagingPath: string | null = null;
     let installedPath: string | null = null;
-    let registryTempPath: string | null = null;
+    let restoredStatePath: string | null = null;
+    let importedCharacterId: string | null = null;
+    let rollbackPackagePath: string | null = null;
+    let originalRegistry: CharacterRegistryFile | null = null;
+    let originalPackageSources: CharacterPackageSource[] | null = null;
+    let registryUpdated = false;
     try {
       const manifestPath = path.join(sourceRoot, "character.json");
       const manifest = JSON.parse(await fs.promises.readFile(manifestPath, "utf8")) as CharacterPackageManifest;
+      importedCharacterId = manifest.id;
       const reservedCharacterIds = new Set(
         this.packageSources
           .filter(({ source }) => source === "builtin")
@@ -1394,14 +1766,38 @@ export class CharacterRuntime {
       if (evaluatedSource.health.status === "unhealthy") {
         return { ok: false, diagnostics: deepFreeze([...evaluatedSource.health.diagnostics]) };
       }
-      if (this.packageSources.some(({ manifest: installedManifest }) => installedManifest.id === manifest.id)) {
+      const existingSource = this.packageSources.find(({ manifest: installedManifest }) => (
+        installedManifest.id === manifest.id
+      ));
+      if (existingSource?.source === "builtin") {
         return {
           ok: false,
           diagnostics: deepFreeze([{
-            code: "character.import.already_installed",
-            message: `角色包已经安装：${manifest.id}`,
+            code: "character.import.reserved_id",
+            message: `角色 ID 已由内置角色保留：${manifest.id}`,
             characterId: manifest.id,
             field: "id",
+          }]),
+        };
+      }
+      if (existingSource && this.getSnapshot().activeCharacter?.id === manifest.id) {
+        return {
+          ok: false,
+          diagnostics: deepFreeze([{
+            code: "character.import.active_replacement_forbidden",
+            message: `请先切换到其他角色，再升级或替换当前活动角色：${manifest.displayName}`,
+            characterId: manifest.id,
+          }]),
+        };
+      }
+      if (existingSource && compareSemver(manifest.version, existingSource.manifest.version) < 0) {
+        return {
+          ok: false,
+          diagnostics: deepFreeze([{
+            code: "character.import.downgrade_forbidden",
+            message: `默认拒绝角色包降级：${existingSource.manifest.version} → ${manifest.version}`,
+            characterId: manifest.id,
+            field: "version",
           }]),
         };
       }
@@ -1410,7 +1806,7 @@ export class CharacterRuntime {
       await fs.promises.mkdir(this.installedRoot, { recursive: true });
       stagingPath = path.join(this.stagingRoot, `${manifest.id}-${randomUUID()}`);
       installedPath = path.join(this.installedRoot, manifest.id);
-      if (fs.existsSync(installedPath)) {
+      if (!existingSource && fs.existsSync(installedPath)) {
         throw new Error(`角色包安装目录已存在：${installedPath}`);
       }
       await copyPackageDirectory(sourceRoot, stagingPath, sourceRoot, {
@@ -1433,23 +1829,102 @@ export class CharacterRuntime {
       }
 
       const digest = await calculatePackageDigest(stagingPath);
+      let operation: "installed" | "upgraded" | "modified" = "installed";
+      if (existingSource) {
+        const currentDigest = existingSource.digest ?? await calculatePackageDigest(existingSource.rootPath);
+        if (manifest.version === existingSource.manifest.version && digest === currentDigest) {
+          return {
+            ok: false,
+            diagnostics: deepFreeze([{
+              code: "character.import.already_installed",
+              message: `角色包已经安装且内容相同：${manifest.id}`,
+              characterId: manifest.id,
+            }]),
+          };
+        }
+        operation = compareSemver(manifest.version, existingSource.manifest.version) > 0
+          ? "upgraded"
+          : "modified";
+        const currentSnapshot = toPackageSnapshot(evaluatePackage(
+          existingSource,
+          reservedCharacterIds,
+          this.appVersion,
+        ));
+        const targetSnapshot = toPackageSnapshot(stagedEvaluation);
+        const changedCapabilities = (Object.keys(targetSnapshot.capabilities) as CharacterCapabilityName[])
+          .filter((capability) => (
+            currentSnapshot.capabilities[capability] !== targetSnapshot.capabilities[capability]
+          ));
+        const replacement: CharacterReplacementPlan = {
+          kind: operation === "upgraded" ? "upgrade" : "modified",
+          characterId: manifest.id,
+          displayName: manifest.displayName,
+          currentVersion: existingSource.manifest.version,
+          targetVersion: manifest.version,
+          currentDigest,
+          targetDigest: digest,
+          changedCapabilities,
+        };
+        if (!options.confirmReplacement) {
+          return {
+            ok: false,
+            status: "confirmation-required",
+            replacement: deepFreeze(replacement),
+            diagnostics: [],
+          };
+        }
+
+        const backupRoot = path.join(
+          this.packageStorageRoot,
+          "backups",
+          manifest.id,
+          `${Date.now()}-${existingSource.manifest.version}-${currentDigest.slice(0, 12)}`,
+        );
+        await fs.promises.mkdir(path.dirname(backupRoot), { recursive: true });
+        await fs.promises.cp(existingSource.rootPath, backupRoot, {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+          preserveTimestamps: true,
+        });
+        rollbackPackagePath = path.join(
+          this.packageStorageRoot,
+          `.rollback-${manifest.id}-${randomUUID()}`,
+        );
+        await fs.promises.rename(existingSource.rootPath, rollbackPackagePath);
+      }
+
       await fs.promises.rename(stagingPath, installedPath);
       stagingPath = null;
 
+      const archiveRoot = path.join(this.archivedStateRoot, manifest.id);
+      const archivedStatePath = path.join(archiveRoot, "state");
+      const stateRoot = resolveCharacterStateLayout(this.options.userDataRoot, manifest.id).root;
+      if (fs.existsSync(archiveRoot)) {
+        if (fs.existsSync(stateRoot)) throw new Error(`角色状态与归档状态同时存在：${manifest.id}`);
+        if (!fs.existsSync(archivedStatePath)) throw new Error(`归档角色状态不完整：${manifest.id}`);
+        await fs.promises.mkdir(path.dirname(stateRoot), { recursive: true });
+        await fs.promises.rename(archivedStatePath, stateRoot);
+        restoredStatePath = stateRoot;
+      }
+
       const registry = readCharacterRegistry(this.registryPath);
+      originalRegistry = registry;
+      originalPackageSources = [...this.packageSources];
+      const nextRecord = {
+        id: manifest.id,
+        digest,
+        installedDirectory: manifest.id,
+        importedAt: new Date().toISOString(),
+      };
       const nextRegistry: CharacterRegistryFile = {
         schemaVersion: 1,
-        packages: [...registry.packages, {
-          id: manifest.id,
-          digest,
-          installedDirectory: manifest.id,
-          importedAt: new Date().toISOString(),
-        }],
+        packages: existingSource
+          ? registry.packages.map((record) => record.id === manifest.id ? nextRecord : record)
+          : [...registry.packages, nextRecord],
       };
-      registryTempPath = path.join(this.packageStorageRoot, `.registry-${randomUUID()}.tmp`);
-      await fs.promises.writeFile(registryTempPath, `${JSON.stringify(nextRegistry, null, 2)}\n`, { flag: "wx" });
-      await fs.promises.rename(registryTempPath, this.registryPath);
-      registryTempPath = null;
+      await writeCharacterRegistryAtomic(this.packageStorageRoot, this.registryPath, nextRegistry);
+      registryUpdated = true;
 
       const installedSource: CharacterPackageSource = {
         source: "local",
@@ -1457,17 +1932,85 @@ export class CharacterRuntime {
         manifest: stagedManifest,
         digest,
       };
-      this.packageSources.push(installedSource);
+      this.packageSources = existingSource
+        ? this.packageSources.map((source) => source === existingSource ? installedSource : source)
+        : [...this.packageSources, installedSource];
       this.snapshot = null;
       const snapshot = await this.initialize();
       const installedPackage = snapshot.packages.find(({ id, source: packageSource }) => (
         id === manifest.id && packageSource === "local"
       ));
       if (!installedPackage) throw new Error(`安装后找不到角色包：${manifest.id}`);
-      return { ok: true, package: installedPackage, snapshot };
+      if (rollbackPackagePath) {
+        await fs.promises.rm(rollbackPackagePath, { recursive: true, force: true });
+        rollbackPackagePath = null;
+      }
+      if (restoredStatePath) {
+        await fs.promises.rm(archiveRoot, { recursive: true, force: true });
+      }
+      return { ok: true, operation, package: installedPackage, snapshot };
     } catch (error) {
+      const rollbackDiagnostics: CharacterRuntimeDiagnostic[] = [];
       if (installedPath && fs.existsSync(installedPath)) {
-        await fs.promises.rm(installedPath, { recursive: true, force: true });
+        await fs.promises.rm(installedPath, { recursive: true, force: true }).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.import.rollback_new_package_failed",
+            message: `新角色包清理失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId: importedCharacterId ?? undefined,
+            resourcePath: installedPath ?? undefined,
+          });
+        });
+      }
+      if (rollbackPackagePath && installedPath && fs.existsSync(rollbackPackagePath)) {
+        await fs.promises.rename(rollbackPackagePath, installedPath).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.import.rollback_old_package_failed",
+            message: `原角色包回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId: importedCharacterId ?? undefined,
+            resourcePath: installedPath ?? undefined,
+          });
+        });
+        rollbackPackagePath = null;
+      }
+      if (restoredStatePath && fs.existsSync(restoredStatePath)) {
+        const archiveRoot = path.join(
+          this.archivedStateRoot,
+          importedCharacterId ?? path.basename(restoredStatePath),
+        );
+        await fs.promises.mkdir(archiveRoot, { recursive: true });
+        await fs.promises.rename(restoredStatePath, path.join(archiveRoot, "state")).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.import.rollback_state_failed",
+            message: `归档角色状态回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId: importedCharacterId ?? undefined,
+            resourcePath: archiveRoot,
+          });
+        });
+      }
+      if (registryUpdated && originalRegistry) {
+        await writeCharacterRegistryAtomic(
+          this.packageStorageRoot,
+          this.registryPath,
+          originalRegistry,
+        ).catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.import.rollback_registry_failed",
+            message: `角色注册表回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId: importedCharacterId ?? undefined,
+            resourcePath: this.registryPath,
+          });
+        });
+      }
+      if (originalPackageSources) {
+        this.packageSources = originalPackageSources;
+        this.snapshot = null;
+        await this.initialize().catch((rollbackError) => {
+          rollbackDiagnostics.push({
+            code: "character.import.rollback_runtime_failed",
+            message: `角色运行时回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+            characterId: importedCharacterId ?? undefined,
+          });
+        });
       }
       return {
         ok: false,
@@ -1479,12 +2022,10 @@ export class CharacterRuntime {
               message: error instanceof Error ? error.message : String(error),
               resourcePath: sourceRoot,
             },
+          ...rollbackDiagnostics,
         ]),
       };
     } finally {
-      if (registryTempPath && fs.existsSync(registryTempPath)) {
-        await fs.promises.rm(registryTempPath, { force: true });
-      }
       if (stagingPath && fs.existsSync(stagingPath)) {
         await fs.promises.rm(stagingPath, { recursive: true, force: true });
       }

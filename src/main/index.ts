@@ -149,7 +149,13 @@ import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
 import { createElectronCharacterSwitchAdapters } from "./character/character-electron-switch";
 import { getCharacterBoundActivitySnapshot } from "./character/character-bound-activity";
-import { getCharacterSettingsSnapshot, requestCharacterSwitch } from "./character/character-ipc";
+import {
+  deleteArchivedCharacterState,
+  getCharacterSettingsSnapshot,
+  listArchivedCharacterStates,
+  requestCharacterSwitch,
+  uninstallCharacterPackage,
+} from "./character/character-ipc";
 import { configureActiveCharacterState, getActiveCharacterState } from "./character/character-state";
 import { resolveGlobalUserDataLayout } from "./character/global-user-data";
 import {
@@ -3452,18 +3458,38 @@ ipcMain.handle(IPC.CHARACTER_PICK_IMPORT_FOLDER, async () => {
   return result.canceled ? null : result.filePaths[0] ?? null;
 });
 
-ipcMain.handle(IPC.CHARACTER_IMPORT, async (_event, sourcePath: unknown) => {
+ipcMain.handle(IPC.CHARACTER_IMPORT, async (_event, sourcePath: unknown, confirmReplacement: unknown) => {
   if (!characterRuntime) throw new Error("角色运行时尚未就绪");
   if (typeof sourcePath !== "string" || sourcePath.trim().length === 0 || !path.isAbsolute(sourcePath)) {
     throw new Error("角色包路径必须是有效的绝对路径");
   }
-  return characterRuntime.importPackage(sourcePath);
+  return characterRuntime.importPackage(sourcePath, {
+    confirmReplacement: confirmReplacement === true,
+  });
 });
 
 ipcMain.handle(IPC.CHARACTER_SWITCH, async (_event, characterId: unknown) => {
   if (!characterRuntime) throw new Error("角色运行时尚未就绪");
   return requestCharacterSwitch(characterRuntime, characterId);
 });
+
+ipcMain.handle(IPC.CHARACTER_UNINSTALL, async (_event, characterId: unknown) => {
+  if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+  return uninstallCharacterPackage(characterRuntime, characterId);
+});
+
+ipcMain.handle(IPC.CHARACTER_ARCHIVE_LIST, async () => {
+  if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+  return listArchivedCharacterStates(characterRuntime);
+});
+
+ipcMain.handle(
+  IPC.CHARACTER_ARCHIVE_DELETE,
+  async (_event, characterId: unknown, confirmationCharacterId: unknown) => {
+    if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+    return deleteArchivedCharacterState(characterRuntime, characterId, confirmationCharacterId);
+  },
+);
 
 ipcMain.handle(IPC.ASR_LOCAL_STATUS, async (_event, startWorker: boolean) => {
   const settings = loadGeneralSettings();
