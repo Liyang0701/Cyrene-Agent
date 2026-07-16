@@ -3,6 +3,7 @@
 // 状态：LISTENING（用户说话）→ THINKING（agent 思考）→ SPEAKING（昔涟说话）→ LISTENING
 
 import { computeRmsLevel } from "./vad-level";
+import { buildActiveCharacterUiText, hydrateActiveCharacterIdentity } from "../ui/active-character";
 // 用户说话时：柱状胶囊波形跳动 + 头像外圈音量波形
 // 昔涟说话时：电波环脉冲扩散 + 波形隐藏
 import "../ui/theme";
@@ -124,6 +125,7 @@ function stopCallTimer(): void {
 type CallState = "IDLE" | "LISTENING" | "ASR" | "THINKING" | "SPEAKING" | "ERROR" | "ENDED";
 let currentState: CallState = "IDLE";
 let showTranscript = false; // 从设置读取
+let activeCharacterName = "活动角色";
 
 function setState(state: CallState): void {
   currentState = state;
@@ -153,7 +155,7 @@ function updateUI(): void {
     waveformMode = "thinking";
     micMode = "thinking";
   } else if (currentState === "THINKING") {
-    status.textContent = "昔涟思考中...";
+    status.textContent = `${activeCharacterName}思考中...`;
     status.className = "call__status call__status--thinking";
     ring.classList.remove("is-active");
     wave?.classList.add("is-active");
@@ -161,7 +163,7 @@ function updateUI(): void {
     waveformMode = "thinking";
     micMode = "thinking";
   } else if (currentState === "SPEAKING") {
-    status.textContent = "昔涟说话中...";
+    status.textContent = `${activeCharacterName}说话中...`;
     status.className = "call__status";
     ring.classList.add("is-active");
     wave?.classList.remove("is-active");
@@ -542,6 +544,11 @@ closeBtn.addEventListener("click", hangup);
 
 // ── 初始化 ──
 async function init(): Promise<void> {
+  const identity = await hydrateActiveCharacterIdentity("call").catch(() => null);
+  if (identity) {
+    activeCharacterName = identity.displayName;
+    document.title = buildActiveCharacterUiText(identity, "call").windowTitle;
+  }
   // 读 ASR 设置（VAD 阈值 + 转写开关）
   try {
     const cfg = await window.tts?.loadSettings();

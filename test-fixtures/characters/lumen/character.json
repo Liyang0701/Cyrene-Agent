@@ -24,6 +24,17 @@
   "content": {
     "identity": "content/identity.md",
     "soul": "content/soul.md",
-    "avatar": "avatar.svg"
+    "avatar": "avatar.svg",
+    "examples": "content/examples.md",
+    "toneRules": "content/tone-rules.md",
+    "stylesDirectory": "content/styles",
+    "scenesDirectory": "content/scenes",
+    "phoneIdentity": "content/phone-identity.md",
+    "phoneStyle": "content/phone-style.md"
+  },
+  "capabilities": {
+    "worldbook": {
+      "directory": "worldbook"
+    }
   }
 }

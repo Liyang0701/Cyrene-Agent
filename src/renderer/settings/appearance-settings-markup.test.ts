@@ -18,7 +18,7 @@ describe("appearance settings markup", () => {
 
   it("contains the four appearance groups and disabled future options", () => {
     const panel = form("appearance-form");
-    for (const heading of ["布局", "外观主题", "个性化", "昔涟桌宠"]) {
+    for (const heading of ["布局", "外观主题", "个性化", "活动角色桌宠"]) {
       expect(panel).toContain(heading);
     }
     for (const label of ["单窗口", "聊天背景"]) {

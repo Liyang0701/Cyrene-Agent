@@ -147,6 +147,13 @@ import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/p
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
 import { configureActiveCharacterState, getActiveCharacterState } from "./character/character-state";
+import {
+  configureActiveCharacter,
+  getActiveCharacter,
+  getActiveCharacterPublicIdentity,
+  getActiveCharacterText,
+} from "./character/active-character";
+import { composeCharacterSystemPrompt } from "./character/character-text-context";
 
 let characterRuntime: CharacterRuntime | null = null;
 
@@ -1844,45 +1851,32 @@ function logWorldbookInjection(alwaysOnContext: string, systemContent: string): 
 }
 
 function buildSystemPrompt(styleFile: string): string {
-  const parts: string[] = [];
-
-  // styleFile 以 "talk" 开头时走纯聊天模式：用 talk_system.md 替换 system.md（不调工具）
   const isTalkMode = styleFile.startsWith("talk");
-  const system = loadPromptFile(isTalkMode ? "talk_system.md" : "system.md");
-  if (system) parts.push(system);
-
-  const identity = loadPromptFile("identity.md");
-  if (identity) parts.push(identity);
-
-  const soul = loadPromptFile("soul.md");
-  if (soul) parts.push(soul);
-
-  const canon = loadPromptFile("canon_quotes.md");
-  if (canon) parts.push(canon);
-
-  // 纯聊天模式不加载 style 文件（talk_system.md 已包含完整规则）
-  if (!isTalkMode) {
-    const style = loadPromptFile("styles/" + styleFile);
-    if (style) parts.push(style);
-  }
-
-  return parts.join("\n\n---\n\n");
+  const applicationPolicy = [
+    loadPromptFile("application_policy.md"),
+    loadPromptFile(isTalkMode ? "talk_system.md" : "system.md"),
+  ].filter(Boolean).join("\n\n---\n\n");
+  return composeCharacterSystemPrompt({
+    applicationPolicy,
+    character: getActiveCharacterText(),
+    mode: isTalkMode ? "talk" : "chat",
+    styleFile,
+  });
 }
 
 function buildProactivePersonaPrompt(): string {
-  const parts: string[] = [];
-  const talkSystem = loadPromptFile("talk_system.md");
-  if (talkSystem) parts.push(talkSystem);
-  const soul = loadPromptFile("soul.md");
-  if (soul) {
-    // 主动轮完全不携带工具说明；Soul 尾部的 Live2D/联网章节由正常聊天使用。
-    parts.push(soul.split("\n## Live2D 与聊天文字的分工")[0].trim());
-  }
-  const canon = loadPromptFile("canon_quotes.md");
-  if (canon) parts.push(canon);
-  const style = loadPromptFile("styles/01_default.md");
-  if (style) parts.push(style);
-  return parts.join("\n\n---\n\n");
+  const character = getActiveCharacterText();
+  return composeCharacterSystemPrompt({
+    applicationPolicy: [loadPromptFile("application_policy.md"), loadPromptFile("talk_system.md")]
+      .filter(Boolean)
+      .join("\n\n---\n\n"),
+    character: {
+      ...character,
+      // 主动轮完全不携带工具说明；内置 Soul 尾部的 Live2D/联网章节由正常聊天使用。
+      soul: character.soul.split("\n## Live2D 与聊天文字的分工")[0].trim(),
+    },
+    mode: "proactive",
+  });
 }
 
 function toProactiveHistory(messages: Array<{ role: "user" | "model"; content: string; at: number }>): ProactiveHistoryTurn[] {
@@ -2017,7 +2011,7 @@ async function commitLocalProactiveMessage(input: ProactiveCommitInput): Promise
   if (!initialDecision.allowed) return { kind: "cancelled", reason: initialDecision.reason };
 
   const session = chatsStore.getOrCreateSessionByPurpose("proactive-chat", {
-    title: "昔涟的主动消息",
+    title: `${getActiveCharacterText().displayName}的主动消息`,
     identityId: null,
   });
   const at = Date.now();
@@ -2191,13 +2185,7 @@ function resolveSlashActivation<T extends { role: string; content: string }>(mes
 }
 
 function loadSoulFeelingContext(): string {
-  try {
-    const soulPath = path.join(app.getAppPath(), "prompts", "soul.md");
-    if (!fs.existsSync(soulPath)) return "";
-    return fs.readFileSync(soulPath, "utf8");
-  } catch {
-    return "";
-  }
+  return getActiveCharacterText().soul;
 }
 
 async function observeRuntimeState(
@@ -2220,7 +2208,7 @@ async function observeRuntimeState(
       {
         role: "system",
         content:
-          '你是一个情绪分析器。以下是昔涟的完整人格设定：\n\n' + loadSoulFeelingContext() + '\n\n根据以上人格设定和以下对话，判断昔涟当前的心情状态。可选心情值（只能选其中一个）：平静 / 开心 / 温柔 / 激动 / 撒娇 / 担心 / 难过 / 感动 / 害羞。只返回 JSON，不要任何多余文字：{"feeling": "心情值"}。判断规则：以最后一轮对话为主，之前几轮为辅；判断的是昔涟的心情，不是用户的心情；无法判断时返回 平静。',
+          `你是一个情绪分析器。以下是${getActiveCharacterText().displayName}的完整人格设定：\n\n${loadSoulFeelingContext()}\n\n根据以上人格设定和以下对话，判断${getActiveCharacterText().displayName}当前的心情状态。可选心情值（只能选其中一个）：平静 / 开心 / 温柔 / 激动 / 撒娇 / 担心 / 难过 / 感动 / 害羞。只返回 JSON，不要任何多余文字：{"feeling": "心情值"}。判断规则：以最后一轮对话为主，之前几轮为辅；判断的是角色的心情，不是用户的心情；无法判断时返回 平静。`,
       },
       {
         role: "user",
@@ -2678,19 +2666,14 @@ function createWindow(): void {
       let memoryInjection = "";
       try { memoryInjection = await buildMemoryInjection(userText); } catch { /* ignore */ }
 
-      // ④ 通话专用人设 prompt
-      const phoneParts: string[] = [];
-      const phoneSystem = loadPromptFile("phone_system.md");
-      if (phoneSystem) phoneParts.push(phoneSystem);
-      const phoneIdentity = loadPromptFile("phone_identity.md");
-      if (phoneIdentity) phoneParts.push(phoneIdentity);
-      const soul = loadPromptFile("soul.md");
-      if (soul) phoneParts.push(soul);
-      const canon = loadPromptFile("canon_quotes.md");
-      if (canon) phoneParts.push(canon);
-      const phoneStyle = loadPromptFile("phone_style.md");
-      if (phoneStyle) phoneParts.push(phoneStyle);
-      const phonePrompt = phoneParts.join("\n\n---\n\n");
+      // ④ 通话专用应用规则 + 活动角色内容
+      const phonePrompt = composeCharacterSystemPrompt({
+        applicationPolicy: [loadPromptFile("application_policy.md"), loadPromptFile("phone_system.md")]
+          .filter(Boolean)
+          .join("\n\n---\n\n"),
+        character: getActiveCharacterText(),
+        mode: "phone",
+      });
 
       // ⑤ Skill 约束
       const skillCatalog = buildSkillCatalog(skillRegistry.getEnabled());
@@ -2822,7 +2805,7 @@ function createSidebarWindow(): void {
     height: 760,
     minWidth: 56,
     minHeight: 540,
-    title: "昔涟 · 状态",
+    title: `${getActiveCharacterText().displayName} · 状态`,
     icon: getCurrentAppIconPath(),
     backgroundColor: "#00000000",
     autoHideMenuBar: true,
@@ -2869,7 +2852,7 @@ function createTasksWindow(): void {
     width: 320,
     height: 760,
     minHeight: 540,
-    title: "昔涟 · 今日日程",
+    title: "Cyrene Agent · 今日日程",
     icon: getCurrentAppIconPath(),
     backgroundColor: "#00000000",
     autoHideMenuBar: true,
@@ -2924,7 +2907,7 @@ function createSettingsWindow(section?: string): void {
     height,
     minWidth: 920,
     minHeight: 580,
-    title: "昔涟 · 设置",
+    title: "Cyrene Agent · 设置",
     icon: getCurrentAppIconPath(),
     backgroundColor: "#00000000",
     autoHideMenuBar: true,
@@ -3415,6 +3398,8 @@ ipcMain.handle(IPC.CHARACTER_LIST, () => {
   return characterRuntime.getSnapshot();
 });
 
+ipcMain.handle(IPC.CHARACTER_ACTIVE_GET, () => getActiveCharacterPublicIdentity());
+
 ipcMain.handle(IPC.CHARACTER_PICK_IMPORT_FOLDER, async () => {
   const options: Electron.OpenDialogOptions = {
     title: "选择角色包文件夹",
@@ -3886,6 +3871,7 @@ ipcMain.handle(IPC.EMBEDDING_DELETE, async (_event, payload: unknown) => {
 protocol.registerSchemesAsPrivileged([
   { scheme: "local-sticker", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
   { scheme: "local-font", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } },
+  { scheme: "local-character", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
 app.whenReady().then(async () => {
@@ -3903,6 +3889,7 @@ app.whenReady().then(async () => {
   console.log(
     `[CharacterRuntime] Active Character ready: ${characterSnapshot.activeCharacter.displayName} (${characterSnapshot.activeCharacter.id})`,
   );
+  configureActiveCharacter(characterSnapshot.activeCharacter);
   const stateMigrationFailed = characterSnapshot.diagnostics.some(({ code }) => (
     code.startsWith("character.state_migration.")
   ));
@@ -3935,6 +3922,21 @@ app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(filePath).toString()).then((response) => new Response(response.body, {
       headers: getUiFontResponseHeaders(fileName),
     }));
+  });
+  protocol.handle("local-character", (request) => {
+    let requestUrl: URL;
+    try {
+      requestUrl = new URL(request.url);
+    } catch {
+      return new Response("Invalid character URL", { status: 404 });
+    }
+    const active = getActiveCharacter();
+    if (requestUrl.hostname !== "active"
+      || requestUrl.pathname !== "/avatar"
+      || requestUrl.searchParams.get("character") !== active.id) {
+      return new Response("Invalid character resource", { status: 403 });
+    }
+    return net.fetch(pathToFileURL(active.content.avatarPath).toString());
   });
   // Token 用量查询 IPC
   ipcMain.handle(IPC.TOKEN_USAGE_GET, (_event, days: number) => {

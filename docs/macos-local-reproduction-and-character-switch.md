@@ -196,6 +196,14 @@ characters/
 8. 创建或恢复该角色自己的聊天会话。
 9. 完成健康检查；失败则回滚到上一个角色。
 
+## 已落地：Active Character 文本与界面身份（Issue #5）
+
+文本链路现在通过一个应用级 Active Character 上下文组装，桌面聊天、微信渠道、主动聊天和通话不再分别读取固定的 `prompts/identity.md`、`soul.md` 或 `prompts/worldbook/`。角色包 v1 的 `content` 可声明 `examples`、`canonQuotes`、`stylesDirectory`、`scenesDirectory`、`phoneIdentity` 和 `phoneStyle`；世界书继续通过显式 `capabilities.worldbook.directory` 声明。所有路径在角色运行时内验证并解析，不能越过角色包根目录。
+
+`prompts/application_policy.md` 与聊天/通话回复规则归 Cyrene Agent 应用所有，先于被标记为不可信数据的角色内容进入 system prompt。角色包不能声明或覆盖应用策略、工具协议、权限、确认流程和安全规则。桌面聊天、状态面板和通话窗口通过只读 IPC 获取活动角色名与头像；头像只由 `local-character://active/avatar` 暴露，并校验请求中的 Character ID。任务与设置窗口继续显示 Product Brand“Cyrene Agent”。
+
+许可清晰的 `test-fixtures/characters/lumen` 已补齐独立人格、风格、示例、通话人格、场景和世界书，用于与内置昔涟执行防串角测试。角色选择、持久化和受控重启属于后续切换事务 Issue，不在本层偷偷引入第二套活动角色状态。
+
 ## 实施顺序
 
 1. 建立角色包 schema、校验器、Cyrene 默认包和旧路径兼容层。

@@ -1,6 +1,7 @@
 import "../ui/base.css";
 import "./sidebar.css";
 import "../ui/theme";
+import { hydrateActiveCharacterIdentity } from "../ui/active-character";
 
 interface ModelConfig {
   mode: "auto" | "manual";
@@ -207,3 +208,4 @@ openChatBtn.addEventListener("click", async () => {
 
 void initModelConfig();
 void initRuntimeState();
+void hydrateActiveCharacterIdentity("status");

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>昔涟 · 设置</title>
+  <title>Cyrene Agent · 设置</title>
   <link rel="stylesheet" href="../ui/tokens.css" />
   <link rel="stylesheet" href="../ui/fonts.css" />
   <link rel="stylesheet" href="../ui/base.css" />
@@ -13,7 +13,7 @@
   <div class="settings-shell">
     <aside class="settings-nav" aria-label="设置导航">
       <header class="settings-nav__header">
-        <div class="settings-nav__brand">昔涟</div>
+        <div class="settings-nav__brand">Cyrene Agent</div>
         <div class="settings-nav__sub">设置中心</div>
       </header>
 
@@ -31,7 +31,7 @@
         <button type="button" class="nav-item" data-section="appearance"><span>🎨</span>外观设置</button>
         <button type="button" class="nav-item is-active" data-section="general"><span>⚙️</span>通用设置</button>
         <button type="button" class="nav-item" data-section="api"><span>🔑</span>API 设置</button>
-        <button type="button" class="nav-item" data-section="cyrene"><span>🌸</span>昔涟设置</button>
+        <button type="button" class="nav-item" data-section="cyrene"><span>🌸</span>角色行为</button>
         <button type="button" class="nav-item" data-section="characters"><span>🎭</span>角色</button>
         <button type="button" class="nav-item" data-section="channels"><span>📱</span>连接手机</button>
         <button type="button" class="nav-item" data-section="tts"><span>🎙️</span>TTS 设置</button>
@@ -41,7 +41,7 @@
         <button type="button" class="nav-item" data-section="disclaimer"><span>📜</span>免责声明</button>
       </nav>
 
-      <footer class="settings-nav__footer">昔涟 v0.1.1</footer>
+      <footer class="settings-nav__footer">Cyrene Agent v0.1.1</footer>
     </aside>
 
     <main class="settings-main">
@@ -69,7 +69,7 @@
             <div class="panel-heading__icon">🔑</div>
             <div>
               <h1>API 设置</h1>
-              <p>先配置一个模型服务，后面昔涟会用它进行聊天和状态判断。</p>
+              <p>先配置一个模型服务，活动角色会用它进行聊天和状态判断。</p>
             </div>
           </div>
 
@@ -132,7 +132,7 @@
               <span class="vision-config-icon">🖼️</span>
               <div>
                 <h2>视觉模型（可选）</h2>
-                <p>配置后昔涟能看懂图片。留空则遇到图片会诚实告知看不了。</p>
+                <p>配置后活动角色能看懂图片。留空则遇到图片会诚实告知看不了。</p>
               </div>
             </div>
 
@@ -201,7 +201,7 @@
             <div class="setting-row">
               <div>
                 <strong>分段输出</strong>
-                <span>控制昔涟回复在聊天气泡中的分段显示；不会改变模型实际回复内容。</span>
+                <span>控制活动角色回复在聊天气泡中的分段显示；不会改变模型实际回复内容。</span>
               </div>
               <div class="option-blocks option-blocks--wide" id="segmented-output-select" role="radiogroup" aria-label="分段输出">
                 <button type="button" class="option-block" data-value="all" aria-pressed="false">所有</button>
@@ -224,7 +224,7 @@
             <div class="setting-row">
               <div>
                 <strong>主动聊天</strong>
-                <span>昔涟会在合适的时间主动发起对话；深夜无操作、正常聊天中和连续两次未回复时不会打扰。</span>
+                <span>活动角色会在合适的时间主动发起对话；深夜无操作、正常聊天中和连续两次未回复时不会打扰。</span>
               </div>
               <div class="option-blocks option-blocks--wide" id="proactive-chat-select" role="radiogroup" aria-label="主动聊天">
                 <button type="button" class="option-block is-active" data-value="off" aria-pressed="true">关闭</button>
@@ -257,14 +257,14 @@
             <div class="panel-heading__icon">🎨</div>
             <div>
               <h1>外观设置</h1>
-              <p>调整窗口布局、界面主题和昔涟桌宠的显示方式。</p>
+              <p>调整窗口布局、界面主题和活动角色桌宠的显示方式。</p>
             </div>
           </div>
 
           <div class="appearance-section">
             <div class="appearance-section__heading">
               <h2>布局</h2>
-              <p>选择昔涟与聊天、状态和日程窗口的组织方式。</p>
+              <p>选择活动角色与聊天、状态和日程窗口的组织方式。</p>
             </div>
             <div class="appearance-options" aria-label="窗口布局">
               <button type="button" class="appearance-option is-active" aria-pressed="true">
@@ -322,7 +322,7 @@
 
           <div class="appearance-section">
             <div class="appearance-section__heading">
-              <h2>昔涟桌宠</h2>
+              <h2>活动角色桌宠</h2>
               <p>控制 Live2D 桌宠的窗口层级、显示状态和大小。</p>
             </div>
             <div class="settings-list">
@@ -402,7 +402,7 @@
             <label class="setting-row">
               <div>
                 <strong>开机自启</strong>
-                <span>系统启动时自动打开昔涟。</span>
+                <span>系统启动时自动打开 Cyrene Agent。</span>
               </div>
               <span class="switch"><input id="launch-at-login" type="checkbox" /><span class="switch__track"><span class="switch__thumb"></span></span></span>
             </label>
@@ -432,7 +432,7 @@
             <div class="setting-row setting-row--about">
               <div>
                 <strong>关于</strong>
-                <span>昔涟 v0.1.1 · 轻量情感陪伴桌面 Agent</span>
+                <span>Cyrene Agent v0.1.1 · 轻量情感陪伴桌面 Agent</span>
               </div>
             </div>
           </div>
@@ -448,8 +448,8 @@
           <div class="panel-heading">
             <div class="panel-heading__icon">🌸</div>
             <div>
-              <h1>昔涟设置</h1>
-              <p>这里集中管理昔涟的 Agent 行为、状态更新、表情包、记忆和本地检索能力。</p>
+              <h1>角色行为设置</h1>
+              <p>这里集中管理活动角色的 Agent 行为、状态更新、表情包、记忆和本地检索能力。</p>
             </div>
           </div>
 
@@ -475,7 +475,7 @@
                 <span>🎭</span>
                 <div>
                   <h2>表情包发送</h2>
-                  <p>控制昔涟是否在聊天框里发送表情包，以及表情包显示大小。</p>
+                  <p>控制活动角色是否在聊天框里发送表情包，以及表情包显示大小。</p>
                 </div>
               </div>
               <label class="agent-status-row agent-status-row--switch">
@@ -577,7 +577,7 @@
 
           <div class="form-actions agent-form-actions">
             <div class="save-status" id="cyrene-save-status">等待保存</div>
-            <button type="submit" class="save-btn">保存昔涟设置</button>
+            <button type="submit" class="save-btn">保存角色行为设置</button>
           </div>
         </form>
 
@@ -602,7 +602,7 @@
 
           <div class="character-notice" role="note">
             <strong>本版本先完成安全安装与健康检查</strong>
-            <span>角色切换将在对话、语音、Live2D 与独立状态全部接入后开放，当前角色仍为昔涟。</span>
+            <span>角色切换入口将在对话、语音、Live2D 与独立状态全部接入后开放；当前活动角色显示在上方。</span>
           </div>
 
           <div class="character-section-heading">
@@ -623,8 +623,8 @@
           <div class="panel-heading">
             <div class="panel-heading__icon">🧠</div>
             <div>
-              <h1>昔涟记忆</h1>
-              <p>昔涟对你的认知和记忆，你可以查看、编辑和管理。</p>
+              <h1>角色记忆</h1>
+              <p>活动角色对你的认知和记忆，你可以查看、编辑和管理。</p>
             </div>
           </div>
           <div class="panel-body">
@@ -634,7 +634,7 @@
                 <span>📌</span>
                 <div>
                   <h2>长期画像</h2>
-                  <p>昔涟一直记得、基本不会变化的信息</p><p class="memory-card__hint">手动修改的内容优先级高于自动推断</p>
+                  <p>活动角色一直记得、基本不会变化的信息</p><p class="memory-card__hint">手动修改的内容优先级高于自动推断</p>
                 </div>
                 <span class="memory-card__badge">L0</span>
               </div>
@@ -675,7 +675,7 @@
                 <span class="memory-card__badge">L2</span>
               </div>
               <div class="memory-search"><input id="memory-l2-search" type="text" placeholder="搜索记忆..." /></div>
-              <div class="memory-list" id="memory-l2-list"><div class="memory-list__empty"><span>📭</span><p>暂无事件记忆</p><p class="memory-list__hint">聊天后昔涟会自动提炼重要信息</p></div></div>
+              <div class="memory-list" id="memory-l2-list"><div class="memory-list__empty"><span>📭</span><p>暂无事件记忆</p><p class="memory-list__hint">聊天后活动角色会自动提炼重要信息</p></div></div>
             </div>
             <!-- import -->
             <div class="memory-card">
@@ -724,7 +724,7 @@
               <div class="user-profile-fields">
                 <div class="tts-field">
                   <label for="user-nickname">昵称</label>
-                  <input type="text" id="user-nickname" placeholder="你想让昔涟怎么称呼你" />
+                  <input type="text" id="user-nickname" placeholder="你想让活动角色怎么称呼你" />
                 </div>
                 <div class="tts-field">
                   <label for="user-call-pref">称呼偏好</label>
@@ -738,7 +738,7 @@
                   <label for="user-default-city">默认城市</label>
                   <input type="text" id="user-default-city" placeholder="例如：上海、北京、广州（用于天气等）" />
                 </div>
-                <p class="user-field-hint">这些信息会告诉昔涟，让她知道怎么称呼你、你在哪。默认城市用于天气等需要定位的工具。</p>
+                <p class="user-field-hint">这些信息会告诉活动角色，让角色知道怎么称呼你、你在哪。默认城市用于天气等需要定位的工具。</p>
               </div>
             </div>
           </div>
@@ -789,7 +789,7 @@
           </div>
 
           <div class="scheduler-empty" id="scheduler-empty">
-            还没有定时任务。新建一个任务，让昔涟按时间自动执行提示词。
+            还没有定时任务。新建一个任务，让活动角色按时间自动执行提示词。
           </div>
 
           <div class="scheduler-list" id="scheduler-list"></div>
@@ -887,7 +887,7 @@
             <div class="panel-heading__icon">💼</div>
             <div>
               <h1>职位</h1>
-              <p>自定义昔涟的身份定位与工作职责</p>
+              <p>自定义活动角色的身份定位与工作职责</p>
             </div>
           </div>
           <div class="panel-body">
@@ -1039,7 +1039,7 @@
           <div class="plugin-panel-heading">
             <div>
               <h1>插件</h1>
-              <p>管理昔涟可调用的工具能力；关闭后调度层不会使用对应工具。</p>
+              <p>管理活动角色可调用的工具能力；关闭后调度层不会使用对应工具。</p>
             </div>
             <button type="button" class="plugin-add-btn" aria-label="添加插件">＋</button>
           </div>
@@ -1067,7 +1067,7 @@
               <div class="plugin-card__icon">📖</div>
               <div class="plugin-card__body">
                 <h2>世界书</h2>
-                <p>按需召回昔涟的背景设定、经历和关键词内容。</p>
+                <p>按需召回活动角色的背景设定、经历和关键词内容。</p>
               </div>
               <span class="plugin-always-on" title="常驻">●</span>
             </article>
@@ -1137,7 +1137,7 @@
               <div class="plugin-card__icon">🔍</div>
               <div class="plugin-card__body">
                 <h2>联网搜索</h2>
-                <p>让昔涟能搜索互联网获取实时信息。选择一个搜索源并填入对应 Key。</p>
+                <p>让活动角色能搜索互联网获取实时信息。选择一个搜索源并填入对应 Key。</p>
                 <div class="plugin-config" id="plugin-search-config">
                   <div class="tts-field">
                     <label for="search-engine">搜索源</label>
@@ -1213,7 +1213,7 @@
               <div class="plugin-card__icon">📁</div>
               <div class="plugin-card__body">
                 <h2>本地文件</h2>
-                <p id="plugin-file-note">只读：昔涟不会修改本地任何文件。</p>
+                <p id="plugin-file-note">只读：活动角色不会修改本地任何文件。</p>
               </div>
               <div class="plugin-perm-capsule" id="plugin-file-permission" role="group" aria-label="本地文件权限">
                 <button type="button" class="perm-seg is-active" data-level="read-only" title="只读">只读</button>
@@ -1235,7 +1235,7 @@
               <div class="plugin-card__icon">🕷️</div>
               <div class="plugin-card__body">
                 <h2>网页抓取</h2>
-                <p>下载指定网址并转成结构化 Markdown 喂给昔涟。</p>
+                <p>下载指定网址并转成结构化 Markdown 提供给活动角色。</p>
               </div>
               <span class="plugin-always-on" title="常驻">●</span>
             </article>
@@ -1457,7 +1457,7 @@
             <div class="token-empty is-hidden" id="token-empty">
               <span class="token-empty__icon" aria-hidden="true">📭</span>
               <p class="token-empty__text">暂无用量数据</p>
-              <p class="token-empty__hint">和昔涟聊天后这里会显示真实的 Token 消耗统计</p>
+              <p class="token-empty__hint">和活动角色聊天后这里会显示真实的 Token 消耗统计</p>
             </div>
 
             <!-- 图表区（有数据时显示） -->
@@ -1498,7 +1498,7 @@
               <label class="setting-row">
                 <div>
                   <strong>自动朗读回复</strong>
-                  <span>昔涟每次回复后自动语音朗读</span>
+                  <span>活动角色每次回复后自动语音朗读</span>
                 </div>
                 <span class="switch"><input type="checkbox" id="tts-auto-read" checked /><span class="switch__track"><span class="switch__thumb"></span></span></span>
               </label>
@@ -1838,7 +1838,7 @@
               <label class="setting-row">
                 <div>
                   <strong>通话中显示文字转写</strong>
-                  <p class="tts-hint">开启后显示识别文字和昔涟回复；本地模式在一句结束后显示最终转写。</p>
+                  <p class="tts-hint">开启后显示识别文字和活动角色回复；本地模式在一句结束后显示最终转写。</p>
                 </div>
                 <input type="checkbox" id="asr-show-transcript" />
               </label>
