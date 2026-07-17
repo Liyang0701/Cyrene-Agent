@@ -17,8 +17,19 @@ function buildUrl(baseUrl: string): string {
 
 /** 把统一消息翻译成 OpenAI wire messages。 */
 function toWireMessages(messages: ChatMessage[]): unknown[] {
-  return messages.map(m => {
-    if (m.role === "system") return { role: "system", content: m.content ?? "" };
+  const systemContent = messages
+    .filter((message) => message.role === "system")
+    .map((message) => {
+      if (typeof message.content === "string") return message.content;
+      if (!Array.isArray(message.content)) return "";
+      return message.content
+        .filter((block): block is { type: "text"; text: string } => block?.type === "text")
+        .map((block) => block.text)
+        .join("\n");
+    })
+    .filter(Boolean)
+    .join("\n\n");
+  const wire = messages.filter((message) => message.role !== "system").map(m => {
     if (m.role === "user") return { role: "user", content: m.content ?? "" };
     if (m.role === "tool") {
       const wire: Record<string, unknown> = {
@@ -40,6 +51,9 @@ function toWireMessages(messages: ChatMessage[]): unknown[] {
     }
     return wire;
   });
+  return systemContent
+    ? [{ role: "system", content: systemContent }, ...wire]
+    : wire;
 }
 
 function toWireTools(tools?: ChatRequest["tools"]): unknown[] | undefined {

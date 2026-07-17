@@ -47,6 +47,60 @@ describe("build-options", () => {
     expect(result.options.toolSystemContent).toBe("TOOL_SYSTEM")
   })
 
+  it("微信结构化 session 保留世界书但不请求桌面个人记忆", async () => {
+    const deps = createBuildDeps()
+    const buildAlwaysOnContext = vi.fn(async () => "WORLD_ONLY")
+    const buildChannelRelationshipContext = vi.fn(async () => "SCOPED_RELATIONSHIP")
+    deps.buildAlwaysOnContext = buildAlwaysOnContext
+    deps.buildChannelRelationshipContext = buildChannelRelationshipContext
+
+    const result = await buildAgentRunOptions({
+      messages: [{ role: "user", content: "你好" }],
+      style: "01_default.md",
+      channel: "wechat",
+      sessionId: "channel:wechat:session-a",
+    }, deps)
+
+    expect(buildAlwaysOnContext).toHaveBeenCalledWith(
+      "你好",
+      expect.any(Array),
+      { includePersonalMemory: false },
+    )
+    expect(buildChannelRelationshipContext).toHaveBeenCalledWith("channel:wechat:session-a")
+    expect(result.options.soulSystemBaseContent).toContain("WORLD_ONLY")
+    expect(result.options.soulSystemBaseContent).toContain("SCOPED_RELATIONSHIP")
+  })
+
+  it("结构化微信只使用账号绑定者资料，不读取桌面全局资料", async () => {
+    const deps = createBuildDeps()
+    const loadUserProfile = vi.fn(() => ({ nickname: "桌面用户", defaultCity: "上海" }))
+    const loadChannelUserProfile = vi.fn(async () => ({ nickname: "A 用户", defaultCity: "杭州", timezone: "Asia/Shanghai" }))
+    const buildEnvironmentContext = vi.fn(() => "CHANNEL_ENV")
+    deps.loadUserProfile = loadUserProfile
+    deps.loadChannelUserProfile = loadChannelUserProfile
+    deps.buildEnvironmentContext = buildEnvironmentContext
+    const identity = {
+      channel: "wechat" as const,
+      connectionAccountId: "account-a@im.wechat",
+      participantId: "owner-a@im.wechat",
+    }
+
+    await buildAgentRunOptions({
+      messages: [{ role: "user", content: "你好" }],
+      style: "01_default.md",
+      channel: "wechat",
+      sessionId: "channel:wechat:session-a",
+      conversationIdentity: identity,
+    }, deps)
+
+    expect(loadUserProfile).not.toHaveBeenCalled()
+    expect(loadChannelUserProfile).toHaveBeenCalledWith(identity)
+    expect(buildEnvironmentContext).toHaveBeenCalledWith(
+      { provider: "test", model: "m" },
+      expect.objectContaining({ nickname: "A 用户", defaultCity: "杭州" }),
+    )
+  })
+
   it("does not add channel system for desktop chat", async () => {
     const result = await buildAgentRunOptions({
       messages: [{ role: "user", content: "你好" }],
@@ -185,11 +239,13 @@ describe("build-options", () => {
     expect(buildChannelSystem("feishu")).toContain("工作上下文")
   })
 
-  it("records relationship turn after agent run finishes", async () => {
+  it("records WeChat relationship and memory side effects in the conversation scope", async () => {
     const recordRelationshipTurn = vi.fn(async () => {})
+    const recordChannelRelationshipTurn = vi.fn(async () => {})
+    const scheduleMemoryWrite = vi.fn()
     const deps: OnRunFinishedDeps = {
       loadModelSettings: () => ({ provider: "test", baseUrl: "", model: "", apiKey: "", runtimeSync: "off" }),
-      scheduleMemoryWrite: () => {},
+      scheduleMemoryWrite,
       inferRuntimeState: () => ({ status: "陪伴中" }),
       runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
       feelingToExpression: { "温柔": 0 },
@@ -201,12 +257,21 @@ describe("build-options", () => {
       broadcastRuntimeStateChanged: () => {},
       observeRuntimeState: async () => {},
       recordRelationshipTurn,
+      recordChannelRelationshipTurn,
       getChatWindow: () => null,
     }
 
-    await onAgentRunFinished({ reply: "好呀", toolResults: [] }, "今天有点累", deps, "wechat")
+    await onAgentRunFinished(
+      { reply: "好呀", toolResults: [] },
+      "今天有点累",
+      deps,
+      "wechat",
+      "channel:wechat:session-a",
+    )
 
-    expect(recordRelationshipTurn).toHaveBeenCalledWith({
+    expect(scheduleMemoryWrite).not.toHaveBeenCalled()
+    expect(recordRelationshipTurn).not.toHaveBeenCalled()
+    expect(recordChannelRelationshipTurn).toHaveBeenCalledWith("channel:wechat:session-a", {
       userText: "今天有点累",
       assistantText: "好呀",
       cyreneFeeling: "温柔",

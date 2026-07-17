@@ -6,6 +6,7 @@
 //
 // 注意：initChannels 必须晚于 initRAG / initMcpManager / loadModelSettings。
 import { app, BrowserWindow, ipcMain } from "electron";
+import path from "node:path";
 import { IPC } from "../../shared/ipc-channels";
 import {
   loadChannelsSettings,
@@ -15,7 +16,26 @@ import { channelManager } from "./manager";
 import { channelDispatcher } from "./dispatcher";
 import { startInboundServer, stopInboundServer } from "./inbound-server";
 import { FeishuAdapter } from "./adapters/feishu";
-import { ILinkBotAdapter, loadCredentials } from "./adapters/wechat/ilink-bot-adapter";
+import { ILinkBotAdapter } from "./adapters/wechat/ilink-bot-adapter";
+import { fetchQrCode } from "./adapters/wechat/ilink-protocol-client";
+import { createQrDataUrl } from "./adapters/wechat/qr";
+import {
+  getWechatAccountRepository,
+  getWechatChannelIdentityState,
+  getWechatPendingInboundStore,
+} from "./adapters/wechat/wechat-account-runtime";
+import { WechatChannelTaskService } from "./adapters/wechat/wechat-channel-task-service";
+import {
+  registerWechatChannelTaskTool,
+  setWechatChannelTaskService,
+} from "./adapters/wechat/wechat-channel-task-tool";
+import { setChannelPermissionResolver } from "../permission";
+import { WechatAccountSettingsService } from "./adapters/wechat/wechat-account-settings-service";
+import { createWechatAccountIpcHandlers } from "./adapters/wechat/wechat-account-ipc-handlers";
+import {
+  WechatLoginSessionCoordinator,
+  type WechatLoginSessionSnapshot,
+} from "./adapters/wechat/wechat-login-session";
 import { getRecentLog, clearLog } from "./message-log";
 
 const LOG = "[ChannelsInit]";
@@ -32,6 +52,9 @@ export function setChannelsConversationLifecycle(lifecycle: typeof conversationL
 }
 /** 微信 adapter 全局引用（UI 登录按钮需要） */
 let wxAdapter: ILinkBotAdapter | null = null;
+let wxLoginSession: WechatLoginSessionCoordinator | null = null;
+let wxTaskService: WechatChannelTaskService | null = null;
+let wxTaskTimer: NodeJS.Timeout | null = null;
 
 /** app.whenReady() 调一次。idempotent。 */
 export async function initChannels(): Promise<void> {
@@ -66,11 +89,31 @@ export async function initChannels(): Promise<void> {
 
   // 注册微信 adapter（iLink 直连微信，不依赖 OpenClaw Gateway）
   // 改为 module-level handle，UI 登录按钮也能拿到
-  wxAdapter = new ILinkBotAdapter();
+  wxAdapter = new ILinkBotAdapter({
+    pendingInboundStore: getWechatPendingInboundStore(),
+  });
+  wxTaskService = new WechatChannelTaskService({
+    rootDir: path.join(app.getPath("userData"), "weixin", "channel-tasks"),
+    isAccountOnline: (accountId) => wxAdapter?.getAccountStatuses()
+      .some((status) => status.ilinkBotId === accountId && status.phase === "running") ?? false,
+    send: (message) => wxAdapter?.send(message)
+      ?? Promise.resolve({ ok: false, error: "微信 adapter 未初始化" }),
+  });
+  setWechatChannelTaskService(wxTaskService);
+  registerWechatChannelTaskTool();
+  setChannelPermissionResolver((accountId, risk) =>
+    getWechatChannelIdentityState().isToolRiskAllowed(accountId, risk));
+  wxLoginSession = createWechatLoginSession(wxAdapter);
   channelManager.register(wxAdapter);
 
   // 启动所有已注册 adapter
   await channelManager.startAll();
+  await wxTaskService.processDue();
+  wxTaskTimer = setInterval(() => {
+    void wxTaskService?.processDue().catch((error) =>
+      console.warn(LOG, "微信渠道任务检查失败:", error));
+  }, 15_000);
+  wxTaskTimer.unref?.();
 
   console.log(LOG, "channels 模块就绪");
   broadcastChannelsStatus();
@@ -78,6 +121,11 @@ export async function initChannels(): Promise<void> {
 
 /** app.on('before-quit') 调 */
 export async function shutdownChannels(): Promise<void> {
+  if (wxTaskTimer) clearInterval(wxTaskTimer);
+  wxTaskTimer = null;
+  setWechatChannelTaskService(null);
+  setChannelPermissionResolver(null);
+  await wxLoginSession?.cancel();
   await channelManager.stopAll();
   await stopInboundServer();
   initialized = false;
@@ -98,6 +146,7 @@ function registerChannelsIpc(): void {
   ipcMain.handle(IPC.CHANNELS_RESTART, async () => {
     await channelManager.stopAll();
     await channelManager.startAll();
+    await wxTaskService?.processDue();
     broadcastChannelsStatus();
     return { ok: true };
   });
@@ -109,55 +158,37 @@ function registerChannelsIpc(): void {
     return { installed: true, version: "ilink/1.0.0" };
   });
 
-	  // 扫码登录：Main Process 生成 PNG dataURL，推给 Renderer 显示 <img>
-	  ipcMain.handle(IPC.CHANNELS_WECHAT_LOGIN_START, async () => {
-	    if (!wxAdapter) return { ok: false, error: "adapter 未初始化" };
-	    try {
-	      const { fetchQrCode } = await import("./adapters/wechat/ilink-protocol-client");
-	      const { createQrDataUrl } = await import("./adapters/wechat/qr");
+  ipcMain.handle(IPC.CHANNELS_WECHAT_LOGIN_START, async () => {
+    if (!wxLoginSession) return { ok: false, error: "微信登录服务未初始化" };
+    try {
+      return { ok: true, ...(await wxLoginSession.start()) };
+    } catch (err) {
+      return { ok: false, error: errorMessage(err) };
+    }
+  });
 
-	      // 1. 拿原始 qrcode 字符串 + liteapp 二维码 URL
-	      //    - qrcode: 32 hex ticket（轮询 get_qrcode_status 用）
-	      //    - qrcode_img_content: liteapp.weixin.qq.com/q/... URL（扫了会拉起 iLink 灰度插件）
-	      const { qrcode, qrcode_img_content } = await fetchQrCode();
+  ipcMain.handle(IPC.CHANNELS_WECHAT_LOGIN_CANCEL, async () => {
+    if (!wxLoginSession) return { ok: false, error: "微信登录服务未初始化" };
+    return { ok: true, ...(await wxLoginSession.cancel()) };
+  });
 
-	      // 2. Main Process 生成 PNG dataURL（用 liteapp URL 而不是裸 ticket，
-	      //    否则微信只识别为纯文本、不会触发 iLink 确认流程）
-	      const dataUrl = await createQrDataUrl(qrcode_img_content, 256);
-
-	      // 3. 推给 Renderer
-	      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-	      win?.webContents.send(IPC.CHANNELS_WECHAT_QRCODE, dataUrl);
-
-	      // 4. 后台轮询扫码状态
-	      void (async () => {
-	        try {
-	          const creds = await wxAdapter!.login(qrcode);
-	          await wxAdapter!.stop();
-	          await wxAdapter!.start();
-	          win?.webContents.send(IPC.CHANNELS_WECHAT_LOGIN_DONE, { ok: true, botId: creds.ilinkBotId });
-	        } catch (err) {
-	          win?.webContents.send(IPC.CHANNELS_WECHAT_LOGIN_DONE, { ok: false, error: String(err) });
-	        }
-	      })();
-
-	      return { ok: true, hint: "请扫描二维码" };
-	    } catch (err) {
-	      return { ok: false, error: String(err) };
-	    }
-	  });
-
-  ipcMain.handle(IPC.CHANNELS_WECHAT_LOGIN_CANCEL, () => {
-    return { ok: true };
+  ipcMain.handle(IPC.CHANNELS_WECHAT_LOGIN_REFRESH, async () => {
+    if (!wxLoginSession) return { ok: false, error: "微信登录服务未初始化" };
+    try {
+      return { ok: true, ...(await wxLoginSession.refresh()) };
+    } catch (err) {
+      return { ok: false, error: errorMessage(err) };
+    }
   });
 
   ipcMain.handle(IPC.CHANNELS_WECHAT_LOGIN_RESULT, async () => {
-    if (!wxAdapter) return { connected: false };
+    if (!wxAdapter) return { connected: false, loginSession: { state: "idle" } };
     const status = wxAdapter.getStatus();
     return {
       running: status.phase === "starting",
       connected: status.phase === "running",
       loggedIn: wxAdapter.isLoggedIn,
+      loginSession: wxLoginSession?.getSnapshot() ?? { state: "idle" },
     };
   });
 
@@ -168,11 +199,19 @@ function registerChannelsIpc(): void {
 
   ipcMain.handle(IPC.CHANNELS_WECHAT_PAIRING_APPROVE, () => ({ ok: false, error: "iLink 模式不支持 pairing" }));
 
-  ipcMain.handle(IPC.CHANNELS_WECHAT_LOGOUT, async () => {
-    if (!wxAdapter) return { ok: false };
-    await wxAdapter.logout();
-    return { ok: true };
-  });
+  ipcMain.handle(IPC.CHANNELS_WECHAT_ACCOUNTS_LIST, () => getWechatAccountIpcHandlers().list());
+  ipcMain.handle(IPC.CHANNELS_WECHAT_ACCOUNT_RENAME, (_event, input: { ilinkBotId?: string; label?: string }) =>
+    getWechatAccountIpcHandlers().rename(input));
+  ipcMain.handle(IPC.CHANNELS_WECHAT_ACCOUNT_SET_ENABLED, (_event, input: { ilinkBotId?: string; enabled?: boolean }) =>
+    getWechatAccountIpcHandlers().setEnabled(input));
+  ipcMain.handle(IPC.CHANNELS_WECHAT_ACCOUNT_RECONNECT, (_event, ilinkBotId: string) =>
+    getWechatAccountIpcHandlers().reconnect(ilinkBotId));
+  ipcMain.handle(IPC.CHANNELS_WECHAT_ACCOUNT_RESCAN, (_event, ilinkBotId: string) =>
+    getWechatAccountIpcHandlers().rescan(ilinkBotId));
+  ipcMain.handle(IPC.CHANNELS_WECHAT_LOGOUT, (_event, ilinkBotId: string) =>
+    getWechatAccountIpcHandlers().logout(ilinkBotId));
+  ipcMain.handle(IPC.CHANNELS_WECHAT_ACCOUNT_DELETE, (_event, ilinkBotId: string) =>
+    getWechatAccountIpcHandlers().delete(ilinkBotId));
 
   ipcMain.handle(IPC.CHANNELS_WECHAT_RUNTIME_INSTALL, () => ({
     ok: true,
@@ -226,6 +265,86 @@ function registerChannelsIpc(): void {
     clearLog();
     return { ok: true };
   });
+}
+
+function createWechatLoginSession(adapter: ILinkBotAdapter): WechatLoginSessionCoordinator {
+  return new WechatLoginSessionCoordinator({
+    fetchQrCode: async () => {
+      const result = await fetchQrCode();
+      return { qrcode: result.qrcode, imageContent: result.qrcode_img_content };
+    },
+    createQrDataUrl: (imageContent) => createQrDataUrl(imageContent, 256),
+    waitForLogin: (qrcode, signal) => adapter.waitForLogin(qrcode, signal),
+    saveCredentials: async (credentials) => {
+      await adapter.saveCredentials(credentials);
+      saveChannelsSettings({ wechat: { enabled: true } });
+      try {
+        await adapter.reconnectAccount(credentials.ilinkBotId);
+      } catch {
+        await adapter.stop();
+        await adapter.start();
+      }
+      await wxTaskService?.processDue();
+      broadcastChannelsStatus();
+    },
+    onChanged: broadcastWechatLoginSession,
+  });
+}
+
+function getWechatAccountSettingsService(): WechatAccountSettingsService {
+  if (!wxAdapter) throw new Error("微信 adapter 未初始化");
+  const adapter = wxAdapter;
+  return new WechatAccountSettingsService({
+    repository: getWechatAccountRepository(),
+    runtime: {
+      getAccountStatuses: () => adapter.getAccountStatuses(),
+      reconnectAccount: async (ilinkBotId) => {
+        await adapter.reconnectAccount(ilinkBotId);
+        await wxTaskService?.processDue();
+      },
+      stopAccount: (ilinkBotId) => adapter.stopAccount(ilinkBotId),
+    },
+    getQueueStats: (ilinkBotId) => channelManager.getWechatAccountQueueStats(ilinkBotId),
+    logoutAccount: (ilinkBotId) => adapter.logout(ilinkBotId),
+    archiveAccountTasks: (ilinkBotId) => wxTaskService?.archiveAccount(ilinkBotId) ?? Promise.resolve(),
+    removeAccount: async (ilinkBotId) => {
+      await getWechatPendingInboundStore().removeAccount(ilinkBotId);
+      await adapter.removeAccount(ilinkBotId);
+    },
+  });
+}
+
+function getWechatAccountIpcHandlers() {
+  if (!wxLoginSession) throw new Error("微信登录服务未初始化");
+  return createWechatAccountIpcHandlers({
+    service: getWechatAccountSettingsService(),
+    refreshLogin: () => wxLoginSession!.refresh(),
+    onChanged: broadcastChannelsStatus,
+  });
+}
+
+function broadcastWechatLoginSession(snapshot: WechatLoginSessionSnapshot): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    win.webContents.send(IPC.CHANNELS_WECHAT_LOGIN_STATE, snapshot);
+    if (snapshot.state === "waiting" && snapshot.qrDataUrl) {
+      win.webContents.send(IPC.CHANNELS_WECHAT_QRCODE, snapshot.qrDataUrl);
+    } else if (snapshot.state === "confirmed") {
+      win.webContents.send(IPC.CHANNELS_WECHAT_LOGIN_DONE, {
+        ok: true,
+        botId: snapshot.ilinkBotId,
+      });
+    } else if (snapshot.state === "expired" || snapshot.state === "error") {
+      win.webContents.send(IPC.CHANNELS_WECHAT_LOGIN_DONE, {
+        ok: false,
+        error: snapshot.error ?? "微信扫码登录失败",
+      });
+    }
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** 工具：把所有 BrowserWindow 广播 channels 状态变更（UI 轮询用）。 */

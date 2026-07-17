@@ -27,6 +27,7 @@ import type { AguiRunInput } from "../agui-bridge";
 import { isLoopbackModelUrl } from "../channels/channel-model-endpoint";
 import { IPC } from "../../shared/ipc-channels";
 import type { RelationshipChannel, RelationshipTurnInput } from "../relationship/relationship-log";
+import type { ChannelConversationIdentity } from "../channels/types";
 import { validateCaptionImagePath } from "../chat/image-caption";
 import {
   buildConversationTimeContext,
@@ -40,6 +41,7 @@ import {
 export interface BuildOptionsDeps {
   loadModelSettings: () => ModelSettingsLite;
   loadUserProfile: () => UserProfileLite;
+  loadChannelUserProfile?: (identity: ChannelConversationIdentity) => Promise<UserProfileLite>;
   buildEnvironmentContext: (model: { provider: string; model: string }, profile: unknown) => string;
   buildSkillCatalog: (skills: ReadonlyArray<unknown>) => string;
   skillRegistry: { getEnabled(): ReadonlyArray<unknown> };
@@ -55,8 +57,10 @@ export interface BuildOptionsDeps {
   buildAlwaysOnContext: (
     userText: string,
     messages: ReadonlyArray<{ role: string; content?: string }>,
+    options?: { includePersonalMemory?: boolean },
   ) => Promise<string>;
   buildRelationshipContext: () => Promise<string>;
+  buildChannelRelationshipContext?: (sessionId: string) => Promise<string>;
   buildSystemPrompt: (styleFile: string) => string;
   /** 第一期：工具阶段 system prompt。仅含工具调度规则 + 自动生成的工具目录。 */
   buildToolSystemPrompt: (enabledTools: ReadonlyArray<unknown>) => string;
@@ -102,6 +106,10 @@ export interface OnRunFinishedDeps {
     reply: string,
   ) => Promise<void>;
   recordRelationshipTurn: (input: RelationshipTurnInput) => Promise<unknown> | unknown;
+  recordChannelRelationshipTurn?: (
+    sessionId: string,
+    input: RelationshipTurnInput,
+  ) => Promise<unknown> | unknown;
   getChatWindow: () => { webContents: { isDestroyed(): boolean; send: (channel: string, ...args: unknown[]) => void }; isDestroyed(): boolean } | null;
 }
 
@@ -267,7 +275,13 @@ export async function buildAgentRunOptions(
   const slimMessages = messages as unknown as Array<{ role: string; content?: string }>;
   const latestUserText = contentToText(messages.filter((m) => m.role === "user").at(-1)?.content) ?? "";
   const skillActivation = deps.resolveSlashActivation(slimMessages);
-  const profile = deps.loadUserProfile();
+  const isStructuredWechat = input.channel === "wechat"
+    && input.conversationIdentity?.channel === "wechat"
+    && Boolean(input.conversationIdentity.connectionAccountId)
+    && Boolean(input.conversationIdentity.participantId);
+  const profile = isStructuredWechat
+    ? await deps.loadChannelUserProfile?.(input.conversationIdentity!) ?? {}
+    : deps.loadUserProfile();
   const { messages: llmMessages, timeContext: conversationTimeContext } = buildConversationTimeContext(
     messages as unknown as ChatContextMessage[],
     resolveChatContextTimezone(profile.timezone),
@@ -276,14 +290,22 @@ export async function buildAgentRunOptions(
 
   let alwaysOnContext = "";
   try {
-    alwaysOnContext = await deps.buildAlwaysOnContext(latestUserText, slimMessages);
+    alwaysOnContext = await deps.buildAlwaysOnContext(
+      latestUserText,
+      slimMessages,
+      input.channel === "wechat" && input.sessionId
+        ? { includePersonalMemory: false }
+        : undefined,
+    );
   } catch (err) {
     console.warn("[Cyrene] always-on context build failed:", err);
   }
 
   let relationshipContext = "";
   try {
-    relationshipContext = await deps.buildRelationshipContext();
+    relationshipContext = input.channel === "wechat" && input.sessionId
+      ? await deps.buildChannelRelationshipContext?.(input.sessionId) ?? ""
+      : await deps.buildRelationshipContext();
   } catch (err) {
     console.warn("[Cyrene] relationship context build failed:", err);
   }
@@ -409,10 +431,13 @@ export async function onAgentRunFinished(
   latestUserText: string,
   deps: OnRunFinishedDeps,
   channel?: "wechat" | "feishu",
+  conversationSessionId?: string,
 ): Promise<{ sticker: string | null }> {
   const chatContent = result.reply;
   const sideEffectUserText = stripTurnModelContextForSideEffects(latestUserText);
-  deps.scheduleMemoryWrite(sideEffectUserText, chatContent);
+  if (channel !== "wechat") {
+    deps.scheduleMemoryWrite(sideEffectUserText, chatContent);
+  }
 
   const settings = deps.loadModelSettings();
   const inferredStatus = deps.inferRuntimeState(sideEffectUserText, chatContent, false);
@@ -422,12 +447,17 @@ export async function onAgentRunFinished(
     updatedAt: Date.now(),
   });
 
-  await deps.recordRelationshipTurn({
+  const relationshipTurn: RelationshipTurnInput = {
     userText: sideEffectUserText,
     assistantText: chatContent,
     cyreneFeeling: deps.runtimeState.feeling ?? "平静",
     channel: channel ?? "desktop",
-  });
+  };
+  if (channel === "wechat" && conversationSessionId && deps.recordChannelRelationshipTurn) {
+    await deps.recordChannelRelationshipTurn(conversationSessionId, relationshipTurn);
+  } else {
+    await deps.recordRelationshipTurn(relationshipTurn);
+  }
 
   const stickerIndex = deps.getStickerEmbeddingIndex?.() ?? deps.stickerEmbeddingIndex;
   const stickerQuery = (chatContent + "\n" + sideEffectUserText).slice(0, 1000);

@@ -3,7 +3,12 @@ import { splitTextBySentenceBreaks } from "../../shared/message-segmentation";
 import type { ChannelManager } from "./manager";
 import { appendHistory as appendChannelHistory } from "./history-log";
 import { appendLog as appendChannelLog, type LogEntry } from "./message-log";
-import type { ChannelId, IncomingMessage, OutgoingMessage } from "./types";
+import type {
+  ChannelConversationIdentity,
+  ChannelId,
+  IncomingMessage,
+  OutgoingMessage,
+} from "./types";
 
 export type ProactiveMobileChannel = Extract<ChannelId, "wechat" | "feishu">;
 
@@ -12,27 +17,44 @@ export interface RecentProactiveChannelRecipient {
   threadId?: string;
   sessionId: string;
   updatedAt: number;
+  conversationIdentity?: ChannelConversationIdentity;
 }
 
 export interface ProactiveChannelRecipientRegistry {
   remember(message: IncomingMessage, sessionId: string): void;
-  get(channel: ProactiveMobileChannel): RecentProactiveChannelRecipient | null;
+  get(
+    channel: ProactiveMobileChannel,
+    conversationIdentity?: ChannelConversationIdentity,
+  ): RecentProactiveChannelRecipient | null;
 }
 
 export function createProactiveChannelRecipientRegistry(): ProactiveChannelRecipientRegistry {
   const recipients = new Map<ProactiveMobileChannel, RecentProactiveChannelRecipient>();
+  const wechatRecipients = new Map<string, RecentProactiveChannelRecipient>();
   return {
     remember(message, sessionId): void {
       const targetId = message.chatId.trim();
       if (!targetId || !sessionId) return;
-      recipients.set(message.channel, {
-        targetId,
+      const recipient: RecentProactiveChannelRecipient = {
+        targetId: message.channel === "wechat" && message.conversationIdentity
+          ? message.conversationIdentity.participantId
+          : targetId,
         ...(message.threadId ? { threadId: message.threadId } : {}),
         sessionId,
         updatedAt: message.at.getTime(),
-      });
+        ...(message.conversationIdentity
+          ? { conversationIdentity: { ...message.conversationIdentity } }
+          : {}),
+      };
+      recipients.set(message.channel, recipient);
+      if (message.channel === "wechat" && isExplicitWechatIdentity(message.conversationIdentity)) {
+        wechatRecipients.set(identityKey(message.conversationIdentity), recipient);
+      }
     },
-    get(channel): RecentProactiveChannelRecipient | null {
+    get(channel, conversationIdentity): RecentProactiveChannelRecipient | null {
+      if (channel === "wechat" && isExplicitWechatIdentity(conversationIdentity)) {
+        return wechatRecipients.get(identityKey(conversationIdentity)) ?? null;
+      }
       return recipients.get(channel) ?? null;
     },
   };
@@ -48,9 +70,14 @@ export function canStartProactiveChannelDelivery(
   channel: ProactiveMobileChannel,
   manager: Pick<ChannelManager, "getAdapter">,
   recipientRegistry: ProactiveChannelRecipientRegistry = defaultRecipientRegistry,
+  conversationIdentity?: ChannelConversationIdentity,
 ): boolean {
   const adapter = manager.getAdapter(channel);
-  return adapter?.getStatus().phase === "running" && recipientRegistry.get(channel) !== null;
+  if (channel === "wechat" && !isExplicitWechatIdentity(conversationIdentity)) return false;
+  const recipient = recipientRegistry.get(channel, conversationIdentity);
+  return adapter?.getStatus().phase === "running"
+    && recipient !== null
+    && (channel !== "wechat" || sameIdentity(recipient.conversationIdentity, conversationIdentity));
 }
 
 export type ProactiveChannelDeliveryResult =
@@ -66,6 +93,7 @@ interface ProactiveChannelDeliveryInput {
   appendHistory?: typeof appendChannelHistory;
   appendLog?: (entry: Omit<LogEntry, "at">) => void;
   canContinue?: () => boolean;
+  conversationIdentity?: ChannelConversationIdentity;
 }
 
 export async function sendProactiveChannelMessage(
@@ -76,8 +104,19 @@ export async function sendProactiveChannelMessage(
     return { kind: "cancelled", reason: "channel_offline" };
   }
 
-  const recipient = (input.recipientRegistry ?? defaultRecipientRegistry).get(input.channel);
+  if (input.channel === "wechat" && !isExplicitWechatIdentity(input.conversationIdentity)) {
+    return { kind: "cancelled", reason: "identity_required" };
+  }
+  const recipient = (input.recipientRegistry ?? defaultRecipientRegistry).get(
+    input.channel,
+    input.conversationIdentity,
+  );
   if (!recipient) return { kind: "cancelled", reason: "recipient_unavailable" };
+  if (input.channel === "wechat") {
+    if (!sameIdentity(recipient.conversationIdentity, input.conversationIdentity)) {
+      return { kind: "cancelled", reason: "recipient_unavailable" };
+    }
+  }
 
   const mode = normalizeMobileMessageSegmentationMode(input.mobileMessageSegmentation);
   const texts = mode === "on" ? splitTextBySentenceBreaks(input.text) : [input.text.trim()].filter(Boolean);
@@ -90,6 +129,10 @@ export async function sendProactiveChannelMessage(
     const message: OutgoingMessage = {
       channel: input.channel,
       targetId: recipient.targetId,
+      ...(input.channel === "wechat" && input.conversationIdentity ? {
+        connectionAccountId: input.conversationIdentity.connectionAccountId,
+        conversationIdentity: input.conversationIdentity,
+      } : {}),
       ...(recipient.threadId ? { threadId: recipient.threadId } : {}),
       parts: [{ kind: "text", text }],
     };
@@ -120,4 +163,27 @@ export async function sendProactiveChannelMessage(
     deliveredParts: deliveredTexts.length,
     totalParts: texts.length,
   };
+}
+
+function isExplicitWechatIdentity(
+  identity: ChannelConversationIdentity | undefined,
+): identity is ChannelConversationIdentity & { connectionAccountId: string } {
+  return identity?.channel === "wechat"
+    && typeof identity.connectionAccountId === "string"
+    && identity.connectionAccountId.length > 0
+    && identity.participantId.length > 0;
+}
+
+function sameIdentity(
+  left: ChannelConversationIdentity | undefined,
+  right: ChannelConversationIdentity | undefined,
+): boolean {
+  return Boolean(left && right
+    && left.channel === right.channel
+    && left.connectionAccountId === right.connectionAccountId
+    && left.participantId === right.participantId);
+}
+
+function identityKey(identity: ChannelConversationIdentity & { connectionAccountId: string }): string {
+  return `${identity.connectionAccountId}\0${identity.participantId}`;
 }

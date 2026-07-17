@@ -89,13 +89,14 @@ function getWorldbookTriggerText(userInput: string): string {
 export async function buildAlwaysOnContext(
   userInput: string,
   recentMessages: Array<{ role: string; content: string }>,
+  options: { includePersonalMemory?: boolean } = {},
 ): Promise<string> {
   const parts: string[] = [];
 
   // ── 世界书 — 永远跑 ──────────────────────────────────
   // DMAE：常驻始终注入；非常驻条目按 Activation 生命周期门控。
   // updateActivation 在调 LLM 之前跑 → 用户当轮命中的条目当轮就进 Prompt。
-  try {
+  if (options.includePersonalMemory !== false) try {
     const permanentWb = getPermanentWorldbookEntries();
     if (permanentWb.length > 0) {
       parts.push("【常驻背景】\n" + permanentWb.join("\n\n"));

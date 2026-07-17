@@ -2,9 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import {
   collectCharacterBlockingActivities,
   createElectronCharacterSwitchAdapters,
+  hasUncoordinatedAgentActivity,
 } from "./character-electron-switch";
 
 describe("Electron Character Switch lifecycle", () => {
+  it("微信在途回复由协调 seam 等待，其他 Agent 活动仍阻止切换", () => {
+    expect(hasUncoordinatedAgentActivity(2, 2)).toBe(false);
+    expect(hasUncoordinatedAgentActivity(3, 2)).toBe(true);
+    expect(hasUncoordinatedAgentActivity(0, 1)).toBe(false);
+  });
+
   it("reports concrete character-bound activities", () => {
     expect(collectCharacterBlockingActivities({
       agentBusy: true,

@@ -24,6 +24,13 @@ export interface ElectronCharacterSwitchDependencies {
   exit(code: number): void;
 }
 
+export function hasUncoordinatedAgentActivity(
+  activeConversationCount: number,
+  coordinatedWechatProcessingCount: number,
+): boolean {
+  return Math.max(0, activeConversationCount) > Math.max(0, coordinatedWechatProcessingCount);
+}
+
 export function collectCharacterBlockingActivities(
   activity: CharacterActivitySnapshot,
 ): CharacterBlockingActivity[] {

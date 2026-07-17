@@ -20,6 +20,7 @@ import {
 } from "./orchestrator/cyrene-agent";
 import { indexConversationTurn } from "./orchestrator/history-tools";
 import type { RelationshipChannel } from "./relationship/relationship-log";
+import type { ChannelConversationIdentity } from "./channels/types";
 
 /** 渲染进程发起 run 时传的输入。 */
 export interface AguiRunInput {
@@ -28,6 +29,8 @@ export interface AguiRunInput {
   sessionId?: string;    // 会话 ID，用于历史召回按会话隔离（可选，默认 "default"）
   /** 外部渠道入口。桌面聊天不传；微信/飞书用于注入渠道语气规则。 */
   channel?: RelationshipChannel;
+  /** 外部渠道的结构化连接账号与参与者身份。 */
+  conversationIdentity?: ChannelConversationIdentity;
   /** 本轮附件（文本内容，临时注入系统上下文，不存历史）。 */
   attachments?: { name: string; text: string }[];
   /** 本轮图片附件。主进程会安全读取并转成 OpenAI-compatible image_url content block。 */

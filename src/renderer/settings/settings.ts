@@ -33,6 +33,10 @@ import {
   type CharacterReplacementView,
   type CharacterSettingsSnapshot,
 } from "./character-settings-view";
+import {
+  renderWechatAccountListMarkup,
+  type WechatAccountSettingsViewItem,
+} from "./wechat-account-settings-view";
 
 // Inline modal (to avoid Vite tree-shaking)
 let _cyModalOverlay: HTMLElement | null = null;
@@ -445,8 +449,35 @@ interface SettingsApi {
   testVision?: (config: { baseUrl: string; apiKey: string; model: string }) => Promise<{ ok: boolean; latency: number; sample?: string; error?: string }>;
   // main → settings：要求切到指定标签（窗口已打开时由 main 发这个事件）
   onSwitchSection?: (callback: (section: string) => void) => (() => void) | void;
+  channelsGetConfig: () => Promise<Record<string, any>>;
+  channelsSaveConfig: (patch: unknown) => Promise<unknown>;
+  channelsRestart: () => Promise<{ ok: boolean }>;
   channelsGetStatus: () => Promise<Record<string, { phase?: string; message?: string }>>;
   onChannelsStatusChanged: (callback: (status: unknown) => void) => (() => void) | void;
+  onChannelsInstallProgress: (callback: (progress: { channel: string; phase: string; pct: number }) => void) => (() => void) | void;
+  channelsWechatLoginStart: () => Promise<{ ok: boolean; qrDataUrl?: string; error?: string }>;
+  channelsWechatLoginCancel: () => Promise<{ ok: boolean; error?: string }>;
+  channelsWechatLoginRefresh: () => Promise<{ ok: boolean; qrDataUrl?: string; error?: string }>;
+  channelsWechatLoginResult: () => Promise<{ loginSession?: WechatLoginSessionView }>;
+  channelsWechatAccountsList: () => Promise<WechatAccountSettingsViewItem[]>;
+  channelsWechatAccountRename: (ilinkBotId: string, label: string) => Promise<{ ok: boolean; error?: string }>;
+  channelsWechatAccountSetEnabled: (ilinkBotId: string, enabled: boolean) => Promise<{ ok: boolean; error?: string }>;
+  channelsWechatAccountReconnect: (ilinkBotId: string) => Promise<{ ok: boolean; error?: string }>;
+  channelsWechatAccountRescan: (ilinkBotId: string) => Promise<{ ok: boolean; qrDataUrl?: string; error?: string }>;
+  channelsWechatLogout: (ilinkBotId: string) => Promise<{ ok: boolean; error?: string }>;
+  channelsWechatAccountDelete: (ilinkBotId: string) => Promise<{ ok: boolean; error?: string }>;
+  onChannelsWechatQrcode: (callback: (dataUrl: string) => void) => (() => void) | void;
+  onChannelsWechatLoginDone: (callback: (payload: { ok: boolean; botId?: string; error?: string }) => void) => (() => void) | void;
+  onChannelsWechatLoginState: (callback: (payload: WechatLoginSessionView) => void) => (() => void) | void;
+  channelsLogGet: (limit?: number) => Promise<unknown[]>;
+  channelsLogClear: () => Promise<{ ok: boolean }>;
+}
+
+interface WechatLoginSessionView {
+  state: "idle" | "waiting" | "confirmed" | "cancelled" | "expired" | "error";
+  qrDataUrl?: string;
+  ilinkBotId?: string;
+  error?: string;
 }
 
 declare global {
@@ -594,8 +625,37 @@ if (!window.settings) {
       proactiveDeliveryTarget: "local",
     }),
     saveGeneral: (c) => Promise.resolve(c as GeneralSettings),
+    channelsGetConfig: () => Promise.resolve({
+      wechat: { enabled: false },
+      feishu: { enabled: false },
+      rateLimitPerUser: 10,
+      rateLimitPerChannel: 100,
+      ttsEnabled: true,
+      stickerEnabled: true,
+      mirrorToDesktop: true,
+      toolSandbox: "safe-only",
+    }),
+    channelsSaveConfig: async (patch) => patch,
+    channelsRestart: async () => ({ ok: true }),
     channelsGetStatus: () => Promise.resolve({}),
     onChannelsStatusChanged: () => () => {},
+    onChannelsInstallProgress: () => () => {},
+    channelsWechatLoginStart: async () => ({ ok: false, error: "请在 Cyrene 应用中扫码" }),
+    channelsWechatLoginCancel: async () => ({ ok: true }),
+    channelsWechatLoginRefresh: async () => ({ ok: false, error: "请在 Cyrene 应用中扫码" }),
+    channelsWechatLoginResult: async () => ({ loginSession: { state: "idle" } }),
+    channelsWechatAccountsList: async () => [],
+    channelsWechatAccountRename: async () => ({ ok: false, error: "settings api unavailable" }),
+    channelsWechatAccountSetEnabled: async () => ({ ok: false, error: "settings api unavailable" }),
+    channelsWechatAccountReconnect: async () => ({ ok: false, error: "settings api unavailable" }),
+    channelsWechatAccountRescan: async () => ({ ok: false, error: "settings api unavailable" }),
+    channelsWechatLogout: async () => ({ ok: false, error: "settings api unavailable" }),
+    channelsWechatAccountDelete: async () => ({ ok: false, error: "settings api unavailable" }),
+    onChannelsWechatQrcode: () => () => {},
+    onChannelsWechatLoginDone: () => () => {},
+    onChannelsWechatLoginState: () => () => {},
+    channelsLogGet: async () => [],
+    channelsLogClear: async () => ({ ok: true }),
     openSidebar: () => {},
     closeSidebar: () => {},
     openTasks: () => {},
@@ -2979,12 +3039,24 @@ const channelsFeishuAppSecretRevealBtn = document.getElementById("channels-feish
 const channelsFeishuSaveBtn = document.getElementById("channels-feishu-save");
 // 微信按钮
 const channelsWechatLoginBtn = document.getElementById("channels-wechat-login");
-const channelsWechatRestartBtn = document.getElementById("channels-wechat-restart");
+const channelsWechatAccountsEl = document.getElementById("channels-wechat-accounts");
 const channelsWechatFeedbackEl = document.getElementById("channels-wechat-feedback");
 const channelsFeishuFeedbackEl = document.getElementById("channels-feishu-feedback");
 
 let channelsInitialized = false;
 let channelsSaveTimer: number | null = null;
+let wechatAccounts: WechatAccountSettingsViewItem[] = [];
+
+async function refreshWechatAccounts(): Promise<void> {
+  if (!channelsWechatAccountsEl) return;
+  try {
+    wechatAccounts = await window.settings.channelsWechatAccountsList();
+    channelsWechatAccountsEl.innerHTML = renderWechatAccountListMarkup(wechatAccounts);
+  } catch (error) {
+    channelsWechatAccountsEl.innerHTML = '<p class="wechat-account-empty">微信账号读取失败，请稍后重试。</p>';
+    console.warn("[WechatSettings] 读取账号失败:", error);
+  }
+}
 
 function renderChannelStatus(el: HTMLElement | null, phase: string, message?: string): void {
   if (!el) return;
@@ -3030,6 +3102,7 @@ async function loadChannelsPanel(): Promise<void> {
     renderProactiveDeliveryAvailability(status);
     renderChannelStatus(channelsWechatStatusEl, status.wechat?.phase ?? "offline", status.wechat?.message);
     renderChannelStatus(channelsFeishuStatusEl, status.feishu?.phase ?? "offline", status.feishu?.message);
+    await refreshWechatAccounts();
     // Phase 3.4：拉一次消息日志
     void refreshChannelsLog();
   } catch (err) {
@@ -3041,7 +3114,6 @@ async function loadChannelsPanel(): Promise<void> {
     if (channelsSaveTimer != null) window.clearTimeout(channelsSaveTimer);
     channelsSaveTimer = window.setTimeout(() => {
       void window.settings.channelsSaveConfig({
-        wechat: { enabled: channelsWechatEnabledEl?.checked ?? false },
         feishu: { enabled: channelsFeishuEnabledEl?.checked ?? false },
         rateLimitPerUser: Number(channelsRateUserEl?.value) || 10,
         rateLimitPerChannel: Number(channelsRateChannelEl?.value) || 100,
@@ -3076,6 +3148,7 @@ async function loadChannelsPanel(): Promise<void> {
     renderProactiveDeliveryAvailability(s);
     renderChannelStatus(channelsWechatStatusEl, s.wechat?.phase ?? "offline", s.wechat?.message);
     renderChannelStatus(channelsFeishuStatusEl, s.feishu?.phase ?? "offline", s.feishu?.message);
+    void refreshWechatAccounts();
   });
 
   // ===== 飞书交互（Phase 2 长连接版） =====
@@ -3130,6 +3203,8 @@ async function loadChannelsPanel(): Promise<void> {
   const channelsWechatQrEl = document.getElementById("channels-wechat-qr");
   const channelsWechatQrImgEl = document.getElementById("channels-wechat-qr-img") as HTMLImageElement | null;
   const channelsWechatQrCloseBtn = document.getElementById("channels-wechat-qr-close");
+  const channelsWechatQrCancelBtn = document.getElementById("channels-wechat-qr-cancel");
+  const channelsWechatQrRefreshBtn = document.getElementById("channels-wechat-qr-refresh");
   const channelsWechatQrBackdrop = document.getElementById("channels-wechat-qr-backdrop");
 
   function showWechatQr(dataUrl: string): void {
@@ -3144,6 +3219,29 @@ async function loadChannelsPanel(): Promise<void> {
     if (channelsWechatQrImgEl) {
       channelsWechatQrImgEl.src = "";
       channelsWechatQrImgEl.classList.add("is-empty");
+    }
+  }
+
+  function applyWechatLoginSession(session: WechatLoginSessionView | undefined): void {
+    if (!session) return;
+    if (session.state === "waiting" && session.qrDataUrl) {
+      showWechatQr(session.qrDataUrl);
+      setWechatFeedback("info", "等待扫码确认。隐藏二维码不会取消本次登录。 ");
+      return;
+    }
+    if (session.state === "confirmed") {
+      hideWechatQr();
+      setWechatFeedback("ok", "微信账号登录成功");
+      void refreshWechatAccounts();
+      return;
+    }
+    if (session.state === "expired" || session.state === "error") {
+      setWechatFeedback("err", session.error ?? "二维码已失效，请刷新后重试");
+      return;
+    }
+    if (session.state === "cancelled") {
+      hideWechatQr();
+      setWechatFeedback("info", "已取消扫码登录");
     }
   }
 
@@ -3164,13 +3262,18 @@ async function loadChannelsPanel(): Promise<void> {
   });
   // 订阅 Main 推送的登录结果（成功 / 失败 / 二维码过期）
   window.settings.onChannelsWechatLoginDone((payload) => {
-    hideWechatQr();
     if (payload.ok) {
-      setWechatFeedback("ok", `已登录（botId=${payload.botId ?? "?"}）`);
+      hideWechatQr();
+      setWechatFeedback("ok", "微信账号登录成功");
+      void refreshWechatAccounts();
     } else {
       setWechatFeedback("err", `登录失败：${payload.error ?? "未知错误"}`);
     }
   });
+  window.settings.onChannelsWechatLoginState(applyWechatLoginSession);
+  void window.settings.channelsWechatLoginResult()
+    .then((result) => applyWechatLoginSession(result.loginSession))
+    .catch((error) => console.warn("[WechatSettings] 恢复扫码状态失败:", error));
 
   channelsWechatLoginBtn?.addEventListener("click", async () => {
     hideWechatQr();
@@ -3178,8 +3281,8 @@ async function loadChannelsPanel(): Promise<void> {
     try {
       const result = await window.settings.channelsWechatLoginStart();
       if (result.ok) {
-        // 二维码由 onChannelsWechatQrcode 推过来并显示；这里只刷个轻提示
-        setWechatFeedback("info", "等待二维码推送…");
+        if (result.qrDataUrl) showWechatQr(result.qrDataUrl);
+        setWechatFeedback("info", "请用微信扫描二维码");
       } else {
         setWechatFeedback("err", result.error ?? "启动失败");
       }
@@ -3188,14 +3291,99 @@ async function loadChannelsPanel(): Promise<void> {
     }
   });
 
-  // 重启连接
-  channelsWechatRestartBtn?.addEventListener("click", async () => {
-    setWechatFeedback("info", "重启连接中…");
+  channelsWechatQrCancelBtn?.addEventListener("click", async () => {
     try {
-      await window.settings.channelsRestart();
-      setWechatFeedback("ok", "已重启");
+      const result = await window.settings.channelsWechatLoginCancel();
+      if (!result.ok) throw new Error(result.error ?? "取消扫码失败");
+      hideWechatQr();
+      setWechatFeedback("info", "已取消扫码登录");
     } catch (err) {
       setWechatFeedback("err", err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  channelsWechatQrRefreshBtn?.addEventListener("click", async () => {
+    setWechatFeedback("info", "正在刷新二维码…");
+    try {
+      const result = await window.settings.channelsWechatLoginRefresh();
+      if (!result.ok) throw new Error(result.error ?? "刷新二维码失败");
+      if (result.qrDataUrl) showWechatQr(result.qrDataUrl);
+      setWechatFeedback("info", "二维码已刷新，请重新扫描");
+    } catch (err) {
+      setWechatFeedback("err", err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  channelsWechatAccountsEl?.addEventListener("click", async (event) => {
+    const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>("[data-wechat-action]");
+    const article = button?.closest<HTMLElement>("[data-account-index]");
+    if (!button || !article) return;
+    const account = wechatAccounts[Number(article.dataset.accountIndex)];
+    if (!account) return;
+    const action = button.dataset.wechatAction;
+    const renameInput = article.querySelector<HTMLInputElement>("[data-wechat-rename-input]");
+    if (action === "rename") {
+      article.classList.add("is-renaming");
+      renameInput?.focus();
+      renameInput?.select();
+      return;
+    }
+    if (action === "rename-cancel") {
+      if (renameInput) renameInput.value = account.label;
+      article.classList.remove("is-renaming");
+      return;
+    }
+    button.disabled = true;
+    try {
+      let result: { ok: boolean; error?: string; qrDataUrl?: string };
+      if (action === "rename-save") {
+        const label = renameInput?.value.trim() ?? "";
+        if (!label) {
+          setWechatFeedback("err", "微信账号备注不能为空");
+          renameInput?.focus();
+          return;
+        }
+        if (label === account.label) {
+          article.classList.remove("is-renaming");
+          return;
+        }
+        result = await window.settings.channelsWechatAccountRename(account.ilinkBotId, label);
+      } else if (action === "toggle") {
+        result = await window.settings.channelsWechatAccountSetEnabled(account.ilinkBotId, !account.enabled);
+      } else if (action === "reconnect") {
+        result = await window.settings.channelsWechatAccountReconnect(account.ilinkBotId);
+      } else if (action === "rescan") {
+        result = await window.settings.channelsWechatAccountRescan(account.ilinkBotId);
+        if (result.qrDataUrl) showWechatQr(result.qrDataUrl);
+      } else if (action === "logout") {
+        if (!window.confirm(`退出“${account.label}”的微信登录？\n账号条目和历史归档会保留，之后可以重新扫码。`)) return;
+        result = await window.settings.channelsWechatLogout(account.ilinkBotId);
+      } else if (action === "delete") {
+        if (!window.confirm(`删除微信账号“${account.label}”？\n账号配置和登录凭据会被删除，历史归档不会永久清除。`)) return;
+        result = await window.settings.channelsWechatAccountDelete(account.ilinkBotId);
+      } else {
+        return;
+      }
+      if (!result.ok) throw new Error(result.error ?? "微信账号操作失败");
+      setWechatFeedback("ok", action === "delete" ? "账号已删除" : "账号设置已更新");
+      await refreshWechatAccounts();
+    } catch (error) {
+      setWechatFeedback("err", error instanceof Error ? error.message : String(error));
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  channelsWechatAccountsEl?.addEventListener("keydown", (event) => {
+    const input = (event.target as HTMLElement | null)?.closest<HTMLInputElement>("[data-wechat-rename-input]");
+    if (!input) return;
+    const article = input.closest<HTMLElement>("[data-account-index]");
+    if (event.key === "Enter") {
+      event.preventDefault();
+      article?.querySelector<HTMLButtonElement>('[data-wechat-action="rename-save"]')?.click();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      article?.querySelector<HTMLButtonElement>('[data-wechat-action="rename-cancel"]')?.click();
     }
   });
 }

@@ -6,6 +6,12 @@ import {
 } from "./proactive-delivery";
 import type { ChannelCapability, IncomingMessage } from "./types";
 
+const wechatIdentity = {
+  channel: "wechat" as const,
+  connectionAccountId: "account-a@im.wechat",
+  participantId: "wx-1",
+};
+
 const capability: ChannelCapability = {
   text: true,
   image: true,
@@ -19,7 +25,13 @@ const capability: ChannelCapability = {
 };
 
 function incoming(channel: "wechat" | "feishu", senderId: string, chatId = senderId): IncomingMessage {
-  return { channel, senderId, chatId, text: "你好", at: new Date() };
+  return {
+    channel, senderId, chatId, text: "你好", at: new Date(),
+    ...(channel === "wechat" ? {
+      connectionAccountId: wechatIdentity.connectionAccountId,
+      conversationIdentity: { ...wechatIdentity, participantId: senderId },
+    } : {}),
+  };
 }
 
 function fakeAdapter(phase: "running" | "offline" = "running"): ChannelAdapter {
@@ -47,7 +59,11 @@ describe("proactive channel delivery", () => {
     registry.remember(incoming("feishu", "fs-1"), "session-fs-1");
     registry.remember(incoming("wechat", "wx-2", "wx-chat-2"), "session-wx-2");
 
-    expect(registry.get("wechat")).toMatchObject({ targetId: "wx-chat-2", sessionId: "session-wx-2" });
+    expect(registry.get("wechat")).toMatchObject({
+      targetId: "wx-2",
+      sessionId: "session-wx-2",
+      conversationIdentity: expect.objectContaining({ participantId: "wx-2" }),
+    });
     expect(registry.get("feishu")).toMatchObject({ targetId: "fs-1", sessionId: "session-fs-1" });
   });
 
@@ -61,6 +77,7 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "on",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
       appendHistory: vi.fn(),
       appendLog: vi.fn(),
     });
@@ -77,12 +94,59 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "off",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
       appendHistory: vi.fn(),
       appendLog: vi.fn(),
     });
 
     expect(result).toEqual({ kind: "cancelled", reason: "recipient_unavailable" });
     expect(adapter.send).not.toHaveBeenCalled();
+  });
+
+  it("微信主动发送没有显式账号与绑定者时安全取消", async () => {
+    const adapter = fakeAdapter();
+    registry.remember(incoming("wechat", "wx-1"), "session-wx-1");
+    const result = await sendProactiveChannelMessage({
+      channel: "wechat",
+      text: "不能隐式发送",
+      mobileMessageSegmentation: "off",
+      manager: { getAdapter: () => adapter },
+      recipientRegistry: registry,
+    });
+    expect(result).toEqual({ kind: "cancelled", reason: "identity_required" });
+    expect(adapter.send).not.toHaveBeenCalled();
+  });
+
+  it("多账号主动发送按显式身份查找，不受最近消息账号影响", async () => {
+    const adapter = fakeAdapter();
+    const identityB = {
+      channel: "wechat" as const,
+      connectionAccountId: "account-b@im.wechat",
+      participantId: "wx-2",
+    };
+    registry.remember(incoming("wechat", "wx-1"), "session-wx-1");
+    registry.remember({
+      ...incoming("wechat", "wx-2"),
+      connectionAccountId: identityB.connectionAccountId,
+      conversationIdentity: identityB,
+    }, "session-wx-2");
+
+    const result = await sendProactiveChannelMessage({
+      channel: "wechat",
+      text: "发给 A",
+      mobileMessageSegmentation: "off",
+      manager: { getAdapter: () => adapter },
+      recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
+      appendHistory: vi.fn(),
+      appendLog: vi.fn(),
+    });
+
+    expect(result).toMatchObject({ kind: "committed" });
+    expect(adapter.send).toHaveBeenCalledWith(expect.objectContaining({
+      connectionAccountId: wechatIdentity.connectionAccountId,
+      targetId: wechatIdentity.participantId,
+    }));
   });
 
   it("sends one complete text part when segmentation is off", async () => {
@@ -95,6 +159,7 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "off",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
       appendHistory: vi.fn(),
       appendLog: vi.fn(),
     });
@@ -102,6 +167,8 @@ describe("proactive channel delivery", () => {
     expect(result).toEqual({ kind: "committed", deliveredParts: 1, totalParts: 1 });
     expect(adapter.send).toHaveBeenCalledWith({
       channel: "wechat",
+      connectionAccountId: wechatIdentity.connectionAccountId,
+      conversationIdentity: wechatIdentity,
       targetId: "wx-1",
       parts: [{ kind: "text", text: "第一句。第二句？" }],
     });
@@ -124,6 +191,7 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "on",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
       appendHistory: vi.fn(),
       appendLog: vi.fn(),
     });
@@ -145,6 +213,7 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "on",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
     });
     expect(failed).toEqual({ kind: "cancelled", reason: "send_failed" });
 
@@ -160,6 +229,7 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "on",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
       appendHistory,
       appendLog,
     });
@@ -184,6 +254,7 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "on",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
       appendHistory: vi.fn(),
       appendLog: vi.fn(),
       canContinue: () => allowed,
@@ -207,6 +278,7 @@ describe("proactive channel delivery", () => {
       mobileMessageSegmentation: "on",
       manager: { getAdapter: () => adapter },
       recipientRegistry: registry,
+      conversationIdentity: wechatIdentity,
       appendHistory: vi.fn(),
       appendLog: vi.fn(),
     });

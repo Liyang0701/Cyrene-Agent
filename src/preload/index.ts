@@ -273,9 +273,22 @@ const settingsApi = {
   channelsWechatInstall: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_INSTALL),
   channelsWechatLoginStart: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_LOGIN_START),
   channelsWechatLoginCancel: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_LOGIN_CANCEL),
+  channelsWechatLoginRefresh: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_LOGIN_REFRESH),
+  channelsWechatLoginResult: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_LOGIN_RESULT),
+  channelsWechatAccountsList: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_ACCOUNTS_LIST),
+  channelsWechatAccountRename: (ilinkBotId: string, label: string) =>
+    ipcRenderer.invoke(IPC.CHANNELS_WECHAT_ACCOUNT_RENAME, { ilinkBotId, label }),
+  channelsWechatAccountSetEnabled: (ilinkBotId: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC.CHANNELS_WECHAT_ACCOUNT_SET_ENABLED, { ilinkBotId, enabled }),
+  channelsWechatAccountReconnect: (ilinkBotId: string) =>
+    ipcRenderer.invoke(IPC.CHANNELS_WECHAT_ACCOUNT_RECONNECT, ilinkBotId),
+  channelsWechatAccountRescan: (ilinkBotId: string) =>
+    ipcRenderer.invoke(IPC.CHANNELS_WECHAT_ACCOUNT_RESCAN, ilinkBotId),
+  channelsWechatAccountDelete: (ilinkBotId: string) =>
+    ipcRenderer.invoke(IPC.CHANNELS_WECHAT_ACCOUNT_DELETE, ilinkBotId),
   channelsWechatPairingList: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_PAIRING_LIST),
   channelsWechatPairingApprove: (code: string) => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_PAIRING_APPROVE, code),
-  channelsWechatLogout: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_LOGOUT),
+  channelsWechatLogout: (ilinkBotId: string) => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_LOGOUT, ilinkBotId),
   channelsWechatRuntimeDetect: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_RUNTIME_DETECT),
   channelsWechatRuntimeInstall: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_RUNTIME_INSTALL),
   channelsWechatRuntimeUpdate: () => ipcRenderer.invoke(IPC.CHANNELS_WECHAT_RUNTIME_UPDATE),
@@ -305,6 +318,11 @@ const settingsApi = {
     const listener = (_e: unknown, payload: { ok: boolean; botId?: string; error?: string }) => callback(payload);
     ipcRenderer.on(IPC.CHANNELS_WECHAT_LOGIN_DONE, listener);
     return () => ipcRenderer.off(IPC.CHANNELS_WECHAT_LOGIN_DONE, listener);
+  },
+  onChannelsWechatLoginState: (callback: (payload: unknown) => void) => {
+    const listener = (_e: unknown, payload: unknown) => callback(payload);
+    ipcRenderer.on(IPC.CHANNELS_WECHAT_LOGIN_STATE, listener);
+    return () => ipcRenderer.off(IPC.CHANNELS_WECHAT_LOGIN_STATE, listener);
   },
   // 权限档位
   getPermissionLevel: () => ipcRenderer.invoke(IPC.PERMISSION_GET_LEVEL),

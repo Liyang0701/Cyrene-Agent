@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ILinkBotAdapter } from "./ilink-bot-adapter";
 import type { OutgoingMessage } from "../../types";
+import type { IncomingMessage } from "../../types";
+import type { WechatAccountRecord } from "./wechat-account-store";
 
 vi.mock("electron", () => ({
   app: {
@@ -17,6 +19,50 @@ function message(parts: OutgoingMessage["parts"]): OutgoingMessage {
 }
 
 describe("ILinkBotAdapter.send", () => {
+  it("显式微信出站缺少账号、账号离线或绑定者不匹配时不回退默认 client", async () => {
+    const adapter = new ILinkBotAdapter();
+    const defaultSend = vi.fn(async () => ({ ok: true }));
+    (adapter as any).client = { sendText: defaultSend };
+    (adapter as any).replyContextByTarget.set("owner-a@im.wechat", "legacy-context");
+
+    const missingAccount = await adapter.send({
+      channel: "wechat",
+      connectionAccountId: "missing@im.wechat",
+      conversationIdentity: {
+        channel: "wechat",
+        connectionAccountId: "missing@im.wechat",
+        participantId: "owner-a@im.wechat",
+      },
+      targetId: "owner-a@im.wechat",
+      parts: [{ kind: "text", text: "不能回退" }],
+    });
+    expect(missingAccount).toEqual({ ok: false, error: "指定的微信账号未连接" });
+
+    const accountSend = vi.fn(async () => ({ ok: true }));
+    (adapter as any).clientsByAccount.set("account-a@im.wechat", { sendText: accountSend });
+    (adapter as any).credentialsByAccount.set("account-a@im.wechat", {
+      ilinkBotId: "account-a@im.wechat",
+      ilinkUserId: "owner-a@im.wechat",
+      botToken: "token",
+      baseUrl: "https://example.test",
+    });
+    (adapter as any).replyContextByAccountTarget.set("account-a@im.wechat\0owner-a@im.wechat", "ctx-a");
+    const mismatch = await adapter.send({
+      channel: "wechat",
+      connectionAccountId: "account-a@im.wechat",
+      conversationIdentity: {
+        channel: "wechat",
+        connectionAccountId: "account-a@im.wechat",
+        participantId: "other-owner@im.wechat",
+      },
+      targetId: "other-owner@im.wechat",
+      parts: [{ kind: "text", text: "不能串号" }],
+    });
+    expect(mismatch).toEqual({ ok: false, error: "微信绑定者身份不匹配" });
+    expect(defaultSend).not.toHaveBeenCalled();
+    expect(accountSend).not.toHaveBeenCalled();
+  });
+
   it("sends text replies through the protocol client with the cached context token", async () => {
     const adapter = new ILinkBotAdapter();
     const sendText = vi.fn(async () => ({ ok: true }));
@@ -186,6 +232,88 @@ describe("ILinkBotAdapter.send", () => {
         },
       },
     ], "ctx-1");
+  });
+
+  it("相同联系人跨两个连接账号时保留独立身份、client 和 context token", async () => {
+    const adapter = new ILinkBotAdapter();
+    const sendTextA = vi.fn(async () => ({ ok: true }));
+    const sendTextB = vi.fn(async () => ({ ok: true }));
+    const clientA = { sendText: sendTextA };
+    const clientB = { sendText: sendTextB };
+    const accountA: WechatAccountRecord = {
+      ilinkBotId: "route-a@im.wechat",
+      label: "路由甲",
+      enabled: true,
+      credentialStatus: "available",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const accountB: WechatAccountRecord = { ...accountA, ilinkBotId: "route-b@im.wechat", label: "路由乙" };
+    const incoming: IncomingMessage[] = [];
+    adapter.onMessage = async (msg) => {
+      incoming.push(msg);
+      return null;
+    };
+    (adapter as any).clientsByAccount.set(accountA.ilinkBotId, clientA);
+    (adapter as any).clientsByAccount.set(accountB.ilinkBotId, clientB);
+    (adapter as any).credentialsByAccount.set(accountA.ilinkBotId, {
+      ilinkBotId: accountA.ilinkBotId,
+      ilinkUserId: "same-owner@im.wechat",
+      botToken: "token-a",
+      baseUrl: "https://example.test",
+    });
+    (adapter as any).credentialsByAccount.set(accountB.ilinkBotId, {
+      ilinkBotId: accountB.ilinkBotId,
+      ilinkUserId: "same-owner@im.wechat",
+      botToken: "token-b",
+      baseUrl: "https://example.test",
+    });
+
+    const inbound = (contextToken: string) => ({
+      msgId: contextToken,
+      fromUserId: "same-owner@im.wechat",
+      toUserId: "bot@im.wechat",
+      msgType: 1,
+      content: "你好",
+      items: [{ type: 1, text_item: { text: "你好" } }],
+      contextToken,
+      raw: {},
+    });
+    await (adapter as any).dispatchInbound(inbound("context-a"), clientA, accountA);
+    await (adapter as any).dispatchInbound(inbound("context-b"), clientB, accountB);
+
+    expect(incoming.map((msg) => msg.conversationIdentity)).toEqual([
+      {
+        channel: "wechat",
+        connectionAccountId: accountA.ilinkBotId,
+        participantId: "same-owner@im.wechat",
+      },
+      {
+        channel: "wechat",
+        connectionAccountId: accountB.ilinkBotId,
+        participantId: "same-owner@im.wechat",
+      },
+    ]);
+
+    for (const [account, text] of [
+      [accountA, "甲回复"],
+      [accountB, "乙回复"],
+    ] as const) {
+      await adapter.send({
+        channel: "wechat",
+        connectionAccountId: account.ilinkBotId,
+        conversationIdentity: {
+          channel: "wechat",
+          connectionAccountId: account.ilinkBotId,
+          participantId: "same-owner@im.wechat",
+        },
+        targetId: "same-owner@im.wechat",
+        parts: [{ kind: "text", text }],
+      });
+    }
+
+    expect(sendTextA).toHaveBeenCalledWith("same-owner@im.wechat", "甲回复", "context-a");
+    expect(sendTextB).toHaveBeenCalledWith("same-owner@im.wechat", "乙回复", "context-b");
   });
 });
 
@@ -391,6 +519,67 @@ describe("ILinkBotAdapter inbound media", () => {
       "ctx-video",
     );
     expect(onMessage).not.toHaveBeenCalled();
+  });
+
+  it("不同连接账号不会共享同一联系人 ID 的待保存媒体状态", async () => {
+    const adapter = new ILinkBotAdapter();
+    const sendText = vi.fn(async () => ({ ok: true }));
+    const client = { sendText };
+    (adapter as any).onMessage = vi.fn(async () => null);
+    (adapter as any).client = client;
+    (adapter as any).saveInboundMedia = vi.fn(async () => "/tmp/should-not-save.mp4");
+    const accountA: WechatAccountRecord = {
+      ilinkBotId: "media-a@im.wechat",
+      label: "媒体甲",
+      enabled: true,
+      credentialStatus: "available",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const accountB: WechatAccountRecord = { ...accountA, ilinkBotId: "media-b@im.wechat", label: "媒体乙" };
+
+    await (adapter as any).dispatchInbound(
+      {
+        msgId: "video-a",
+        fromUserId: "same-owner@im.wechat",
+        toUserId: "bot-a",
+        msgType: 1,
+        content: "",
+        items: [
+          {
+            type: 5,
+            video_item: {
+              file_name: "private-a.mp4",
+              media: {
+                encrypt_query_param: "download-param-a",
+                aes_key: "MDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY=",
+                encrypt_type: 1,
+              },
+            },
+          },
+        ],
+        contextToken: "context-a",
+        raw: {},
+      },
+      client,
+      accountA,
+    );
+    await (adapter as any).dispatchInbound(
+      {
+        msgId: "save-b",
+        fromUserId: "same-owner@im.wechat",
+        toUserId: "bot-b",
+        msgType: 1,
+        content: "保存到桌面",
+        items: [{ type: 1, text_item: { text: "保存到桌面" } }],
+        contextToken: "context-b",
+        raw: {},
+      },
+      client,
+      accountB,
+    );
+
+    expect((adapter as any).saveInboundMedia).not.toHaveBeenCalled();
   });
 
   it("saves an analyzable file instead of dispatching it when a save intent is already pending", async () => {

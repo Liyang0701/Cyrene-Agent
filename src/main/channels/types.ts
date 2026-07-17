@@ -10,6 +10,14 @@ import type { WebContents } from "electron";
 /** 渠道 id 联合类型。新增渠道时在此扩展。 */
 export type ChannelId = "wechat" | "feishu";
 
+export interface ChannelConversationIdentity {
+  channel: ChannelId;
+  /** 连接账号身份；微信多账号场景必填，单账号渠道可省略。 */
+  connectionAccountId?: string;
+  /** 渠道内参与者身份，例如微信扫码绑定者 ilinkUserId。 */
+  participantId: string;
+}
+
 /** 渠道能力声明。Dispatcher 按 cap 做降级。 */
 export interface ChannelCapability {
   /** 纯文本消息 */
@@ -46,6 +54,10 @@ export interface ChannelAttachment {
 /** 入站消息。adapters → dispatcher。 */
 export interface IncomingMessage {
   channel: ChannelId;
+  /** 消息来自哪个渠道连接账号。微信多账号场景必填。 */
+  connectionAccountId?: string;
+  /** 用于 session、历史、记忆和权限隔离的结构化身份。 */
+  conversationIdentity?: ChannelConversationIdentity;
   /** 平台原始 sender id。dispatcher 会 sha256 截断成 16 字符作为 sessionId。 */
   senderId: string;
   /** 显示名（昵称/open_id alias），用于日志/UI。 */
@@ -79,6 +91,10 @@ export type OutgoingPart =
 /** 出站消息。dispatcher → adapters。 */
 export interface OutgoingMessage {
   channel: ChannelId;
+  /** 回复或主动发送所使用的渠道连接账号。 */
+  connectionAccountId?: string;
+  /** 原入站消息的结构化对话身份。 */
+  conversationIdentity?: ChannelConversationIdentity;
   /** 回复给谁（私聊 = senderId；群聊 = chatId） */
   targetId: string;
   threadId?: string;

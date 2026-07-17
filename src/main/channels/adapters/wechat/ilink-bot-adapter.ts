@@ -6,7 +6,8 @@
 //           └─ adapter.onMessage() → dispatcher → buildAndRunAgent → OutgoingMessage
 //                 └─ ILinkClient.sendText() → POST /sendmessage → 微信
 //
-// 凭据存盘：<userData>/weixin/<botId>.json
+// 凭据存盘：<userData>/weixin/accounts/credentials/<botId-hash>.bin
+// 敏感字段由 Electron safeStorage 设备绑定加密。
 // （首次运行需在 UI 点"扫码登录"生成；之后自动续用）
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -15,7 +16,6 @@ import {
   ILinkClient,
   MediaType,
   pollQrStatus,
-  SessionExpiredError,
   type CDNMedia,
   type Credentials,
   type SendMessageItem,
@@ -50,6 +50,17 @@ import type {
 } from "../../types";
 import type { ChannelAdapter } from "../base";
 import { loadChannelsSettings, saveChannelsSettings } from "../../settings-store";
+import { getWechatAccountRepository } from "./wechat-account-runtime";
+import {
+  WechatAccountConnectionPool,
+  type WechatAccountSource,
+} from "./wechat-account-connection-pool";
+import type { WechatAccountRecord } from "./wechat-account-store";
+import { createWechatConversationIdentity } from "./wechat-conversation-identity";
+import type {
+  WechatPendingInboundEntry,
+  WechatPendingInboundStore,
+} from "./wechat-pending-inbound-store";
 
 const LOG_PREFIX = "[WechatBot]";
 const USER_PROFILE_FILE = "user-profile.json";
@@ -89,13 +100,22 @@ export class ILinkBotAdapter implements ChannelAdapter {
   onMessage: MessageHandler | null = null;
 
   private client: ILinkClient | null = null;
-  private pollAbort: AbortController | null = null;
-  private pollLoopPromise: Promise<void> | null = null;
+  private readonly clientsByAccount = new Map<string, ILinkClient>();
+  private readonly credentialsByAccount = new Map<string, Credentials>();
+  private connectionPool: WechatAccountConnectionPool | null = null;
+  private readonly accountRepository: WechatAccountSource & {
+    save?: (credentials: Credentials) => Promise<WechatAccountRecord>;
+    clearCredentials?: (ilinkBotId: string) => Promise<void>;
+    removeAccount?: (ilinkBotId: string) => Promise<void>;
+  };
+  private readonly createClient: (credentials: Credentials) => ILinkClient;
   /** 账号是否已登录（凭证存在） */
   isLoggedIn = false;
   /** 当前 credentials（动态加载） */
   currentCredentials: Credentials | null = null;
   private replyContextByTarget = new Map<string, string>();
+  private replyAccountByTarget = new Map<string, string>();
+  private replyContextByAccountTarget = new Map<string, string>();
   private pendingSaveIntentByTarget = new Map<string, number>();
   private pendingUnsupportedMediaByTarget = new Map<string, PendingInboundMedia>();
   private uploadMedia = uploadWechatMediaFile;
@@ -104,8 +124,27 @@ export class ILinkBotAdapter implements ChannelAdapter {
   private saveInboundMedia = saveInboundWechatMedia;
   private transcribeVoice = transcribeInboundWechatVoice;
   private isAsrConfigured = isWechatAsrConfigured;
+  private readonly pendingInboundStore: Pick<
+    WechatPendingInboundStore,
+    "save" | "list" | "complete"
+  > | null;
+  private readonly activePendingInbound = new Set<string>();
 
   status: ChannelStatus = { enabled: false, phase: "offline" };
+
+  constructor(options: {
+    accountRepository?: WechatAccountSource & {
+      save?: (credentials: Credentials) => Promise<WechatAccountRecord>;
+      clearCredentials?: (ilinkBotId: string) => Promise<void>;
+      removeAccount?: (ilinkBotId: string) => Promise<void>;
+    };
+    createClient?: (credentials: Credentials) => ILinkClient;
+    pendingInboundStore?: Pick<WechatPendingInboundStore, "save" | "list" | "complete">;
+  } = {}) {
+    this.accountRepository = options.accountRepository ?? getWechatAccountRepository();
+    this.createClient = options.createClient ?? ((credentials) => new ILinkClient(credentials));
+    this.pendingInboundStore = options.pendingInboundStore ?? null;
+  }
 
   // ── ChannelAdapter ────────────────────────────────────────────────────────
 
@@ -117,9 +156,33 @@ export class ILinkBotAdapter implements ChannelAdapter {
     this.status = { enabled: true, phase: "starting" };
     console.log(LOG_PREFIX, "Starting...");
 
-    // 1. 加载已存凭证
-    const creds = await loadCredentials();
-    if (!creds) {
+    this.clientsByAccount.clear();
+    this.credentialsByAccount.clear();
+    this.client = null;
+    this.currentCredentials = null;
+    this.connectionPool = new WechatAccountConnectionPool({
+      accountSource: this.accountRepository,
+      createClient: (credentials) => {
+        const client = this.createClient(credentials);
+        this.clientsByAccount.set(credentials.ilinkBotId, client);
+        this.credentialsByAccount.set(credentials.ilinkBotId, credentials);
+        this.client ??= client;
+        this.currentCredentials ??= credentials;
+        return client;
+      },
+      onAuthorizedMessage: async (account, credentials, message) => {
+        const client = this.clientsByAccount.get(credentials.ilinkBotId);
+        if (!client) return;
+        await this.dispatchInbound(message, client, account);
+      },
+      log: (level, message) => {
+        if (level === "warn") console.warn(LOG_PREFIX, message);
+        else console.info(LOG_PREFIX, message);
+      },
+    });
+    await this.connectionPool.start();
+    const accountStatuses = this.connectionPool.getAccountStatuses();
+    if (accountStatuses.length === 0) {
       this.status = {
         enabled: true,
         phase: "config_missing",
@@ -128,37 +191,47 @@ export class ILinkBotAdapter implements ChannelAdapter {
       console.log(LOG_PREFIX, "No credentials, please run /wechat login");
       return;
     }
-
-    this.currentCredentials = creds;
-    this.client = new ILinkClient(creds);
-    this.isLoggedIn = true;
-
-    // 2. 启动 long-poll 循环
-    this.pollAbort = new AbortController();
-    this.pollLoopPromise = this.#pollLoop();
-
-    this.status = { enabled: true, phase: "running", message: "微信已连接" };
-    console.log(LOG_PREFIX, `Connected as botId=${creds.ilinkBotId}`);
+    this.#refreshAggregateStatus();
+    void this.replayPendingInbound().catch((error) =>
+      console.warn(LOG_PREFIX, "微信待恢复消息重放失败:", error));
   }
 
   async stop(): Promise<void> {
     console.log(LOG_PREFIX, "Stopping...");
-    this.pollAbort?.abort();
-    if (this.pollLoopPromise) {
-      try {
-        await this.pollLoopPromise;
-      } catch {}
-      this.pollLoopPromise = null;
-    }
-    this.pollAbort = null;
+    await this.connectionPool?.stop();
+    this.connectionPool = null;
+    this.clientsByAccount.clear();
+    this.credentialsByAccount.clear();
     this.client = null;
     this.isLoggedIn = false;
     this.status = { enabled: false, phase: "offline" };
   }
 
   async send(msg: OutgoingMessage): Promise<{ ok: boolean; error?: string }> {
-    if (!this.client) return { ok: false, error: "微信未连接" };
-    const contextToken = this.replyContextByTarget.get(msg.targetId);
+    const explicitAccountId =
+      msg.connectionAccountId ?? msg.conversationIdentity?.connectionAccountId;
+    if (explicitAccountId) {
+      const client = this.clientsByAccount.get(explicitAccountId);
+      if (!client) return { ok: false, error: "指定的微信账号未连接" };
+      const credentials = this.credentialsByAccount.get(explicitAccountId);
+      const participantId = msg.conversationIdentity?.participantId;
+      if (
+        !credentials ||
+        !participantId ||
+        participantId !== credentials.ilinkUserId ||
+        msg.targetId !== credentials.ilinkUserId
+      ) {
+        return { ok: false, error: "微信绑定者身份不匹配" };
+      }
+    }
+    const accountId = explicitAccountId ?? this.replyAccountByTarget.get(msg.targetId);
+    const client = explicitAccountId
+      ? this.clientsByAccount.get(explicitAccountId)
+      : (accountId ? this.clientsByAccount.get(accountId) : null) ?? this.client;
+    if (!client) return { ok: false, error: "微信未连接" };
+    const contextToken = accountId
+      ? this.replyContextByAccountTarget.get(accountTargetKey(accountId, msg.targetId))
+      : this.replyContextByTarget.get(msg.targetId);
     if (!contextToken) return { ok: false, error: "缺少微信 context_token，无法回复" };
 
     let anyOk = false;
@@ -168,7 +241,7 @@ export class ILinkBotAdapter implements ChannelAdapter {
       if (part.kind === "text") {
         const text = part.text.trim();
         if (!text) continue;
-        const textResult = await this.client.sendText(msg.targetId, text, contextToken);
+        const textResult = await client.sendText(msg.targetId, text, contextToken);
         if (textResult.ok) {
           anyOk = true;
         } else {
@@ -177,16 +250,16 @@ export class ILinkBotAdapter implements ChannelAdapter {
         }
       } else if (part.kind === "image") {
         if (!part.filePath) return { ok: false, error: "微信图片发送需要本地 filePath" };
-        const media = await this.uploadMedia(this.client, msg.targetId, part.filePath, MediaType.IMAGE);
-        const result = await this.client.sendMessage(msg.targetId, [buildImageItem(media)], contextToken);
+        const media = await this.uploadMedia(client, msg.targetId, part.filePath, MediaType.IMAGE);
+        const result = await client.sendMessage(msg.targetId, [buildImageItem(media)], contextToken);
         if (result.ok) anyOk = true;
         else {
           lastErr = result.error ?? "微信图片发送失败";
           console.warn(LOG_PREFIX, "image_item 发送失败:", lastErr);
         }
       } else if (part.kind === "sticker") {
-        const media = await this.uploadMedia(this.client, msg.targetId, part.imagePath, MediaType.IMAGE);
-        const result = await this.client.sendMessage(msg.targetId, [buildImageItem(media)], contextToken);
+        const media = await this.uploadMedia(client, msg.targetId, part.imagePath, MediaType.IMAGE);
+        const result = await client.sendMessage(msg.targetId, [buildImageItem(media)], contextToken);
         if (result.ok) anyOk = true;
         else {
           lastErr = result.error ?? "微信表情发送失败";
@@ -197,10 +270,10 @@ export class ILinkBotAdapter implements ChannelAdapter {
         // 优先发送体积更小的 M4A 文件，转换失败时自动回退 WAV。
         const prepared = await this.prepareAudioFile(part.filePath);
         const [media, stat] = await Promise.all([
-          this.uploadMedia(this.client, msg.targetId, prepared.filePath, MediaType.FILE),
+          this.uploadMedia(client, msg.targetId, prepared.filePath, MediaType.FILE),
           fs.stat(prepared.filePath),
         ]);
-        const result = await this.client.sendMessage(
+        const result = await client.sendMessage(
           msg.targetId,
           [buildFileItem(media, prepared.fileName, stat.size)],
           contextToken,
@@ -217,8 +290,8 @@ export class ILinkBotAdapter implements ChannelAdapter {
         }
       } else if (part.kind === "file") {
         const stat = await fs.stat(part.filePath);
-        const media = await this.uploadMedia(this.client, msg.targetId, part.filePath, MediaType.FILE);
-        const result = await this.client.sendMessage(
+        const media = await this.uploadMedia(client, msg.targetId, part.filePath, MediaType.FILE);
+        const result = await client.sendMessage(
           msg.targetId,
           [buildFileItem(media, path.basename(part.name ?? part.filePath), stat.size)],
           contextToken,
@@ -229,8 +302,8 @@ export class ILinkBotAdapter implements ChannelAdapter {
           console.warn(LOG_PREFIX, "file_item 发送失败:", lastErr);
         }
       } else if (part.kind === "video") {
-        const media = await this.uploadMedia(this.client, msg.targetId, part.filePath, MediaType.VIDEO);
-        const result = await this.client.sendMessage(msg.targetId, [buildVideoItem(media)], contextToken);
+        const media = await this.uploadMedia(client, msg.targetId, part.filePath, MediaType.VIDEO);
+        const result = await client.sendMessage(msg.targetId, [buildVideoItem(media)], contextToken);
         if (result.ok) anyOk = true;
         else {
           lastErr = result.error ?? "微信视频发送失败";
@@ -246,7 +319,75 @@ export class ILinkBotAdapter implements ChannelAdapter {
     if (!loadChannelsSettings().wechat.enabled) {
       return { enabled: false, phase: "offline", message: "未启用" };
     }
+    this.#refreshAggregateStatus();
     return this.status;
+  }
+
+  #refreshAggregateStatus(): void {
+    if (!this.connectionPool) return;
+    const accounts = this.connectionPool.getAccountStatuses();
+    const running = accounts.filter((account) => account.phase === "running").length;
+    this.isLoggedIn = running > 0;
+    if (accounts.length === 0) {
+      this.status = {
+        enabled: true,
+        phase: "config_missing",
+        message: "未登录，请先扫码",
+        detail: { accounts },
+      };
+      return;
+    }
+    if (running > 0) {
+      this.status = {
+        enabled: true,
+        phase: "running",
+        message: `${running}/${accounts.length} 个微信账号在线`,
+        detail: { accounts },
+      };
+      return;
+    }
+    const starting = accounts.some((account) => account.phase === "starting");
+    const needsLogin = accounts.some(
+      (account) => account.phase === "login_required" || account.phase === "config_missing",
+    );
+    this.status = {
+      enabled: true,
+      phase: starting ? "starting" : needsLogin ? "config_missing" : "error",
+      message: starting ? "微信账号连接中" : needsLogin ? "需要扫码登录" : "微信账号连接异常",
+      detail: { accounts },
+    };
+  }
+
+  async saveCredentials(credentials: Credentials): Promise<void> {
+    if (!this.accountRepository.save) throw new Error("微信账号仓储不支持保存凭据");
+    await this.accountRepository.save(credentials);
+  }
+
+  getAccountStatuses() {
+    return this.connectionPool?.getAccountStatuses() ?? [];
+  }
+
+  async reconnectAccount(ilinkBotId: string): Promise<void> {
+    if (!this.connectionPool) throw new Error("微信连接池尚未启动");
+    await this.connectionPool.reconnectAccount(ilinkBotId);
+    this.#refreshAggregateStatus();
+    void this.replayPendingInbound().catch((error) =>
+      console.warn(LOG_PREFIX, "微信待恢复消息重放失败:", error));
+  }
+
+  async stopAccount(ilinkBotId: string): Promise<void> {
+    await this.connectionPool?.stopAccount(ilinkBotId);
+    this.clientsByAccount.delete(ilinkBotId);
+    this.credentialsByAccount.delete(ilinkBotId);
+    this.#refreshAggregateStatus();
+  }
+
+  async removeAccount(ilinkBotId: string): Promise<void> {
+    if (this.connectionPool) await this.connectionPool.removeAccount(ilinkBotId);
+    else await this.accountRepository.removeAccount?.(ilinkBotId);
+    this.clientsByAccount.delete(ilinkBotId);
+    this.credentialsByAccount.delete(ilinkBotId);
+    this.#refreshAggregateStatus();
   }
 
   // ── Login UI flow ────────────────────────────────────────────────────────
@@ -258,13 +399,13 @@ export class ILinkBotAdapter implements ChannelAdapter {
    *
    * @param qrcode  原始 qrcode 字符串（由 init.ts 传入）
    */
-  async login(qrcode: string): Promise<Credentials> {
+  async waitForLogin(qrcode: string, signal?: AbortSignal): Promise<Credentials> {
     console.log(LOG_PREFIX, "Waiting for QR scan...");
 
     while (true) {
       let status: Awaited<ReturnType<typeof pollQrStatus>>;
       try {
-        status = await pollQrStatus(qrcode);
+        status = await pollQrStatus(qrcode, signal);
       } catch (err) {
         // timeout 是正常的 long-poll，继续
         if ((err as Error).name === "AbortError") throw new Error("login aborted");
@@ -281,8 +422,6 @@ export class ILinkBotAdapter implements ChannelAdapter {
           baseUrl: status.baseurl ?? "https://ilinkai.weixin.qq.com",
           ilinkUserId: status.ilink_user_id ?? "",
         };
-        await saveCredentials(creds);
-        saveChannelsSettings({ wechat: { enabled: true } });
         return creds;
       }
       if (status.status === "expired") {
@@ -292,69 +431,78 @@ export class ILinkBotAdapter implements ChannelAdapter {
     }
   }
 
+  async login(qrcode: string, signal?: AbortSignal): Promise<Credentials> {
+    const credentials = await this.waitForLogin(qrcode, signal);
+    await this.saveCredentials(credentials);
+    saveChannelsSettings({ wechat: { enabled: true } });
+    return credentials;
+  }
+
   /** 注销（删除凭证文件） */
-  async logout(): Promise<void> {
-    await this.stop();
-    await deleteCredentials();
-    this.currentCredentials = null;
-    this.isLoggedIn = false;
-    saveChannelsSettings({ wechat: { enabled: false } });
-    this.status = { enabled: false, phase: "offline", message: "已登出" };
-  }
-
-  // ── Internal: poll loop ──────────────────────────────────────────────────
-
-  async #pollLoop(): Promise<void> {
-    if (!this.client || !this.pollAbort) return;
-    let buf = "";
-    let sessionExpired = false;
-
-    while (!this.pollAbort.signal.aborted && !sessionExpired) {
-      try {
-        const { messages, buf: newBuf } = await this.client.getUpdates(buf);
-        buf = newBuf;
-        for (const msg of messages) {
-          await this.dispatchInbound(msg);
-        }
-      } catch (err) {
-        if (err instanceof SessionExpiredError) {
-          console.warn(LOG_PREFIX, "Session expired — please re-login");
-          sessionExpired = true;
-          this.status = {
-            enabled: true,
-            phase: "error",
-            message: "会话已过期，请重新扫码登录",
-          };
-          break;
-        }
-        if (this.pollAbort?.signal.aborted) break;
-        // 网络抖一下 backoff
-        await new Promise((r) => setTimeout(r, 2_000));
-      }
+  async logout(ilinkBotId = this.currentCredentials?.ilinkBotId): Promise<void> {
+    if (!ilinkBotId) return;
+    await this.connectionPool?.stopAccount(ilinkBotId);
+    await this.accountRepository.clearCredentials?.(ilinkBotId);
+    this.connectionPool?.markAccountLoginRequired(ilinkBotId);
+    this.clientsByAccount.delete(ilinkBotId);
+    this.credentialsByAccount.delete(ilinkBotId);
+    if (this.currentCredentials?.ilinkBotId === ilinkBotId) {
+      this.currentCredentials = this.credentialsByAccount.values().next().value ?? null;
+      this.client = this.clientsByAccount.values().next().value ?? null;
     }
+    for (const [targetId, accountId] of this.replyAccountByTarget) {
+      if (accountId === ilinkBotId) this.replyAccountByTarget.delete(targetId);
+    }
+    for (const key of this.replyContextByAccountTarget.keys()) {
+      if (key.startsWith(`${ilinkBotId}\u0000`)) this.replyContextByAccountTarget.delete(key);
+    }
+    this.#refreshAggregateStatus();
   }
 
-  private async dispatchInbound(msg: WeixinMessage): Promise<void> {
+  private async dispatchInbound(
+    msg: WeixinMessage,
+    client: ILinkClient | null = this.client,
+    account?: WechatAccountRecord,
+  ): Promise<void> {
     if (!this.onMessage) {
       console.warn(LOG_PREFIX, "onMessage 未注入，跳过消息");
       return;
     }
-    console.log(LOG_PREFIX, `inbound from=${msg.fromUserId} text=${(msg.content ?? "").slice(0, 80)}`);
+    console.log(LOG_PREFIX, `账号 ${account?.label ?? "微信"} 收到绑定者消息`);
     this.replyContextByTarget.set(msg.fromUserId, msg.contextToken);
+    if (account) {
+      this.replyAccountByTarget.set(msg.fromUserId, account.ilinkBotId);
+      this.replyContextByAccountTarget.set(
+        accountTargetKey(account.ilinkBotId, msg.fromUserId),
+        msg.contextToken,
+      );
+    }
 
     const media = describeInboundWechatMedia(msg.items);
-    const voiceText = await this.#maybeTranscribeInboundVoice(msg, media);
+    const conversationStateKey = account
+      ? accountTargetKey(account.ilinkBotId, msg.fromUserId)
+      : msg.fromUserId;
+    const voiceText = await this.#maybeTranscribeInboundVoice(msg, media, client);
     if (voiceText === null) return;
-    const intercept = await this.#maybeInterceptInboundMedia(msg, media);
+    const intercept = await this.#maybeInterceptInboundMedia(msg, media, conversationStateKey);
     if (intercept.handled) {
-      if (intercept.text) void this.#sendInterceptText(msg.fromUserId, msg.contextToken, intercept.text);
+      if (intercept.text) void this.#sendInterceptText(client, msg.fromUserId, msg.contextToken, intercept.text);
       return;
     }
-    const attachments = await this.#downloadInboundAttachments(msg, media);
+    const attachments = await this.#downloadInboundAttachments(msg, media, client);
     if (attachments === null) return;
 
     const incoming: IncomingMessage = {
       channel: "wechat",
+      ...(account
+        ? {
+            connectionAccountId: account.ilinkBotId,
+            conversationIdentity: createWechatConversationIdentity(
+              account.ilinkBotId,
+              msg.fromUserId,
+            ),
+          }
+        : {}),
       senderId: msg.fromUserId,
       chatId: msg.fromUserId,
       text: voiceText || msg.content || "",
@@ -363,14 +511,83 @@ export class ILinkBotAdapter implements ChannelAdapter {
       _raw: msg,
     };
 
+    if (account && this.pendingInboundStore) {
+      const pendingEntry: WechatPendingInboundEntry = {
+        id: msg.msgId || `${msg.createTimeMs ?? Date.now()}-${msg.fromUserId}`,
+        accountId: account.ilinkBotId,
+        participantId: msg.fromUserId,
+        contextToken: msg.contextToken,
+        incoming,
+      };
+      const key = pendingInboundKey(pendingEntry.accountId, pendingEntry.id);
+      if (this.activePendingInbound.has(key)) return;
+      this.activePendingInbound.add(key);
+      let persisted = false;
+      try {
+        await this.pendingInboundStore.save(pendingEntry);
+        persisted = true;
+      } catch (error) {
+        console.warn(LOG_PREFIX, "微信入站消息持久化失败，本轮继续处理:", error);
+      }
+      void this.#dispatchPendingInbound(pendingEntry, persisted);
+      return;
+    }
+
     void this.onMessage(incoming).catch((err) => {
       console.error(LOG_PREFIX, "dispatcher error:", err);
     });
   }
 
-  async #maybeInterceptInboundMedia(msg: WeixinMessage, media: InboundMediaDescriptor[]): Promise<{ handled: boolean; text?: string }> {
+  private async replayPendingInbound(): Promise<void> {
+    if (!this.pendingInboundStore || !this.onMessage) return;
+    const entries = await this.pendingInboundStore.list();
+    await Promise.all(entries.map(async (entry) => {
+      const credentials = this.credentialsByAccount.get(entry.accountId);
+      const client = this.clientsByAccount.get(entry.accountId);
+      if (!credentials || !client) return;
+      if (
+        credentials.ilinkUserId !== entry.participantId
+        || entry.incoming.connectionAccountId !== entry.accountId
+        || entry.incoming.conversationIdentity?.participantId !== entry.participantId
+      ) {
+        await this.pendingInboundStore!.complete(entry.id, entry.accountId);
+        return;
+      }
+      const key = pendingInboundKey(entry.accountId, entry.id);
+      if (this.activePendingInbound.has(key)) return;
+      this.activePendingInbound.add(key);
+      this.replyContextByTarget.set(entry.participantId, entry.contextToken);
+      this.replyAccountByTarget.set(entry.participantId, entry.accountId);
+      this.replyContextByAccountTarget.set(
+        accountTargetKey(entry.accountId, entry.participantId),
+        entry.contextToken,
+      );
+      await this.#dispatchPendingInbound(entry, true);
+    }));
+  }
+
+  async #dispatchPendingInbound(
+    entry: WechatPendingInboundEntry,
+    persisted: boolean,
+  ): Promise<void> {
+    const key = pendingInboundKey(entry.accountId, entry.id);
+    try {
+      await this.onMessage?.(entry.incoming);
+      if (persisted) await this.pendingInboundStore?.complete(entry.id, entry.accountId);
+    } catch (err) {
+      console.error(LOG_PREFIX, "dispatcher error:", err);
+    } finally {
+      this.activePendingInbound.delete(key);
+    }
+  }
+
+  async #maybeInterceptInboundMedia(
+    msg: WeixinMessage,
+    media: InboundMediaDescriptor[],
+    conversationStateKey = msg.fromUserId,
+  ): Promise<{ handled: boolean; text?: string }> {
     const now = Date.now();
-    this.#clearExpiredInboundState(msg.fromUserId, now);
+    this.#clearExpiredInboundState(conversationStateKey, now);
 
     const username = loadWechatPreferredName();
     const text = msg.content ?? "";
@@ -381,23 +598,23 @@ export class ILinkBotAdapter implements ChannelAdapter {
         const result = await this.#saveInboundMedia(mediaToSave, msg.msgId || String(now), username);
         return { handled: true, text: result };
       }
-      const pending = this.pendingUnsupportedMediaByTarget.get(msg.fromUserId);
+      const pending = this.pendingUnsupportedMediaByTarget.get(conversationStateKey);
       if (pending) {
         const result = await this.#saveInboundMedia(pending.media, pending.messageId, username);
-        this.pendingUnsupportedMediaByTarget.delete(msg.fromUserId);
+        this.pendingUnsupportedMediaByTarget.delete(conversationStateKey);
         return { handled: true, text: result };
       }
-      this.pendingSaveIntentByTarget.set(msg.fromUserId, now + SAVE_INTENT_TTL_MS);
+      this.pendingSaveIntentByTarget.set(conversationStateKey, now + SAVE_INTENT_TTL_MS);
       return { handled: true, text: buildWechatSaveIntentPrompt(username) };
     }
 
     if (media.length === 0) return { handled: false };
 
-    const saveIntentUntil = this.pendingSaveIntentByTarget.get(msg.fromUserId);
+    const saveIntentUntil = this.pendingSaveIntentByTarget.get(conversationStateKey);
     if (saveIntentUntil !== undefined) {
       const mediaToSave = firstSaveableMedia(media);
       if (mediaToSave) {
-        this.pendingSaveIntentByTarget.delete(msg.fromUserId);
+        this.pendingSaveIntentByTarget.delete(conversationStateKey);
         const result = await this.#saveInboundMedia(mediaToSave, msg.msgId || String(now), username);
         return { handled: true, text: result };
       }
@@ -405,12 +622,12 @@ export class ILinkBotAdapter implements ChannelAdapter {
 
     const video = media.find((item) => item.kind === "video");
     if (video) {
-      if (this.pendingSaveIntentByTarget.has(msg.fromUserId)) {
-        this.pendingSaveIntentByTarget.delete(msg.fromUserId);
+      if (this.pendingSaveIntentByTarget.has(conversationStateKey)) {
+        this.pendingSaveIntentByTarget.delete(conversationStateKey);
         const result = await this.#saveInboundMedia(video, msg.msgId || String(now), username);
         return { handled: true, text: result };
       }
-      this.pendingUnsupportedMediaByTarget.set(msg.fromUserId, { media: video, messageId: msg.msgId || String(now), expiresAt: now + SAVE_INTENT_TTL_MS });
+      this.pendingUnsupportedMediaByTarget.set(conversationStateKey, { media: video, messageId: msg.msgId || String(now), expiresAt: now + SAVE_INTENT_TTL_MS });
       return { handled: true, text: buildWechatVideoPrompt(username) };
     }
 
@@ -421,12 +638,12 @@ export class ILinkBotAdapter implements ChannelAdapter {
 
     const unsupportedFile = media.find((item) => item.kind === "file" && !item.analyzable);
     if (unsupportedFile) {
-      if (this.pendingSaveIntentByTarget.has(msg.fromUserId)) {
-        this.pendingSaveIntentByTarget.delete(msg.fromUserId);
+      if (this.pendingSaveIntentByTarget.has(conversationStateKey)) {
+        this.pendingSaveIntentByTarget.delete(conversationStateKey);
         const result = await this.#saveInboundMedia(unsupportedFile, msg.msgId || String(now), username);
         return { handled: true, text: result };
       }
-      this.pendingUnsupportedMediaByTarget.set(msg.fromUserId, { media: unsupportedFile, messageId: msg.msgId || String(now), expiresAt: now + SAVE_INTENT_TTL_MS });
+      this.pendingUnsupportedMediaByTarget.set(conversationStateKey, { media: unsupportedFile, messageId: msg.msgId || String(now), expiresAt: now + SAVE_INTENT_TTL_MS });
       return { handled: true, text: buildUnsupportedWechatFilePrompt(username) };
     }
 
@@ -448,37 +665,45 @@ export class ILinkBotAdapter implements ChannelAdapter {
     }
   }
 
-  async #maybeTranscribeInboundVoice(msg: WeixinMessage, media: InboundMediaDescriptor[]): Promise<string | undefined | null> {
+  async #maybeTranscribeInboundVoice(
+    msg: WeixinMessage,
+    media: InboundMediaDescriptor[],
+    client: ILinkClient | null,
+  ): Promise<string | undefined | null> {
     const voice = media.find((item) => item.kind === "voice");
     if (!voice) return undefined;
 
     const username = loadWechatPreferredName();
     if (!this.isAsrConfigured()) {
-      await this.#sendInterceptText(msg.fromUserId, msg.contextToken, buildWechatAsrMissingPrompt(username));
+      await this.#sendInterceptText(client, msg.fromUserId, msg.contextToken, buildWechatAsrMissingPrompt(username));
       return null;
     }
 
     try {
       const transcript = (await this.transcribeVoice(voice, msg.msgId || String(Date.now()))).trim();
       if (!transcript) {
-        await this.#sendInterceptText(msg.fromUserId, msg.contextToken, buildWechatAsrFailedPrompt(username, "没有识别到文字"));
+        await this.#sendInterceptText(client, msg.fromUserId, msg.contextToken, buildWechatAsrFailedPrompt(username, "没有识别到文字"));
         return null;
       }
       return transcript;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(LOG_PREFIX, "入站语音识别失败:", reason);
-      await this.#sendInterceptText(msg.fromUserId, msg.contextToken, buildWechatAsrFailedPrompt(username, reason));
+      await this.#sendInterceptText(client, msg.fromUserId, msg.contextToken, buildWechatAsrFailedPrompt(username, reason));
       return null;
     }
   }
 
-  async #downloadInboundAttachments(msg: WeixinMessage, media: InboundMediaDescriptor[]): Promise<ChannelAttachment[] | null> {
+  async #downloadInboundAttachments(
+    msg: WeixinMessage,
+    media: InboundMediaDescriptor[],
+    client: ILinkClient | null,
+  ): Promise<ChannelAttachment[] | null> {
     const attachments: ChannelAttachment[] = [];
     for (const item of media) {
       if (item.kind !== "image" && !(item.kind === "file" && item.analyzable)) continue;
       if (!item.media) {
-        await this.#sendInterceptText(msg.fromUserId, msg.contextToken, `${loadWechatPreferredName()}，这个微信附件缺少下载信息，可以再发一次试试看哦~~`);
+        await this.#sendInterceptText(client, msg.fromUserId, msg.contextToken, `${loadWechatPreferredName()}，这个微信附件缺少下载信息，可以再发一次试试看哦~~`);
         return null;
       }
       try {
@@ -492,7 +717,7 @@ export class ILinkBotAdapter implements ChannelAdapter {
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         console.warn(LOG_PREFIX, "入站媒体下载失败:", reason);
-        await this.#sendInterceptText(msg.fromUserId, msg.contextToken, `${loadWechatPreferredName()}，这个微信附件下载失败啦：${reason}。可以再发一次试试看哦~~`);
+        await this.#sendInterceptText(client, msg.fromUserId, msg.contextToken, `${loadWechatPreferredName()}，这个微信附件下载失败啦：${reason}。可以再发一次试试看哦~~`);
         return null;
       }
     }
@@ -510,9 +735,14 @@ export class ILinkBotAdapter implements ChannelAdapter {
     }
   }
 
-  async #sendInterceptText(toUserId: string, contextToken: string, text: string): Promise<void> {
-    if (!this.client) return;
-    const result = await this.client.sendText(toUserId, text, contextToken);
+  async #sendInterceptText(
+    client: ILinkClient | null,
+    toUserId: string,
+    contextToken: string,
+    text: string,
+  ): Promise<void> {
+    if (!client) return;
+    const result = await client.sendText(toUserId, text, contextToken);
     if (!result.ok) {
       console.warn(LOG_PREFIX, "入站媒体拦截回复发送失败:", result.error);
     }
@@ -655,35 +885,20 @@ function buildStoredFileName(prefix: string, messageId: string, fileName: string
   return `${sanitizeFileName(prefix)}-${sanitizeFileName(messageId)}-${Date.now()}-${base}${ext}`;
 }
 
+function accountTargetKey(ilinkBotId: string, targetId: string): string {
+  return `${ilinkBotId}\u0000${targetId}`;
+}
+
+function pendingInboundKey(accountId: string, messageId: string): string {
+  return `${accountId}\u0000${messageId}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Credentials storage
 // ─────────────────────────────────────────────────────────────────────────────
 
-function credPath(): string {
-  return path.join(app.getPath("userData"), "weixin", "credentials.json");
-}
-
 export async function loadCredentials(): Promise<Credentials | null> {
-  try {
-    const raw = await fs.readFile(credPath(), "utf8");
-    const creds = JSON.parse(raw) as Credentials;
-    if (!creds.botToken || !creds.ilinkBotId) return null;
-    return creds;
-  } catch {
-    return null;
-  }
-}
-
-async function saveCredentials(creds: Credentials): Promise<void> {
-  const p = credPath();
-  await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, JSON.stringify(creds, null, 2), "utf8");
-}
-
-async function deleteCredentials(): Promise<void> {
-  try {
-    await fs.unlink(credPath());
-  } catch {}
+  return getWechatAccountRepository().loadPrimaryCredentials();
 }
 
 function loadWechatPreferredName(): string {
