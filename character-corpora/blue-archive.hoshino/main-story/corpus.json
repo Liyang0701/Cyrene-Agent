@@ -172,6 +172,22 @@
       "contentHash": "sha256:957ce20e4d19de00cf82dca1a771a0941dfa8ecb9e8c85307e350a047a571508"
     },
     {
+      "id": "ba-jp-vol1-ch3-ep41-c04",
+      "title": "対策委員会編 第3章 第41話 残されたもの（V3-C04）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-C04/jp-vol1-ch3-ep41-V3-C04.mp4",
+      "contentHash": "sha256:8e26d5d3d3d98122e514361afc85625132aa0d2b674fca28a8eb4051af7991c8"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep41-c05",
+      "title": "対策委員会編 第3章 第41話 残されたもの（V3-C05）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-C05/jp-vol1-ch3-ep41-V3-C05.mp4",
+      "contentHash": "sha256:d2e55b708fb64a0b6d281d35e95039f532bb4253e3318b94863a2abe8d3ba775"
+    },
+    {
       "id": "ba-cn-vol1-ch3-p61-bilibili-mirror",
       "title": "对策委员会篇 第三章 第32话 唯一的真相（2）（国服游戏录屏镜像）",
       "category": "in-game-story",
@@ -188,6 +204,15 @@
       "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=62",
       "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P62.mp4",
       "contentHash": "sha256:96a18436ab8dd14614a924f23e13359e6884a3db5bd6f3bdee17ac3ebe459248"
+    },
+    {
+      "id": "ba-cn-vol1-ch3-p63-bilibili-mirror",
+      "title": "对策委员会篇 第三章 第41话 留下的事物（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=63",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P63.mp4",
+      "contentHash": "sha256:c9d8bc11c88cb9beec4e401b8b527abe190e7517a7c159c20c348ab8f483b147"
     }
   ],
   "exceptions": []
