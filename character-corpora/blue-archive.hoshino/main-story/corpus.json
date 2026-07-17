@@ -138,6 +138,48 @@
       "authorityLevel": 1,
       "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch2/C09-C10/jp-vol1-ch2-ep19-C09-C10.mp4",
       "contentHash": "sha256:0049a580618df0ddee26ff574f2305a05d8bd3790e8cf5ded63cb379240f5426"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep32-c01a",
+      "title": "対策委員会編 第3章 第32話 唯一の真実（2）（V3-C01a）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-C01/jp-vol1-ch3-ep32-V3-C01a.mp4",
+      "contentHash": "sha256:160b5d756be3e683e1876da81ba35de0a2a11b767448366a7a1d9409ff012524"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep32-c01b",
+      "title": "対策委員会編 第3章 第32話 唯一の真実（2）（V3-C01b）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-C01/jp-vol1-ch3-ep32-V3-C01b.mp4",
+      "contentHash": "sha256:9612ea33f1c337e3b2ee1244121bc3de452474e38840234feda5d3c2fedf7633"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep38-c02",
+      "title": "対策委員会編 第3章 第38話 約束（V3-C02）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-C02/jp-vol1-ch3-ep38-V3-C02.mp4",
+      "contentHash": "sha256:117bcf9d879ed037c37b95ca7993d75a2e7bc44d9e77313652928c85df8862c0"
+    },
+    {
+      "id": "ba-cn-vol1-ch3-p61-bilibili-mirror",
+      "title": "对策委员会篇 第三章 第32话 唯一的真相（2）（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=61",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P61.mp4",
+      "contentHash": "sha256:a49ae14b695c863a7300a1a50633228b4146f12ec05b69a66ca89f9185ff991c"
+    },
+    {
+      "id": "ba-cn-vol1-ch3-p62-bilibili-mirror",
+      "title": "对策委员会篇 第三章 第38话 约定（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=62",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P62.mp4",
+      "contentHash": "sha256:96a18436ab8dd14614a924f23e13359e6884a3db5bd6f3bdee17ac3ebe459248"
     }
   ],
   "exceptions": []
