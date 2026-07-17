@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "characterId": "blue-archive.hoshino",
+  "corpusVersion": "0.1.0",
+  "thresholds": {
+    "verifiedJapanese": 150,
+    "officialChinesePairs": 60,
+    "sourceCategories": 5,
+    "requiredScenarios": {
+      "relaxed": 1,
+      "intimate": 1,
+      "caring": 1,
+      "peer": 1,
+      "burden": 1,
+      "help_acceptance": 1,
+      "protective": 1,
+      "trauma": 1,
+      "emotional_recovery": 1,
+      "practical_task": 1
+    }
+  },
+  "sources": [
+    {
+      "id": "ba-jp-vol1-ch3-official-trailer",
+      "title": "対策委員会編第3章公式予告",
+      "category": "official-video",
+      "authorityLevel": 2,
+      "url": "https://www.youtube.com/watch?v=ZgVi0dIziy8",
+      "evidencePath": "blue-archive.hoshino/raw/official-video/S05-vol1-ch3-trailer.mp4",
+      "contentHash": "sha256:0905083320279ab95869cf3d38d24badbd154423d3bc1099871a3dd052d0fcb9"
+    },
+    {
+      "id": "ba-jp-vol1-ch1-ep02-c01",
+      "title": "対策委員会編 第1章 第2話 アビドスでの初日（C01）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch1/C01/jp-vol1-ch1-ep02-C01.mp4",
+      "contentHash": "sha256:914d4f0234f9e28bc3d8c72aef2ca0607e34b80e4356602a51196e64e56a0b9f"
+    },
+    {
+      "id": "ba-jp-vol1-ch1-ep03-c02",
+      "title": "対策委員会編 第1章 第3話 大人の力ってすごい！（C02）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch1/C02/jp-vol1-ch1-ep03-C02.mp4",
+      "contentHash": "sha256:50ee6078cebd3092e169afb825a403dd8e7811d78781b08492c15fb5baf34975"
+    },
+    {
+      "id": "ba-jp-vol1-ch1-ep04-c03a",
+      "title": "対策委員会編 第1章 第4話 委員会の事情（C03a）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch1/C03/jp-vol1-ch1-ep04-C03a.mp4",
+      "contentHash": "sha256:d956252939202a1b3ae2487798bc3b474232b394d0f69237256cdf63e9b0d66b"
+    },
+    {
+      "id": "ba-jp-vol1-ch1-ep04-c03b",
+      "title": "対策委員会編 第1章 第4話 委員会の事情（C03b）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch1/C03/jp-vol1-ch1-ep04-C03b.mp4",
+      "contentHash": "sha256:c8ea908ee4ccbcce9ec18b99e80beb45d17ef3a8e8d79428002cdc5e0b87d014"
+    },
+    {
+      "id": "ba-cn-vol1-ch1-ep02-c01-bilibili-mirror",
+      "title": "对策委员会篇 第一章 第2话 在阿拜多斯的第一天（C01，国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=2",
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/cn/vol1/ch1/C01/cn-vol1-ch1-ep02-C01-bilibili-mirror.mov",
+      "contentHash": "sha256:ce6f3db1e4e910f26ba52b44ea4ac48eeec2931f1ffa867798fe333583eb0885"
+    },
+    {
+      "id": "ba-cn-vol1-ch1-ep03-c02-bilibili-mirror",
+      "title": "对策委员会篇 第一章 第3话 大人的力量真厉害！（C02，国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=2",
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/cn/vol1/ch1/C02/cn-vol1-ch1-ep03-C02-bilibili-mirror.mov",
+      "contentHash": "sha256:b6bcd13527b733e43213885aa59d4653da51d3be631a428162f1501650a8251e"
+    },
+    {
+      "id": "ba-cn-vol1-ch1-ep04-c03a-bilibili-mirror",
+      "title": "对策委员会篇 第一章 第4话 委员会的情况（C03a，国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=2",
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/cn/vol1/ch1/C03/cn-vol1-ch1-ep04-C03a-bilibili-mirror.mov",
+      "contentHash": "sha256:d04f8147b4f01841472f0c09f4a2e27616ee6d90bbdb479bab64a8b876d290b0"
+    },
+    {
+      "id": "ba-cn-vol1-ch1-ep04-c03b-bilibili-mirror",
+      "title": "对策委员会篇 第一章 第4话 委员会的情况（C03b，国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=2",
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/cn/vol1/ch1/C03/cn-vol1-ch1-ep04-C03b-bilibili-mirror.mov",
+      "contentHash": "sha256:bbb41a4a5d0c8217db2bbb3dddeabf09ba640bc15f890cd62bb1bda368c81fcc"
+    },
+    {
+      "id": "ba-cn-vol1-ch2-p08-bilibili-mirror",
+      "title": "对策委员会篇 第二章 遗失的与没有放弃的东西 2（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=8",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch2/P08.mp4",
+      "contentHash": "sha256:f392d48ed5cb88da528b68a4e135f15c88d2624d54eeb2bb483e98143a06e421"
+    },
+    {
+      "id": "ba-cn-vol1-ch2-p09-bilibili-mirror",
+      "title": "对策委员会篇 第二章 遗失的与没有放弃的东西 3（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=9",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch2/P09.mp4",
+      "contentHash": "sha256:371fa53b93f8bd3ef75eb82c5e218c2bdf25083658af342cbd81e80816c1ccf7"
+    },
+    {
+      "id": "ba-jp-vol1-ch2-ep11-c04",
+      "title": "対策委員会編 第2章 第11話 敗戦（C04）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch2/C04/jp-vol1-ch2-ep11-C04.mp4",
+      "contentHash": "sha256:6cb775125d04c53f877cf9bd432964039394b692091cc77f4be7af7226fb66e8"
+    },
+    {
+      "id": "ba-jp-vol1-ch2-ep13-c06-c08",
+      "title": "対策委員会編 第2章 第13話 失ったもの（C06～C08）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch2/C06-C08/jp-vol1-ch2-ep13-C06-C08.mp4",
+      "contentHash": "sha256:85e7acd0a0b4e05196665af13f52933196e48e990ed281ffe2b90055fffce247"
+    },
+    {
+      "id": "ba-jp-vol1-ch2-ep19-c09-c10",
+      "title": "対策委員会編 第2章 第19話 それでも手放さなかったもの（2）（C09～C10）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch2/C09-C10/jp-vol1-ch2-ep19-C09-C10.mp4",
+      "contentHash": "sha256:0049a580618df0ddee26ff574f2305a05d8bd3790e8cf5ded63cb379240f5426"
+    }
+  ],
+  "exceptions": []
+}
