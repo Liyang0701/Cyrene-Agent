@@ -18,6 +18,51 @@ const capability: ProviderCapability = {
 };
 
 describe("OpenAICompatAdapter", () => {
+  test("将稳定与动态 system 前缀合并为唯一首消息，避免 Qwen 拒绝第二个 system", () => {
+    const adapter = new OpenAICompatAdapter("test-openai", capability);
+    const request = adapter.buildRequest({
+      model: "qwen3.5-plus",
+      messages: [
+        { role: "system", content: "STABLE_SOUL" },
+        { role: "system", content: "DYNAMIC_CONTEXT" },
+        { role: "user", content: "请回复" },
+      ],
+    }, {
+      provider: "qwen",
+      baseUrl: "https://example.test/v1",
+      model: "qwen3.5-plus",
+      apiKey: "key",
+    });
+
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: string }> };
+    expect(body.messages).toEqual([
+      { role: "system", content: "STABLE_SOUL\n\nDYNAMIC_CONTEXT" },
+      { role: "user", content: "请回复" },
+    ]);
+  });
+
+  test("将异常历史中的晚位 system 也归并到首消息", () => {
+    const adapter = new OpenAICompatAdapter("test-openai", capability);
+    const request = adapter.buildRequest({
+      model: "qwen3.5-plus",
+      messages: [
+        { role: "system", content: "SOUL" },
+        { role: "user", content: "上一问" },
+        { role: "assistant", content: "上一答" },
+        { role: "system", content: "LATE_CONTEXT" },
+        { role: "user", content: "当前问" },
+      ],
+    }, {
+      provider: "qwen",
+      baseUrl: "https://example.test/v1",
+      model: "qwen3.5-plus",
+      apiKey: "key",
+    });
+    const body = JSON.parse(request.body) as { messages: Array<{ role: string; content: string }> };
+    expect(body.messages.map(({ role }) => role)).toEqual(["system", "user", "assistant", "user"]);
+    expect(body.messages[0]).toEqual({ role: "system", content: "SOUL\n\nLATE_CONTEXT" });
+  });
+
   test("preserves user content blocks for direct image attachments", () => {
     const adapter = new OpenAICompatAdapter("test-openai", capability);
     const request = adapter.buildRequest(

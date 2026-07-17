@@ -61,6 +61,8 @@ export interface CyreneRunOptions {
   fallbackSettings?: AgentLoopSettings;
   fallbackSoftNoThink?: boolean;
   fallbackAfterMs?: number;
+  /** 传给声明 needsContext 工具的当前运行身份，例如渠道 sessionId。 */
+  toolContextMetadata?: Record<string, unknown>;
 }
 
 /** FC 循环最终结果（供桥层做副作用用）。 */
@@ -124,6 +126,7 @@ function toAguiEvent(event: TwoPhaseEvent): BaseEvent | null {
 async function executeToolCall(
   tc: { id: string; name: string; arguments: string },
   runnableToolIds: Set<string>,
+  runContext?: ToolContext,
 ): Promise<string> {
   const displayTool = toolRegistry.getById(tc.name);
   let args: Record<string, unknown> = {};
@@ -148,13 +151,14 @@ async function executeToolCall(
     toolDescription: tool.description,
     args,
     risk,
+    contextMetadata: runContext?.metadata,
   });
   if (!perm.allowed) {
     return "[已拒绝] " + (perm.reason || "权限不足");
   }
 
   const ctx: ToolContext | undefined = tool.needsContext
-    ? { userQuery: extractLastUserQuery([]) } // conversation 由调用方注入时再调整
+    ? runContext ?? { userQuery: "" }
     : undefined;
 
   try {
@@ -219,7 +223,10 @@ export class CyreneAgent extends AbstractAgent {
               },
             } : {}),
             imageCaptionFallback: options.imageCaptionFallback,
-            executeTool: (tc, runnableToolIds) => executeToolCall(tc, runnableToolIds),
+            executeTool: (tc, runnableToolIds) => executeToolCall(tc, runnableToolIds, {
+              userQuery: extractLastUserQuery(options.messages),
+              ...(options.toolContextMetadata ? { metadata: options.toolContextMetadata } : {}),
+            }),
             onEvent: (event) => {
               if (cancelled) return;
               const aguiEvent = toAguiEvent(event);

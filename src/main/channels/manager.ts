@@ -9,6 +9,7 @@
 import type { ChannelAdapter } from "./adapters/base";
 import type { ChannelId, ChannelStatus, IncomingMessage, OutgoingMessage } from "./types";
 import { setAdapterHandler } from "./adapters/base";
+import { WechatFairMessageScheduler } from "./wechat-fair-message-scheduler";
 
 const LOG = "[ChannelManager]";
 
@@ -20,6 +21,7 @@ export class ChannelManager {
   private dispatchFn: DispatchFn | null = null;
   /** 启动后已开启的 adapter（start 成功的才会调 stop） */
   private startedAdapters = new Set<ChannelId>();
+  private readonly wechatScheduler = new WechatFairMessageScheduler({ maxConcurrency: 2 });
 
   /** 注册 adapter（必须在 startAll 之前调用） */
   register(adapter: ChannelAdapter): void {
@@ -86,8 +88,43 @@ export class ChannelManager {
     return out as Record<ChannelId, ChannelStatus>;
   }
 
+  getWechatAccountQueueStats(accountId: string): { processing: number; queued: number } {
+    return this.wechatScheduler.getAccountStats(accountId);
+  }
+
+  getWechatProcessingCount(): number {
+    return this.wechatScheduler.getTotalProcessing();
+  }
+
+  coordinateWechatCharacterSwitch<T extends { ok: boolean; status: string }>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return this.wechatScheduler.coordinateCharacterSwitch(operation);
+  }
+
   private makeAdapterHandler(channel: ChannelId) {
     return async (msg: IncomingMessage): Promise<OutgoingMessage | null> => {
+      const identity = msg.conversationIdentity;
+      if (
+        channel === "wechat" &&
+        identity?.channel === "wechat" &&
+        identity.connectionAccountId &&
+        identity.participantId
+      ) {
+        return this.wechatScheduler.schedule({
+          accountId: identity.connectionAccountId,
+          conversationKey: `${identity.connectionAccountId}\u0000${identity.participantId}`,
+          run: () => this.dispatchAndSend(channel, msg),
+        });
+      }
+      return this.dispatchAndSend(channel, msg);
+    };
+  }
+
+  private async dispatchAndSend(
+    channel: ChannelId,
+    msg: IncomingMessage,
+  ): Promise<OutgoingMessage | null> {
       if (!this.dispatchFn) {
         console.warn(LOG, `收到入站消息但 dispatcher 未注册 [${channel}]`);
         return null;
@@ -117,7 +154,6 @@ export class ChannelManager {
         }
       }
       return outgoing;
-    };
   }
 }
 

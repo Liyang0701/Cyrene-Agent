@@ -3126,6 +3126,118 @@ body {
 }
 .btn-secondary:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
 .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-secondary--danger {
+  color: rgba(255, 205, 213, 0.96);
+  border-color: rgba(248, 113, 113, 0.38);
+}
+.btn-secondary--danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.14); }
+.wechat-account-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 14px;
+  border-top: 1px solid rgba(255, 182, 220, 0.12);
+}
+.wechat-account {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 182, 220, 0.12);
+}
+.wechat-account__summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.wechat-account__identity {
+  min-width: 0;
+  flex: 1;
+}
+.wechat-account__name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.wechat-account__label {
+  margin: 0;
+  color: rgba(254, 247, 255, 0.94);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.wechat-account__rename-trigger {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(251, 207, 232, 0.84);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wechat-account__rename-trigger:hover {
+  color: rgba(254, 247, 255, 0.98);
+  text-decoration: underline;
+}
+.wechat-account__rename-trigger:focus-visible {
+  outline: 2px solid rgba(244, 114, 182, 0.72);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.wechat-account__rename-editor {
+  display: none;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.wechat-account.is-renaming .wechat-account__name-row {
+  display: none;
+}
+.wechat-account.is-renaming .wechat-account__rename-editor {
+  display: flex;
+}
+.wechat-account__rename-label {
+  color: rgba(254, 247, 255, 0.76);
+  font-size: 12px;
+}
+.wechat-account__rename-input {
+  width: min(220px, 100%);
+}
+.wechat-account__id,
+.wechat-account__meta,
+.wechat-account-empty {
+  margin: 4px 0 0;
+  color: rgba(254, 247, 255, 0.66);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.wechat-account__phase {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(254, 247, 255, 0.82);
+  font-size: 11px;
+}
+.wechat-account__phase--running { color: rgba(167, 243, 208, 0.98); }
+.wechat-account__phase--starting { color: rgba(253, 230, 138, 0.98); }
+.wechat-account__phase--error,
+.wechat-account__phase--login_required { color: rgba(254, 202, 202, 0.98); }
+.wechat-account__error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(248, 113, 113, 0.1);
+  color: rgba(254, 226, 226, 0.96);
+  font-size: 12px;
+}
+.wechat-account__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.channels-qr-modal__actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .channels-card__body .form-input--wide {
   width: 100%;
   max-width: 380px;

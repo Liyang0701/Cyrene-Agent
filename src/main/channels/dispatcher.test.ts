@@ -1,6 +1,7 @@
 // dispatcher 核心单元测试：sessionId hash + 限速
 import { describe, it, expect } from "vitest";
-import { makeSessionId, lookupOriginalSender } from "./dispatcher";
+import { makeSessionId, makeSessionIdForMessage, lookupOriginalSender } from "./dispatcher";
+import type { IncomingMessage } from "./types";
 
 describe("channels/dispatcher", () => {
   it("makeSessionId: 同 channel + 同 sender → 同 sessionId", () => {
@@ -29,5 +30,26 @@ describe("channels/dispatcher", () => {
 
   it("lookupOriginalSender: 未知 sessionId 返回 null", () => {
     expect(lookupOriginalSender("channel:feishu:0000000000000000")).toBeNull();
+  });
+
+  it("makeSessionIdForMessage: 微信使用连接账号与绑定者的结构化身份", () => {
+    const message = (connectionAccountId: string): IncomingMessage => ({
+      channel: "wechat",
+      connectionAccountId,
+      conversationIdentity: {
+        channel: "wechat",
+        connectionAccountId,
+        participantId: "same-owner@im.wechat",
+      },
+      senderId: "same-owner@im.wechat",
+      chatId: "same-owner@im.wechat",
+      text: "你好",
+      at: new Date(0),
+    });
+
+    const first = makeSessionIdForMessage(message("account-a@im.wechat"));
+    const second = makeSessionIdForMessage(message("account-b@im.wechat"));
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^channel:wechat:[0-9a-f]{16}$/);
   });
 });

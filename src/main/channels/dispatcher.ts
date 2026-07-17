@@ -69,8 +69,8 @@ class RateLimiter {
   constructor(private settings: ChannelsSettings) {}
 
   /** 检查并记录一次命中。返回 true = 通过；false = 超限。 */
-  hit(channel: ChannelId, senderId: string): boolean {
-    const key = `${channel}:${senderId}`;
+  hit(channel: ChannelId, userScopeKey: string): boolean {
+    const key = `${channel}:${userScopeKey}`;
     const now = Date.now();
     const arr = this.buckets.get(key) ?? [];
     // 砍掉 60s 之外的
@@ -109,6 +109,30 @@ export function makeSessionId(channel: ChannelId, senderId: string): string {
     .digest("hex")
     .slice(0, 16);
   return `channel:${channel}:${hash}`;
+}
+
+/** 微信多账号优先使用结构化身份；其他渠道保持旧 session 规则。 */
+export function makeSessionIdForMessage(message: IncomingMessage): string {
+  const identity = message.conversationIdentity;
+  if (
+    message.channel === "wechat" &&
+    identity?.channel === "wechat" &&
+    identity.connectionAccountId &&
+    identity.participantId
+  ) {
+    const hash = createHash("sha256")
+      .update(
+        JSON.stringify([
+          identity.channel,
+          identity.connectionAccountId,
+          identity.participantId,
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 16);
+    return `channel:wechat:${hash}`;
+  }
+  return makeSessionId(message.channel, message.senderId);
 }
 
 /** 记录 sessionId → 原始 senderId（用于调试 / 反查；不影响正常运行） */
@@ -234,12 +258,12 @@ export class ChannelDispatcher {
    * 如果没注入 buildAndRunAgent，返回 echo 作为占位（仅 Phase 0 用于联调）。
    */
   async handleIncoming(msg: IncomingMessage): Promise<OutgoingMessage | null> {
-    if (!this.limiter.hit(msg.channel, msg.senderId)) {
-      console.warn(LOG, `限速: ${msg.channel}:${msg.senderId}`);
+    const sessionId = makeSessionIdForMessage(msg);
+    if (!this.limiter.hit(msg.channel, sessionId)) {
+      console.warn(LOG, `限速: ${sessionId}`);
       return null;
     }
 
-    const sessionId = makeSessionId(msg.channel, msg.senderId);
     recordSession(msg.channel, msg.senderId, sessionId);
     rememberProactiveChannelRecipient(msg, sessionId);
 
@@ -328,7 +352,10 @@ export class ChannelDispatcher {
           if (audioResult && audioResult.audio.length > 0) {
             const audioDir = path.join(requireActiveCharacterState().ttsCacheRoot, "channels");
             fs.mkdirSync(audioDir, { recursive: true });
-            const audioPath = path.join(audioDir, `${msg.channel}-${Date.now()}${audioResult.extension}`);
+            const audioPath = path.join(
+              audioDir,
+              `${sessionId.replace(/:/g, "_")}-${Date.now()}${audioResult.extension}`,
+            );
             fs.writeFileSync(audioPath, audioResult.audio);
             console.log(LOG, `TTS verify: written path=${audioPath} ext=${audioResult.extension} mime=${audioResult.mime}`);
             parts.push({ kind: "audio", filePath: audioPath, mime: audioResult.mime });
@@ -396,6 +423,8 @@ export class ChannelDispatcher {
     // 构造 OutgoingMessage，capability 降级
     const outgoing: OutgoingMessage = {
       channel: msg.channel,
+      ...(msg.connectionAccountId ? { connectionAccountId: msg.connectionAccountId } : {}),
+      ...(msg.conversationIdentity ? { conversationIdentity: msg.conversationIdentity } : {}),
       targetId: msg.chatId,
       threadId: msg.threadId,
       parts,

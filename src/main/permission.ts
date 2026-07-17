@@ -50,6 +50,12 @@ export function policyFor(level: AgentFileAccessLevel, risk: ToolRiskLevel): "al
 
 // ── 当前档位的内存缓存（main 进程持有） ───────────────────
 let currentLevel: AgentFileAccessLevel = "read-only";
+type ChannelPermissionResolver = (accountId: string, risk: ToolRiskLevel) => Promise<boolean>;
+let channelPermissionResolver: ChannelPermissionResolver | null = null;
+
+export function setChannelPermissionResolver(resolver: ChannelPermissionResolver | null): void {
+  channelPermissionResolver = resolver;
+}
 
 export function getCurrentLevel(): AgentFileAccessLevel {
   return currentLevel;
@@ -204,7 +210,27 @@ export async function checkPermission(input: {
   toolDescription: string;
   args: Record<string, unknown>;
   risk: ToolRiskLevel;
+  contextMetadata?: Record<string, unknown>;
 }): Promise<{ allowed: boolean; reason?: string }> {
+  const metadata = input.contextMetadata;
+  if (metadata?.channel === "wechat" && typeof metadata.connectionAccountId === "string") {
+    const allowed = channelPermissionResolver
+      ? await channelPermissionResolver(metadata.connectionAccountId, input.risk)
+      : input.risk === "safe";
+    console.log(
+      LOG_PREFIX,
+      "checkPermission: channel=wechat account=" + metadata.connectionAccountId,
+      "risk=" + input.risk,
+      "→",
+      allowed ? "allow" : "deny",
+    );
+    return allowed
+      ? { allowed: true }
+      : {
+          allowed: false,
+          reason: `当前微信账号未授权此类工具（risk=${input.risk}）。`,
+        };
+  }
   const level = currentLevel;
   const policy = policyFor(level, input.risk);
   console.log(LOG_PREFIX, "checkPermission:", input.toolId, "risk=" + input.risk, "level=" + level, "→", policy);

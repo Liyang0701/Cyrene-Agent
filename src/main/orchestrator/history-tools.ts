@@ -13,6 +13,16 @@ import { getActiveCharacterText } from "../character/active-character";
 
 const LOG_PREFIX = "[History]";
 
+type HistoryEntry = Awaited<ReturnType<typeof searchHistoryEntries>>[number];
+
+export function filterHistoryEntriesForSession(
+  entries: HistoryEntry[],
+  sessionId: string | undefined,
+): HistoryEntry[] {
+  if (!sessionId) return entries;
+  return entries.filter((entry) => entry.metadata?.sessionId === sessionId);
+}
+
 /**
  * 把一轮对话存入向量库。在 agui-bridge 的 complete 回调里调用。
  * user 和 assistant 各存一条，方便按角色召回。
@@ -54,6 +64,7 @@ export function registerRecallHistoryTool(): void {
       "参数：query（必填，检索关键词或自然语言问题），days（可选，限制最近 N 天，默认 30）。",
     enabled: true,
     risk: "safe",
+    needsContext: true,
     inputSchema: {
       type: "object",
       properties: {
@@ -62,7 +73,7 @@ export function registerRecallHistoryTool(): void {
       },
       required: ["query"],
     },
-    execute: async (args) => {
+    execute: async (args, ctx) => {
       const query = String(args.query || "").trim();
       if (!query) return "[错误] query 不能为空";
 
@@ -71,7 +82,13 @@ export function registerRecallHistoryTool(): void {
 
       let hits;
       try {
-        hits = await searchHistoryEntries(query, 5);
+        const sessionId = typeof ctx?.metadata?.sessionId === "string"
+          ? ctx.metadata.sessionId
+          : undefined;
+        hits = filterHistoryEntriesForSession(
+          await searchHistoryEntries(query, sessionId ? 100 : 5),
+          sessionId,
+        ).slice(0, 5);
       } catch (e) {
         return "[recall_history] 检索失败：" + (e instanceof Error ? e.message : String(e));
       }

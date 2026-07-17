@@ -150,15 +150,18 @@ export class ILinkClient {
    * 后端最长挂 35 秒；如果返回就立刻拿新 get_updates_buf 再次请求。
    * 收到会话过期（ret=-14）抛 SessionExpired。
    */
-  async getUpdates(buf = ""): Promise<{ messages: WeixinMessage[]; buf: string }> {
+  async getUpdates(buf = "", externalSignal?: AbortSignal): Promise<{ messages: WeixinMessage[]; buf: string }> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), LONG_POLL_TIMEOUT_MS + 5_000);
+    const signal = externalSignal
+      ? AbortSignal.any([ctrl.signal, externalSignal])
+      : ctrl.signal;
 
     try {
       const resp = await this.doJson<unknown>("POST", "/ilink/bot/getupdates", {
         get_updates_buf: buf,
         base_info: { channel_version: "2.0.0" },
-      }, { signal: ctrl.signal });
+      }, { signal });
 
       const data = resp as GetUpdatesResponse;
       if (data.ret === -14) {

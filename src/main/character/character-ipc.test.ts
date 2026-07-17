@@ -4,8 +4,10 @@ import {
   getCharacterSettingsSnapshot,
   listArchivedCharacterStates,
   requestCharacterSwitch,
+  requestCoordinatedCharacterSwitch,
   uninstallCharacterPackage,
 } from "./character-ipc";
+import type { CharacterRuntime } from "./character-runtime";
 
 describe("character IPC boundary", () => {
   it("returns runtime state and the same live blockers used by switching", () => {
@@ -46,6 +48,20 @@ describe("character IPC boundary", () => {
     });
     expect(requestSwitch).toHaveBeenCalledOnce();
     expect(requestSwitch).toHaveBeenCalledWith("fixture.lumen");
+  });
+
+  it("协调切换先进入微信暂停 seam，再调用角色运行时", async () => {
+    const runtime = {
+      requestSwitch: vi.fn().mockResolvedValue({ ok: false, status: "failed" }),
+    };
+    const coordinate = vi.fn(async (
+      operation: () => ReturnType<CharacterRuntime["requestSwitch"]>,
+    ) => operation());
+
+    await expect(requestCoordinatedCharacterSwitch(runtime, "fixture.lumen", coordinate))
+      .resolves.toEqual({ ok: false, status: "failed" });
+    expect(coordinate).toHaveBeenCalledOnce();
+    expect(runtime.requestSwitch).toHaveBeenCalledWith("fixture.lumen");
   });
 
   it("validates lifecycle ids and delegates archive operations", async () => {

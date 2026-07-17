@@ -29,6 +29,17 @@ export function requestCharacterSwitch(
   return runtime.requestSwitch(requireCharacterId(characterId));
 }
 
+export function requestCoordinatedCharacterSwitch(
+  runtime: Pick<CharacterRuntime, "requestSwitch">,
+  characterId: unknown,
+  coordinate: (
+    operation: () => ReturnType<CharacterRuntime["requestSwitch"]>,
+  ) => ReturnType<CharacterRuntime["requestSwitch"]>,
+) {
+  const validCharacterId = requireCharacterId(characterId);
+  return coordinate(() => runtime.requestSwitch(validCharacterId));
+}
+
 export function uninstallCharacterPackage(
   runtime: Pick<CharacterRuntime, "uninstallPackage">,
   characterId: unknown,

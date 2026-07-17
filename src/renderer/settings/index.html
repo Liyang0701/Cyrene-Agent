@@ -929,12 +929,11 @@
             </div>
           </details>
           <h1>连接手机</h1>
-          <p class="panel-hint">把 Cyrene 接到微信、飞书等聊天平台。在外部渠道里的每个用户会拥有独立的对话上下文与记忆。</p>
+          <p class="panel-hint">把 Cyrene 接到微信、飞书等聊天平台。每个微信账号仅允许该账号的扫码绑定者本人使用。</p>
 
           <div class="channels-card">
             <div class="channels-card__header">
               <h2>微信</h2>
-              <span class="switch"><input id="channels-wechat-enabled" type="checkbox" /><span class="switch__track"><span class="switch__thumb"></span></span></span>
             </div>
             <div class="channels-card__body">
               <div class="channels-status" id="channels-wechat-status">
@@ -943,11 +942,13 @@
               </div>
               <p class="channels-card__hint">
                 通过腾讯 <strong>iLink Bot API</strong>（个人微信官方接入通道）直连微信，无须外部网关。
-                点击"扫码登录"在 Cyrene 内弹出二维码窗口，扫描后自动连接。
+                点击“添加微信账号”在 Cyrene 内显示二维码，扫描后自动连接。
               </p>
               <div class="channels-card__actions">
-                <button type="button" class="btn-secondary" id="channels-wechat-login">扫码登录</button>
-                <button type="button" class="btn-secondary" id="channels-wechat-restart">重启连接</button>
+                <button type="button" class="btn-secondary" id="channels-wechat-login">添加微信账号</button>
+              </div>
+              <div class="wechat-account-list" id="channels-wechat-accounts" aria-live="polite">
+                <p class="wechat-account-empty">正在读取微信账号…</p>
               </div>
               <div class="channels-qr-modal" id="channels-wechat-qr" hidden>
                 <div class="channels-qr-modal__backdrop" id="channels-wechat-qr-backdrop"></div>
@@ -955,7 +956,11 @@
                   <h3 class="channels-qr-modal__title">扫码登录微信</h3>
                   <img class="channels-qr-modal__img" id="channels-wechat-qr-img" alt="微信登录二维码" />
                   <p class="channels-qr-modal__tip">请用微信扫描二维码完成登录</p>
-                  <button type="button" class="btn-secondary channels-qr-modal__close" id="channels-wechat-qr-close">关闭</button>
+                  <div class="channels-qr-modal__actions">
+                    <button type="button" class="btn-secondary" id="channels-wechat-qr-refresh">刷新二维码</button>
+                    <button type="button" class="btn-secondary btn-secondary--danger" id="channels-wechat-qr-cancel">取消扫码</button>
+                    <button type="button" class="btn-secondary channels-qr-modal__close" id="channels-wechat-qr-close">隐藏二维码</button>
+                  </div>
                 </div>
               </div>
               <div class="channels-feedback" id="channels-wechat-feedback"></div>

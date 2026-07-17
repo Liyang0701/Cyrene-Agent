@@ -51,6 +51,7 @@ import type { VendorConfig } from "./orchestrator/vendors";
 import { getCapability, getCapabilityOrOpenAI } from "./orchestrator/vendors/capabilities";
 import type { VisionConfig } from "./orchestrator/vision-captioner";
 import { toolRegistry, type ToolDefinition } from "./orchestrator/tool-registry";
+import { filterToolsForChannelConversation } from "./channels/channel-tool-isolation";
 import { buildToolCatalog, scopeToolSystemRules } from "./orchestrator/tool-catalog";
 import type { ToolRiskLevel } from "./permission";
 import { loadChannelsSettings } from "./channels/settings-store";
@@ -115,9 +116,14 @@ import { isCallActive, setCallWindow, registerCallIpc, setCallSettings, stopCall
 import { initSkills, skillRegistry, buildSkillCatalog, parseSlashCommand, setSkillEnabled, listSkillsForUi } from "./skills";
 import { initGameBot } from "./game-bot";
 import { initChannels, shutdownChannels, setChannelsConversationLifecycle } from "./channels/init";
+import { getWechatChannelIdentityState } from "./channels/adapters/wechat/wechat-account-runtime";
 import { buildChannelAttachmentInputs } from "./channels/agent-input";
 import { planChannelExecution } from "./channels/channel-execution-plan";
 import { selectChannelHistoryContext } from "./channels/channel-history-context";
+import {
+  buildChannelConversationRelationshipContext,
+  recordChannelConversationRelationship,
+} from "./channels/channel-conversation-state";
 import { shouldUseWechatQwenSoftNoThink } from "./channels/channel-model-policy";
 import { resolveWechatLocalModelFallback } from "./channels/channel-model-fallback";
 import { setDispatcherBuildAndRunAgent, setDispatcherSynthesizeTts, setDispatcherBroadcastChat, setDispatcherLoadGeneralSettings, setDispatcherLoadRecentHistory } from "./channels/dispatcher";
@@ -147,14 +153,17 @@ import { runProactiveModel } from "./proactive/proactive-model";
 import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/proactive-types";
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
-import { createElectronCharacterSwitchAdapters } from "./character/character-electron-switch";
+import {
+  createElectronCharacterSwitchAdapters,
+  hasUncoordinatedAgentActivity,
+} from "./character/character-electron-switch";
 import { getCharacterBoundActivitySnapshot } from "./character/character-bound-activity";
 import { buildCharacterSafeModeDialog } from "./character/character-safe-mode";
 import {
   deleteArchivedCharacterState,
   getCharacterSettingsSnapshot,
   listArchivedCharacterStates,
-  requestCharacterSwitch,
+  requestCoordinatedCharacterSwitch,
   uninstallCharacterPackage,
 } from "./character/character-ipc";
 import { configureActiveCharacterState, requireActiveCharacterState } from "./character/character-state";
@@ -3470,7 +3479,11 @@ ipcMain.handle(IPC.CHARACTER_IMPORT, async (_event, sourcePath: unknown, confirm
 
 ipcMain.handle(IPC.CHARACTER_SWITCH, async (_event, characterId: unknown) => {
   if (!characterRuntime) throw new Error("角色运行时尚未就绪");
-  return requestCharacterSwitch(characterRuntime, characterId);
+  return requestCoordinatedCharacterSwitch(
+    characterRuntime,
+    characterId,
+    (operation) => channelManager.coordinateWechatCharacterSwitch(operation),
+  );
 });
 
 ipcMain.handle(IPC.CHARACTER_UNINSTALL, async (_event, characterId: unknown) => {
@@ -3961,7 +3974,10 @@ app.whenReady().then(async () => {
       getActivity: () => {
         const activity = getCharacterBoundActivitySnapshot();
         return {
-          agentBusy: normalConversationBusyCount > 0,
+          agentBusy: hasUncoordinatedAgentActivity(
+            normalConversationBusyCount,
+            channelManager.getWechatProcessingCount(),
+          ),
           callActive: isCallActive(),
           asrBusy: localAsrWorker.isBusy(),
           ttsBusy: activity.tts,
@@ -4654,9 +4670,10 @@ app.whenReady().then(async () => {
     // Phase 3.3：按 toolSandbox 过滤可用工具
     const sandbox = loadChannelsSettings().toolSandbox;
     const allTools = toolRegistry.getEnabledTools();
-    const filteredTools: ToolDefinition[] = sandbox === "safe-only"
+    const sandboxFilteredTools: ToolDefinition[] = sandbox === "safe-only"
       ? allTools.filter((t) => (t.risk ?? "safe") === ("safe" as ToolRiskLevel))
       : allTools;
+    const filteredTools = filterToolsForChannelConversation(sandboxFilteredTools, msg);
     console.log(
       "[Channels] bot run:",
       `msg.channel=${msg.channel} sandbox=${sandbox} tools=${filteredTools.length}/${allTools.length} priorMsgs=${priorMessages?.length ?? 0}`,
@@ -4714,6 +4731,7 @@ app.whenReady().then(async () => {
         attachments: attachmentInputs.attachments,
         imageAttachments: attachmentInputs.imageAttachments,
         channel: msg.channel,
+        conversationIdentity: msg.conversationIdentity,
       },
       buildOptionsDeps,
     );
@@ -4724,6 +4742,14 @@ app.whenReady().then(async () => {
       characterNames: getActiveCharacter().speechRecognitionHints.terms,
     });
     options.executionMode = executionPlan.mode === "soul-only" ? "soul-only" : "two-phase";
+    options.toolContextMetadata = {
+      sessionId,
+      channel: msg.channel,
+      ...(msg.connectionAccountId ? { connectionAccountId: msg.connectionAccountId } : {}),
+      ...(msg.conversationIdentity?.participantId
+        ? { participantId: msg.conversationIdentity.participantId }
+        : {}),
+    };
     options.softNoThink = shouldUseWechatQwenSoftNoThink({
       channel: msg.channel,
       baseUrl: channelModelSettings.baseUrl,
@@ -4772,7 +4798,13 @@ app.whenReady().then(async () => {
     });
     channelResult.text = reply;
     if (agent.lastResult) {
-      const finished = await onAgentRunFinished(agent.lastResult, msg.text, onRunFinishedDeps, msg.channel);
+      const finished = await onAgentRunFinished(
+        agent.lastResult,
+        msg.text,
+        onRunFinishedDeps,
+        msg.channel,
+        sessionId,
+      );
       // 把 sticker 决定透出给 dispatcher，让它纳入 OutgoingMessage.parts；
       // 桌面聊天窗的 sticker 仍由 onAgentRunFinished 内部 IPC 广播承担，此处不重复。
       channelResult.sticker = finished.sticker;
@@ -4937,6 +4969,7 @@ app.whenReady().then(async () => {
   const buildOptionsDeps: BuildOptionsDeps = {
     loadModelSettings: () => loadModelSettings(),
     loadUserProfile: () => loadUserProfile(),
+    loadChannelUserProfile: (identity) => getWechatChannelIdentityState().loadProfile(identity),
     buildEnvironmentContext: ((model: { provider: string; model: string }, profile: unknown) =>
       buildEnvironmentContext(model as any, profile as any)) as BuildOptionsDeps["buildEnvironmentContext"],
     buildSkillCatalog: ((skills: ReadonlyArray<unknown>) =>
@@ -4948,9 +4981,10 @@ app.whenReady().then(async () => {
       buildToneInjection(userText, messages as any, provider as any, index as any)) as BuildOptionsDeps["buildToneInjection"],
     sceneEmbeddingIndex: sceneEmbeddingIndex as unknown,
     getSceneEmbeddingProvider: () => getSceneEmbeddingProvider() as unknown,
-    buildAlwaysOnContext: (async (userText, messages) =>
-      buildAlwaysOnContext(userText, messages as any)) as BuildOptionsDeps["buildAlwaysOnContext"],
+    buildAlwaysOnContext: (async (userText, messages, options) =>
+      buildAlwaysOnContext(userText, messages as any, options)) as BuildOptionsDeps["buildAlwaysOnContext"],
     buildRelationshipContext,
+    buildChannelRelationshipContext: buildChannelConversationRelationshipContext,
     buildSystemPrompt,
     buildToolSystemPrompt: (enabledTools) => buildToolSystemPrompt(enabledTools as ToolDefinition[]),
     buildSoulSystemBasePrompt,
@@ -5006,6 +5040,7 @@ app.whenReady().then(async () => {
     observeRuntimeState: (async (settings, history, userText, reply) =>
       observeRuntimeState(settings as any, history as any, userText, reply)) as OnRunFinishedDeps["observeRuntimeState"],
     recordRelationshipTurn,
+    recordChannelRelationshipTurn: recordChannelConversationRelationship,
     getChatWindow: () => chatWindow,
   };
   registerAgUiIpc(
