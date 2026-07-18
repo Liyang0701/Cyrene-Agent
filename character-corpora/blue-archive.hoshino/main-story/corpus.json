@@ -246,6 +246,48 @@
       "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=63",
       "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P63.mp4",
       "contentHash": "sha256:c9d8bc11c88cb9beec4e401b8b527abe190e7517a7c159c20c348ab8f483b147"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep13-r01",
+      "title": "対策委員会編 第3章 第13話 人質（V3-R01）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-R01/jp-vol1-ch3-ep13-V3-R01.mp4",
+      "contentHash": "sha256:df2254031a7fddd82725692f24c34d1b4c7ad1c4b960d86fd49c2485c7556846"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep14-r02",
+      "title": "対策委員会編 第3章 第14話 対策委員会（V3-R02）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-R02/jp-vol1-ch3-ep14-V3-R02.mp4",
+      "contentHash": "sha256:d8261158dfe8b7ac2ffa54372ce458cc138c2ca60022665a0fc229b91979a022"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep27-r03",
+      "title": "対策委員会編 第3章 第27話 紙一重の勝負（V3-R03）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-R03/jp-vol1-ch3-ep27-V3-R03.mp4",
+      "contentHash": "sha256:2ca9421c87c52d7765b8b107882c945f5c9daa136bee278342cfc846dd05804a"
+    },
+    {
+      "id": "ba-cn-vol1-ch3-p58-bilibili-mirror",
+      "title": "对策委员会篇 第三章 第13、14话（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=58",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P58.mp4",
+      "contentHash": "sha256:6398cf9b993b597175816a4fef5589bc14a55029cec9b712cccad9152853a77d"
+    },
+    {
+      "id": "ba-cn-vol1-ch3-p60-bilibili-mirror",
+      "title": "对策委员会篇 第三章 第27话 毫厘之差（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=60",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P60.mp4",
+      "contentHash": "sha256:4b22636ccb1f6459e542417680634fd6105dc1fc339a5edf0e8e98ddd73d3859"
     }
   ],
   "exceptions": []
