@@ -288,6 +288,24 @@
       "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=60",
       "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P60.mp4",
       "contentHash": "sha256:4b22636ccb1f6459e542417680634fd6105dc1fc339a5edf0e8e98ddd73d3859"
+    },
+    {
+      "id": "ba-jp-official-site-character-page",
+      "title": "日服官网角色页：ホシノ",
+      "category": "official-site",
+      "authorityLevel": 1,
+      "url": "https://bluearchive.jp/character",
+      "evidencePath": "blue-archive.hoshino/raw/official-site/jp-character-page.js",
+      "contentHash": "sha256:a3e32c3058a824d3ebe87a35d1d4b8e2fcd4ec1592394ffb61b67cf502c65f93"
+    },
+    {
+      "id": "ba-jp-official-publication-news-467",
+      "title": "日服官方公告 467：ピックアップ募集紹介：★3「ホシノ」、★3「ヒナ」",
+      "category": "official-publication",
+      "authorityLevel": 1,
+      "url": "https://bluearchive.jp/news/newsJump/467",
+      "evidencePath": "blue-archive.hoshino/raw/official-publication/jp-news-467.json",
+      "contentHash": "sha256:ae8057aaddeadbc1135cbde654435b0ee2ddcd6e3cd60a416f7c749130afd8d8"
     }
   ],
   "exceptions": []
