@@ -306,6 +306,14 @@
       "url": "https://bluearchive.jp/news/newsJump/467",
       "evidencePath": "blue-archive.hoshino/raw/official-publication/jp-news-467.json",
       "contentHash": "sha256:ae8057aaddeadbc1135cbde654435b0ee2ddcd6e3cd60a416f7c749130afd8d8"
+    },
+    {
+      "id": "ba-jp-normal-hoshino-voice-list-2026-07-18",
+      "title": "日服客户端普通星野语音一览（用户录屏，2026-07-18）",
+      "category": "in-game-voice",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-voice/jp/normal-hoshino-voice-list-2026-07-18.mp4",
+      "contentHash": "sha256:2d8a1a96e12a41296cbf5dcbb775919a62ba999a4c329d32b13664fdd838092f"
     }
   ],
   "exceptions": []

@@ -12,7 +12,8 @@
 - P0 已完成可直接以官方文字核验的角色资料记录：日服官网页面资源原件、SHA-256 与一条 `official-fact` 已入库，`official-site` 已开始计数。
 - P1 已完成：日服官方公告 467 的 JSON 原件、SHA-256 与一条受限的 `official-fact` 已入库，`official-publication` 已开始计数。
 - 官网试听仍未以自动转写定稿，因此没有冒充人工听辨，也没有进入日文对白数量。
-- 当前验证结果为：已验证日文 `134/150`、来源类别 `4/5`。唯一的类别 Gate 与数量 Gate 都指向 P2 的日服客户端普通星野语音。
+- P2 已完成：用户提供的日服普通星野语音列表录屏经逐帧复核后入库 16 条 `in-game-voice` 日文对白，详见 `docs/research/hoshino-normal-voice-capture-review.md`。
+- 当前验证结果为：已验证日文 `150/150`、来源类别 `5/5`，Character Corpus Gate 已通过。
 
 本轮复核基线（`npm run corpus:validate -- character-corpora/blue-archive.hoshino/main-story`）：
 
