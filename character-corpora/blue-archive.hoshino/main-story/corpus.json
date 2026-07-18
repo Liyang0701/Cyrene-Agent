@@ -188,6 +188,39 @@
       "contentHash": "sha256:d2e55b708fb64a0b6d281d35e95039f532bb4253e3318b94863a2abe8d3ba775"
     },
     {
+      "id": "ba-jp-vol1-ch3-ep10-e01",
+      "title": "対策委員会編 第3章 第10話 あの日（V3-E01）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-E01/jp-vol1-ch3-ep10-V3-E01.mp4",
+      "contentHash": "sha256:d1d0b6ca4d62910f101d1ab3990c196b4fc7c085dd243e472bc18c8435f147fb"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep10-e02",
+      "title": "対策委員会編 第3章 第10話 あの日（V3-E02）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-E02/jp-vol1-ch3-ep10-V3-E02.mp4",
+      "contentHash": "sha256:ef2a8750ab8209d5c2aa3428277d90fa1f2b5673e6114a6d93a64719d310af4e"
+    },
+    {
+      "id": "ba-jp-vol1-ch3-ep12-e03",
+      "title": "対策委員会編 第3章 第12話 対策委員会の始まり（V3-E03）",
+      "category": "in-game-story",
+      "authorityLevel": 1,
+      "evidencePath": "blue-archive.hoshino/raw/in-game-story/jp/vol1/ch3/V3-E03/jp-vol1-ch3-ep12-V3-E03.mp4",
+      "contentHash": "sha256:57cf885d9c3565f71e7f34812f333ef555a47abee918b55b90d65697cb0c6c60"
+    },
+    {
+      "id": "ba-cn-vol1-ch3-p57-bilibili-mirror",
+      "title": "对策委员会篇 第三章 第10、12话（国服游戏录屏镜像）",
+      "category": "in-game-story",
+      "authorityLevel": 2,
+      "url": "https://www.bilibili.com/video/BV1DV4y1i7hk?p=57",
+      "evidencePath": "blue-archive.hoshino/raw/locator-bilibili/cn-vol1-ch3/P57.mp4",
+      "contentHash": "sha256:f67b8bdf5c3014e8462fa7ecf7fa2343aaaeb64317717218978db39327ac5edd"
+    },
+    {
       "id": "ba-cn-vol1-ch3-p61-bilibili-mirror",
       "title": "对策委员会篇 第三章 第32话 唯一的真相（2）（国服游戏录屏镜像）",
       "category": "in-game-story",
