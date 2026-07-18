@@ -12,14 +12,31 @@ function requireCharacterId(characterId: unknown): string {
 }
 
 export function getCharacterSettingsSnapshot(
-  runtime: Pick<CharacterRuntime, "getSnapshot" | "getBlockingActivities">,
+  runtime: Pick<CharacterRuntime, "getSnapshot" | "getBlockingActivities" | "getActiveResponseSettings">,
 ) {
   return {
     ...runtime.getSnapshot(),
+    responseSettings: runtime.getActiveResponseSettings(),
     switching: {
       blockingActivities: runtime.getBlockingActivities(),
     },
   };
+}
+
+export function updateCharacterResponseSettings(
+  runtime: Pick<CharacterRuntime, "updateActiveResponseSettings">,
+  input: unknown,
+) {
+  if (
+    !input
+    || typeof input !== "object"
+    || typeof (input as { translationEnabled?: unknown }).translationEnabled !== "boolean"
+  ) {
+    throw new Error("角色回复设置格式无效");
+  }
+  return runtime.updateActiveResponseSettings({
+    translationEnabled: (input as { translationEnabled: boolean }).translationEnabled,
+  });
 }
 
 export function requestCharacterSwitch(

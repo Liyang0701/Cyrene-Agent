@@ -4,6 +4,7 @@
   "description": "Live2D desktop pet — Cyrene",
   "main": "dist/main/main/index.js",
   "scripts": {
+    "prepare:hoshino-response": "node scripts/prepare-local-hoshino-response-package.mjs",
     "build:main": "tsc -p tsconfig.main.json",
     "build:preload": "tsc -p tsconfig.preload.json",
     "build:renderer": "vite build",

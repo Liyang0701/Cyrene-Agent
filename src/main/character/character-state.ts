@@ -17,6 +17,8 @@ export type CharacterStateLayout = Readonly<{
   relationshipFile: string;
   worldbookStateFile: string;
   proactiveStateFile: string;
+  responsePreferencesFile: string;
+  translationCacheRoot: string;
   ttsCacheRoot: string;
 }>;
 
@@ -72,6 +74,8 @@ export function resolveCharacterStateLayout(
     relationshipFile: path.join(root, "relationship", "relationship-log.json"),
     worldbookStateFile: path.join(root, "worldbook", "state.json"),
     proactiveStateFile: path.join(root, "proactive", "opener-state.json"),
+    responsePreferencesFile: path.join(root, "preferences", "response.json"),
+    translationCacheRoot: path.join(root, "translation", "cache"),
     ttsCacheRoot: path.join(root, "tts", "cache"),
   });
 }

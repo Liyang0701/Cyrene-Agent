@@ -27,11 +27,13 @@ import { type ReasoningPreference } from "../../shared/reasoning";
 import {
   buildCharacterReplacementConfirmation,
   buildCharacterSwitchConfirmation,
+  getCharacterResponseSettingsView,
   renderArchivedCharacterStates,
   renderCharacterPackages,
   type ArchivedCharacterStateView,
   type CharacterReplacementView,
   type CharacterSettingsSnapshot,
+  type CharacterResponseSettingsViewInput,
 } from "./character-settings-view";
 
 // Inline modal (to avoid Vite tree-shaking)
@@ -372,6 +374,7 @@ interface SettingsApi {
   getGeneral: () => Promise<GeneralSettings>;
   saveGeneral: (config: Partial<GeneralSettings>) => Promise<GeneralSettings>;
   listCharacters: () => Promise<CharacterSettingsSnapshot>;
+  saveCharacterResponseSettings: (translationEnabled: boolean) => Promise<CharacterResponseSettingsViewInput>;
   pickCharacterImportFolder: () => Promise<string | null>;
   importCharacter: (sourcePath: string, confirmReplacement?: boolean) => Promise<
     | {
@@ -654,6 +657,9 @@ const characterImportButton = document.getElementById("character-import-btn") as
 const characterImportStatus = document.getElementById("character-import-status") as HTMLElement;
 const characterArchiveList = document.getElementById("character-archive-list") as HTMLElement;
 const characterArchiveCount = document.getElementById("character-archive-count") as HTMLElement;
+const characterResponseLanguage = document.getElementById("character-response-language") as HTMLElement;
+const characterTranslationToggle = document.getElementById("character-translation-toggle") as HTMLInputElement;
+const characterTranslationStatus = document.getElementById("character-translation-status") as HTMLElement;
 const disclaimerPanel = document.getElementById("disclaimer-panel") as HTMLElement;
 const pluginsPanel = document.getElementById("plugins-panel") as HTMLElement;
 const placeholderIcon = document.getElementById("placeholder-icon") as HTMLElement;
@@ -2541,6 +2547,7 @@ async function toggleSchedulerHistory(taskId: string, card: Element): Promise<vo
 
 let currentCharacterSnapshot: CharacterSettingsSnapshot | null = null;
 let characterSwitchInProgress = false;
+let characterResponseSaveInProgress = false;
 
 function showCharacterSnapshot(snapshot: CharacterSettingsSnapshot): void {
   currentCharacterSnapshot = snapshot;
@@ -2551,6 +2558,19 @@ function showCharacterSnapshot(snapshot: CharacterSettingsSnapshot): void {
     : "请根据下方诊断修复角色包";
   characterCount.textContent = `${snapshot.packages.length} 个`;
   characterPackageList.innerHTML = renderCharacterPackages(snapshot);
+  const responseSettings = snapshot.responseSettings;
+  if (!responseSettings) {
+    characterResponseLanguage.textContent = "未声明";
+    characterTranslationToggle.checked = false;
+    characterTranslationToggle.disabled = true;
+    characterTranslationStatus.textContent = "当前角色包未声明中文译文能力。";
+    return;
+  }
+  const responseView = getCharacterResponseSettingsView(responseSettings);
+  characterResponseLanguage.textContent = responseView.languageLabel;
+  characterTranslationToggle.checked = responseView.translationChecked;
+  characterTranslationToggle.disabled = responseView.translationDisabled || characterResponseSaveInProgress;
+  characterTranslationStatus.textContent = responseView.statusText;
 }
 
 async function loadCharacterPackages(): Promise<void> {
@@ -2571,10 +2591,33 @@ async function loadCharacterPackages(): Promise<void> {
 }
 
 window.setInterval(() => {
-  if (!charactersPanel.classList.contains("is-hidden") && !characterSwitchInProgress) {
+  if (!charactersPanel.classList.contains("is-hidden") && !characterSwitchInProgress && !characterResponseSaveInProgress) {
     void loadCharacterPackages();
   }
 }, 2_000);
+
+characterTranslationToggle.addEventListener("change", async () => {
+  if (!currentCharacterSnapshot?.responseSettings || characterResponseSaveInProgress) return;
+  const previous = currentCharacterSnapshot.responseSettings;
+  characterResponseSaveInProgress = true;
+  characterTranslationToggle.disabled = true;
+  characterTranslationStatus.textContent = "正在保存当前角色的翻译设置…";
+  try {
+    const saved = await window.settings!.saveCharacterResponseSettings(characterTranslationToggle.checked);
+    currentCharacterSnapshot = { ...currentCharacterSnapshot, responseSettings: saved };
+  } catch (error) {
+    currentCharacterSnapshot = { ...currentCharacterSnapshot, responseSettings: previous };
+    characterTranslationStatus.textContent = `翻译设置保存失败：${error instanceof Error ? error.message : String(error)}`;
+    characterTranslationToggle.checked = previous.translation.status === "available"
+      ? previous.translation.enabled
+      : false;
+    return;
+  } finally {
+    characterResponseSaveInProgress = false;
+    characterTranslationToggle.disabled = false;
+  }
+  showCharacterSnapshot(currentCharacterSnapshot);
+});
 
 characterImportButton.addEventListener("click", async () => {
   const sourcePath = await window.settings!.pickCharacterImportFolder();

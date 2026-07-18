@@ -605,6 +605,27 @@
             <span>通话、识别、语音合成或回复生成期间会暂时禁止切换。重启后，对话、语音、Live2D 和角色状态会统一使用新角色。</span>
           </div>
 
+          <div class="character-response-settings" aria-labelledby="character-response-title">
+            <div class="character-response-settings__heading">
+              <div>
+                <h2 id="character-response-title">回复语言</h2>
+                <p>角色包决定原文语言，不跟随应用界面语言。</p>
+              </div>
+              <strong id="character-response-language">正在读取…</strong>
+            </div>
+            <label class="setting-row character-translation-row">
+              <div>
+                <strong>显示中文译文</strong>
+                <span>只在桌面聊天中显示；不会进入语音、记忆、动作或关系分析。</span>
+              </div>
+              <span class="switch">
+                <input id="character-translation-toggle" type="checkbox" disabled aria-describedby="character-translation-status" />
+                <span class="switch__track"><span class="switch__thumb"></span></span>
+              </span>
+            </label>
+            <p class="character-translation-status" id="character-translation-status" role="status" aria-live="polite">正在读取角色能力…</p>
+          </div>
+
           <div class="character-section-heading">
             <div>
               <h2>已安装角色</h2>

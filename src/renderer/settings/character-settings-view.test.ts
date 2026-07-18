@@ -4,9 +4,36 @@ import {
   buildCharacterSwitchConfirmation,
   renderArchivedCharacterStates,
   renderCharacterPackages,
+  getCharacterResponseSettingsView,
 } from "./character-settings-view";
 
 describe("character settings view", () => {
+  it("renders Japanese as the primary response language and keeps the available overlay opt-in", () => {
+    expect(getCharacterResponseSettingsView({
+      characterId: "local.hoshino",
+      language: "ja",
+      translation: { status: "available", targetLanguage: "zh-CN", enabled: false },
+    })).toEqual({
+      languageLabel: "日语（ja）",
+      translationChecked: false,
+      translationDisabled: false,
+      statusText: "中文译文已关闭，日文原文保持为主回复。",
+    });
+  });
+
+  it("does not pretend that an undeclared character can enable Translation Overlay", () => {
+    expect(getCharacterResponseSettingsView({
+      characterId: "fixture.lumen",
+      language: "zh-CN",
+      translation: { status: "unavailable", enabled: false },
+    })).toEqual({
+      languageLabel: "中文（zh-CN）",
+      translationChecked: false,
+      translationDisabled: true,
+      statusText: "当前角色包未声明中文译文能力。",
+    });
+  });
+
   it("renders active, health, distribution and capability state without trusting package HTML", () => {
     const html = renderCharacterPackages({
       status: "ready",

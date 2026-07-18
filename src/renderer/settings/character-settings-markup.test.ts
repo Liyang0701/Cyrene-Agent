@@ -22,4 +22,14 @@ describe("character settings markup", () => {
     expect(panel).toContain("卸载角色包不会删除聊天、记忆和关系");
     expect(panel).toContain("永久删除不可撤销");
   });
+
+  it("provides a capability-aware per-character Translation Overlay control", () => {
+    const panel = html.match(/<section[^>]+id="characters-panel"[\s\S]*?<\/section>/)?.[0] ?? "";
+    expect(panel).toContain('id="character-response-language"');
+    expect(panel).toContain('id="character-translation-toggle"');
+    expect(panel).toContain('id="character-translation-status"');
+    expect(panel).toContain("显示中文译文");
+    expect(panel).toContain("只在桌面聊天中显示");
+    expect(panel).toContain("不会进入语音、记忆、动作或关系分析");
+  });
 });

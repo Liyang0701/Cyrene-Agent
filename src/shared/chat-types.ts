@@ -8,6 +8,8 @@
 //   显示侧 fallback 到 "聊天陪伴"。后续职位面板做好后接入。
 // - schemaVersion 用于以后改 schema 时的迁移判断；当前固定 1。
 
+import type { CharacterTranslationDisplayResult } from "./character-response";
+
 export type ChatRole = "user" | "model";
 
 export type ChatSessionPurpose = "proactive-chat";
@@ -37,7 +39,11 @@ export interface ChatMessage {
   sticker?: string | null;
   /** TTS 缓存 key。只存 key，不存绝对路径，避免 userData 路径变化后 session JSON 失效。 */
   ttsCacheKey?: string;
+  /** 可选的桌面视觉译文；原文仍以 content 为唯一业务文本。 */
+  translation?: ChatTranslationOverlay;
 }
+
+export type ChatTranslationOverlay = CharacterTranslationDisplayResult;
 
 export type MessageAttachment = ImageMessageAttachment | DocumentMessageAttachment;
 

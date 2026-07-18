@@ -20,6 +20,7 @@ import {
 } from "./orchestrator/cyrene-agent";
 import { indexConversationTurn } from "./orchestrator/history-tools";
 import type { RelationshipChannel } from "./relationship/relationship-log";
+import type { CharacterResponse } from "./character/character-response-pipeline";
 
 /** 渲染进程发起 run 时传的输入。 */
 export interface AguiRunInput {
@@ -53,8 +54,21 @@ export interface AguiConversationLifecycle {
   onConversationEnded(): void;
 }
 
+export interface AguiCharacterResponseLifecycle {
+  getStatus(): Readonly<{
+    enabled: boolean;
+    characterId: string;
+    targetLanguage?: "zh-CN";
+  }>;
+  complete(originalText: string, signal?: AbortSignal): Promise<CharacterResponse>;
+}
+
 /** 单次对话的活跃订阅（用于取消）。键 = runId。 */
-const activeRuns = new Map<string, { subscription: Subscription; endLifecycle: () => void }>();
+const activeRuns = new Map<string, {
+  subscription: Subscription;
+  endLifecycle: () => void;
+  responseAbortController: AbortController;
+}>();
 
 let buildOptionsFn: BuildOptionsFn | null = null;
 let getChatWindowFn: GetChatWindowFn = () => null;
@@ -71,6 +85,7 @@ export function registerAgUiIpc(
   onRunFinished: OnRunFinishedFn,
   getChatWindow: GetChatWindowFn,
   lifecycle?: AguiConversationLifecycle,
+  characterResponse?: AguiCharacterResponseLifecycle,
 ): void {
   buildOptionsFn = buildOptions;
   getChatWindowFn = getChatWindow;
@@ -116,6 +131,7 @@ export function registerAgUiIpc(
     };
 
     let pendingRunFinishedEvent: unknown | null = null;
+    const responseAbortController = new AbortController();
     let lifecycleEnded = false;
     const endLifecycle = (): void => {
       if (lifecycleEnded) return;
@@ -144,28 +160,91 @@ export function registerAgUiIpc(
         endLifecycle();
       },
       complete: async () => {
-        activeRuns.delete(runId);
-        try {
-          if (agent.lastResult) {
-            await onFinished(agent.lastResult, latestUserText);
+        const result = agent.lastResult;
+        if (result) {
+          try {
+            await onFinished(result, latestUserText);
             // 历史召回用：把这轮对话存入向量库（异步，不阻塞，失败不影响主流程）
             // 放在 onFinished 之后，确保记忆/sticker 等副作用先跑完
             void indexConversationTurn(
               input.sessionId || "default",
               latestUserText,
-              agent.lastResult.reply,
+              result.reply,
             );
+          } catch (err) {
+            console.warn("[AgUiBridge] 原回复副作用失败（不影响结果）:", err);
           }
-        } catch (err) {
-          console.warn("[AgUiBridge] 副作用失败（不影响结果）:", err);
+
+          const responseLifecycle = characterResponse;
+          let responseStatus: ReturnType<AguiCharacterResponseLifecycle["getStatus"]> | undefined;
+          try {
+            responseStatus = responseLifecycle?.getStatus();
+          } catch (err) {
+            console.warn("[AgUiBridge] 读取角色翻译状态失败（不影响原回复）:", err);
+          }
+          if (responseLifecycle && responseStatus?.enabled) {
+            send({
+              type: "CUSTOM",
+              name: "character.translation.started",
+              value: responseStatus,
+              threadId,
+              runId,
+            });
+          }
+
+          // 原回复已经完成并执行完必要副作用；先释放桌面轮次，再异步补充译文。
+          if (pendingRunFinishedEvent && !responseAbortController.signal.aborted) {
+            send(pendingRunFinishedEvent);
+            pendingRunFinishedEvent = null;
+          }
+
+          if (responseLifecycle && responseStatus?.enabled) {
+            try {
+              const response = await responseLifecycle.complete(
+                result.reply,
+                responseAbortController.signal,
+              );
+              if (!responseAbortController.signal.aborted) {
+                send({
+                  type: "CUSTOM",
+                  name: response.translation.status === "ready"
+                    ? "character.translation.ready"
+                    : "character.translation.failed",
+                  value: response,
+                  threadId,
+                  runId,
+                });
+              }
+            } catch (err) {
+              if (!responseAbortController.signal.aborted) {
+                send({
+                  type: "CUSTOM",
+                  name: "character.translation.failed",
+                  value: {
+                    characterId: responseStatus.characterId,
+                    original: { text: result.reply, language: "und" },
+                    translation: {
+                      status: "failed",
+                      targetLanguage: responseStatus.targetLanguage ?? "zh-CN",
+                      code: "provider-error",
+                      message: err instanceof Error ? err.message : String(err),
+                    },
+                  },
+                  threadId,
+                  runId,
+                });
+              }
+            }
+          }
         }
-        if (pendingRunFinishedEvent) {
+        if (pendingRunFinishedEvent && !responseAbortController.signal.aborted) {
           send(pendingRunFinishedEvent);
         }
+        activeRuns.delete(runId);
         endLifecycle();
       },
     });
-    activeRuns.set(runId, { subscription: sub, endLifecycle });
+    activeRuns.set(runId, { subscription: sub, endLifecycle, responseAbortController });
 
     // invoke 立刻返回 ack，不等 Observable 结束。
     // 终态（RUN_FINISHED/RUN_ERROR）由事件流承载，渲染端据此 offEvent + 收尾。
@@ -175,6 +254,7 @@ export function registerAgUiIpc(
 
   ipcMain.handle(IPC.AGUI_CANCEL, () => {
     for (const run of activeRuns.values()) {
+      run.responseAbortController.abort(new Error("用户取消了回复"));
       run.subscription.unsubscribe();
       run.endLifecycle();
     }
