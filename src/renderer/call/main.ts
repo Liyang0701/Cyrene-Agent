@@ -4,6 +4,13 @@
 
 import { computeRmsLevel } from "./vad-level";
 import { buildActiveCharacterUiText, hydrateActiveCharacterIdentity } from "../ui/active-character";
+import type { CharacterTranslationDisplayResult } from "../../shared/character-response";
+import type { CallResponsePayload } from "../../shared/call-response";
+import {
+  applyCallResponseUpdate,
+  beginCallUserTranscript,
+  createCallTranscriptState,
+} from "./call-transcript-state";
 // 用户说话时：柱状胶囊波形跳动 + 头像外圈音量波形
 // 活动角色说话时：电波环脉冲扩散 + 波形隐藏
 import "../ui/theme";
@@ -205,7 +212,11 @@ function updateUI(): void {
 }
 
 // ── 转写显示（只显示当前一轮） ──
-function renderTranscript(userText: string, botText: string): void {
+function renderTranscript(
+  userText: string,
+  botText: string,
+  translation?: CharacterTranslationDisplayResult,
+): void {
   if (!showTranscript) { transcriptEl.hidden = true; return; }
   transcriptEl.hidden = false;
   transcriptEl.innerHTML = "";
@@ -221,10 +232,25 @@ function renderTranscript(userText: string, botText: string): void {
     b.textContent = botText;
     transcriptEl.appendChild(b);
   }
+  if (translation?.status === "ready") {
+    const note = document.createElement("div");
+    note.className = "call__transcript-translation";
+    const label = document.createElement("span");
+    label.className = "call__transcript-translation-label";
+    label.textContent = "中文译文";
+    const text = document.createElement("span");
+    text.textContent = translation.text;
+    note.append(label, text);
+    transcriptEl.appendChild(note);
+  } else if (translation?.status === "failed") {
+    const note = document.createElement("div");
+    note.className = "call__transcript-translation call__transcript-translation--failed";
+    note.textContent = "中文译文暂不可用";
+    transcriptEl.appendChild(note);
+  }
 }
 
-let currentUserText = "";
-let currentBotText = "";
+let transcriptState = createCallTranscriptState();
 
 // ── 音量波形（绕头像一圈） ──
 let waveformMode = "idle"; // idle, listening, thinking
@@ -510,17 +536,22 @@ window.call?.onState((state: string) => {
 
 window.call?.onAsrResult((data: { partial?: string; final?: string }) => {
   if (data.partial) {
-    currentUserText = data.partial;
-    renderTranscript(currentUserText, "");
+    transcriptState = beginCallUserTranscript(data.partial);
+    renderTranscript(transcriptState.userText, transcriptState.originalText, transcriptState.translation);
   }
   if (data.final) {
-    currentUserText = data.final;
-    renderTranscript(currentUserText, "");
+    transcriptState = beginCallUserTranscript(data.final);
+    renderTranscript(transcriptState.userText, transcriptState.originalText, transcriptState.translation);
   }
 });
 
+window.call?.onResponse((data) => {
+  transcriptState = applyCallResponseUpdate(transcriptState, data);
+  renderTranscript(transcriptState.userText, transcriptState.originalText, transcriptState.translation);
+});
+
 window.call?.onTtsAudio((data: { base64: string }) => {
-  renderTranscript(currentUserText, "（语音回复中）");
+  renderTranscript(transcriptState.userText, transcriptState.originalText, transcriptState.translation);
   playTtsAudio(data.base64);
 });
 
@@ -590,6 +621,7 @@ declare global {
       stop: () => void;
       onState: (callback: (state: string) => void) => () => void;
       onAsrResult: (callback: (data: { partial?: string; final?: string }) => void) => () => void;
+      onResponse: (callback: (data: CallResponsePayload) => void) => () => void;
       onTtsAudio: (callback: (data: { base64: string }) => void) => () => void;
       onError: (callback: (data: { message: string }) => void) => () => void;
     };

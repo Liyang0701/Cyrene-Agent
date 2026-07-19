@@ -85,6 +85,15 @@ export interface OutgoingMessage {
   parts: OutgoingPart[];
 }
 
+/**
+ * Dispatcher 的两阶段出站结果：先由 ChannelManager 发送唯一的角色原文消息，
+ * 再可选地触发不写入历史的 Translation Overlay 附注。
+ */
+export interface ChannelDispatch {
+  message: OutgoingMessage;
+  afterDelivery?: (originalDelivered: boolean) => Promise<void>;
+}
+
 /** 渠道状态（UI 展示用） */
 export interface ChannelStatus {
   enabled: boolean;

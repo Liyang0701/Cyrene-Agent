@@ -20,7 +20,7 @@ import {
 } from "./orchestrator/cyrene-agent";
 import { indexConversationTurn } from "./orchestrator/history-tools";
 import type { RelationshipChannel } from "./relationship/relationship-log";
-import type { CharacterResponse } from "./character/character-response-pipeline";
+import type { ActiveCharacterResponse } from "./character/character-response-service";
 
 /** 渲染进程发起 run 时传的输入。 */
 export interface AguiRunInput {
@@ -60,7 +60,23 @@ export interface AguiCharacterResponseLifecycle {
     characterId: string;
     targetLanguage?: "zh-CN";
   }>;
-  complete(originalText: string, signal?: AbortSignal): Promise<CharacterResponse>;
+  complete(originalText: string, signal?: AbortSignal): Promise<ActiveCharacterResponse>;
+}
+
+function isCurrentCharacterTranslationConfiguration(
+  lifecycle: AguiCharacterResponseLifecycle,
+  expected: ReturnType<AguiCharacterResponseLifecycle["getStatus"]>,
+  response?: ActiveCharacterResponse,
+): boolean {
+  try {
+    const current = lifecycle.getStatus();
+    return current.enabled
+      && current.characterId === expected.characterId
+      && current.targetLanguage === expected.targetLanguage
+      && (!response || response.characterId === expected.characterId);
+  } catch {
+    return false;
+  }
 }
 
 /** 单次对话的活跃订阅（用于取消）。键 = runId。 */
@@ -205,18 +221,36 @@ export function registerAgUiIpc(
                 responseAbortController.signal,
               );
               if (!responseAbortController.signal.aborted) {
+                // 设置或角色在异步 Translation Pass 期间发生变化时，也要收束已经发送的 loading 状态。
+                const stillCurrent = isCurrentCharacterTranslationConfiguration(
+                  responseLifecycle,
+                  responseStatus,
+                  response,
+                );
+                const translation = stillCurrent && response.translation
+                  ? response.translation
+                  : {
+                  status: "failed" as const,
+                  targetLanguage: responseStatus.targetLanguage ?? "zh-CN",
+                  code: "cancelled" as const,
+                  message: stillCurrent ? "翻译已关闭" : "翻译设置已变更或角色已切换",
+                  };
                 send({
                   type: "CUSTOM",
-                  name: response.translation.status === "ready"
+                  name: translation.status === "ready"
                     ? "character.translation.ready"
                     : "character.translation.failed",
-                  value: response,
+                  value: { ...response, translation },
                   threadId,
                   runId,
                 });
               }
             } catch (err) {
               if (!responseAbortController.signal.aborted) {
+                const stillCurrent = isCurrentCharacterTranslationConfiguration(
+                  responseLifecycle,
+                  responseStatus,
+                );
                 send({
                   type: "CUSTOM",
                   name: "character.translation.failed",
@@ -224,10 +258,12 @@ export function registerAgUiIpc(
                     characterId: responseStatus.characterId,
                     original: { text: result.reply, language: "und" },
                     translation: {
-                      status: "failed",
+                      status: "failed" as const,
                       targetLanguage: responseStatus.targetLanguage ?? "zh-CN",
-                      code: "provider-error",
-                      message: err instanceof Error ? err.message : String(err),
+                      code: stillCurrent ? "provider-error" : "cancelled",
+                      message: stillCurrent
+                        ? (err instanceof Error ? err.message : String(err))
+                        : "翻译设置已变更或角色已切换",
                     },
                   },
                   threadId,

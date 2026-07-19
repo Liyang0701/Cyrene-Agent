@@ -359,4 +359,60 @@ describe("build-options", () => {
       0.55,
     )
   })
+
+  it("keeps a translated WeChat view out of memory, relationship, tone and sticker side effects", async () => {
+    const original = "おやすみなさい、先生。"
+    const translatedView = "晚安，老师。"
+    const scheduleMemoryWrite = vi.fn()
+    const inferRuntimeState = vi.fn(() => ({ status: "陪伴中" }))
+    const recordRelationshipTurn = vi.fn(async () => {})
+    const matchSticker = vi.fn(async () => null)
+    const deps: OnRunFinishedDeps = {
+      loadModelSettings: () => ({
+        provider: "test",
+        baseUrl: "",
+        model: "",
+        apiKey: "",
+        runtimeSync: "off",
+        stickerEnabled: true,
+        stickerSimilarityThreshold: 0.55,
+      }),
+      scheduleMemoryWrite,
+      inferRuntimeState,
+      runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
+      feelingToExpression: { "温柔": 0 },
+      setRuntimeState: () => {},
+      stickerEmbeddingIndex: [{ id: "good-night", embedding: [1, 0] }],
+      getEmbeddingProvider: () => ({ embed: async () => [1, 0] }),
+      matchSticker,
+      loadStickerSettings: () => ({}),
+      broadcastRuntimeStateChanged: () => {},
+      observeRuntimeState: async () => {},
+      recordRelationshipTurn,
+      getChatWindow: () => null,
+    }
+
+    await onAgentRunFinished({ reply: original, toolResults: [] }, "晚安", deps, "wechat")
+
+    expect(scheduleMemoryWrite).toHaveBeenCalledTimes(1)
+    expect(scheduleMemoryWrite).toHaveBeenCalledWith("晚安", original)
+    expect(inferRuntimeState).toHaveBeenCalledWith("晚安", original, false)
+    expect(recordRelationshipTurn).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "wechat",
+      assistantText: original,
+    }))
+    expect(matchSticker).toHaveBeenCalledWith(
+      `${original}\n晚安`,
+      expect.anything(),
+      expect.anything(),
+      0.55,
+    )
+    const sideEffects = JSON.stringify({
+      memory: scheduleMemoryWrite.mock.calls,
+      tone: inferRuntimeState.mock.calls,
+      relationship: recordRelationshipTurn.mock.calls,
+      sticker: matchSticker.mock.calls,
+    })
+    expect(sideEffects).not.toContain(translatedView)
+  })
 })

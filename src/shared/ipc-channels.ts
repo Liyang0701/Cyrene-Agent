@@ -18,20 +18,17 @@ export const IPC = {
   CHAT_CLOSE: "chat:close",
   CHAT_TOGGLE_MAXIMIZE: "chat:toggle-maximize",
   CHAT_IS_MAXIMIZED: "chat:is-maximized",
-  CHAT_SEND_MESSAGE: "chat:send-message",
   CHAT_INGEST_FILES: "chat:ingest-files",
   CHAT_PROCESS_DOCUMENTS: "chat:process-documents",
   CHAT_DOCUMENT_INDEX_PROGRESS: "chat:document-index-progress",
   CHAT_CANCEL_DOCUMENT_INDEX: "chat:cancel-document-index",
   CHAT_CAPTION_IMAGE: "chat:caption-image",
   CHAT_GET_IMAGE_SEND_STRATEGY: "chat:get-image-send-strategy",
-  CHAT_STREAM_CHUNK: "chat:stream-chunk",
-  CHAT_STREAM_DONE: "chat:stream-done",
   // 推理下拉（chat 窗口：原子读 + providerKey 写）
   CHAT_GET_REASONING_STATE: "chat:get-reasoning-state",
   CHAT_SET_REASONING: "chat:set-reasoning",
 
-  // AG-UI 事件流（替换上面的 chat:stream-* 的新通道）
+  // AG-UI 事件流（桌面聊天唯一的回复执行路径）
   AGUI_RUN: "agui:run",
   AGUI_EVENT: "agui:event",
   AGUI_CANCEL: "agui:cancel",
@@ -245,6 +242,8 @@ export const IPC = {
   CALL_START: "call:start",               // renderer → main：开始通话（初始化 ASR）
   CALL_AUDIO_FRAME: "call:audio-frame",    // renderer → main：PCM 音频帧
   CALL_ASR_RESULT: "call:asr-result",     // main → renderer：ASR 识别结果
+  // 主进程 → renderer：角色原文回复，以及可选的展示层译文（绝不作为 TTS/记忆输入）
+  CALL_RESPONSE: "call:response",
   CALL_TURN_END: "call:turn-end",         // renderer → main：VAD 静默，结束本轮
   CALL_TTS_AUDIO: "call:tts-audio",       // main → renderer：TTS 音频
   CALL_TTS_DONE: "call:tts-done",         // renderer → main：TTS 播放完毕

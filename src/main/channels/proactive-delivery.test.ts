@@ -107,6 +107,127 @@ describe("proactive channel delivery", () => {
     });
   });
 
+  it("keeps only the original when the unified Translation Overlay service is disabled", async () => {
+    const adapter = fakeAdapter();
+    registry.remember(incoming("wechat", "wx-1"), "session-wx-1");
+    const appendHistory = vi.fn();
+    const appendLog = vi.fn();
+    const complete = vi.fn();
+
+    const result = await sendProactiveChannelMessage({
+      channel: "wechat",
+      text: "おやすみなさい、先生。",
+      mobileMessageSegmentation: "off",
+      manager: { getAdapter: () => adapter },
+      recipientRegistry: registry,
+      appendHistory,
+      appendLog,
+      characterResponse: {
+        getStatus: () => ({ enabled: false, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+        complete,
+      },
+    });
+
+    expect(result).toEqual({ kind: "committed", deliveredParts: 1, totalParts: 1 });
+    expect(adapter.send).toHaveBeenCalledWith({
+      channel: "wechat",
+      targetId: "wx-1",
+      parts: [{ kind: "text", text: "おやすみなさい、先生。" }],
+    });
+    expect(adapter.send).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+    expect(appendHistory).toHaveBeenCalledWith("session-wx-1", "assistant", "おやすみなさい、先生。");
+    expect(appendLog).toHaveBeenCalledWith(expect.objectContaining({ text: "おやすみなさい、先生。" }));
+    expect(JSON.stringify(appendHistory.mock.calls)).not.toContain("晚安，老师。");
+    expect(JSON.stringify(appendLog.mock.calls)).not.toContain("晚安，老师。");
+  });
+
+  it("sends the proactive original before asynchronously requesting its Translation Overlay", async () => {
+    const adapter = fakeAdapter();
+    registry.remember(incoming("wechat", "wx-1"), "session-wx-1");
+    let resolveTranslation!: () => void;
+    const translation = new Promise<{
+      characterId: string;
+      original: { text: string; language: string };
+      translation: { status: "ready"; text: string; targetLanguage: "zh-CN" };
+    }>((resolve) => {
+      resolveTranslation = () => resolve({
+        characterId: "local.hoshino",
+        original: { text: "おやすみなさい、先生。", language: "ja" },
+        translation: { status: "ready", text: "晚安，老师。", targetLanguage: "zh-CN" },
+      });
+    });
+    const appendHistory = vi.fn();
+    const appendLog = vi.fn();
+
+    const result = await sendProactiveChannelMessage({
+      channel: "wechat",
+      text: "おやすみなさい、先生。",
+      mobileMessageSegmentation: "off",
+      manager: { getAdapter: () => adapter },
+      recipientRegistry: registry,
+      appendHistory,
+      appendLog,
+      characterResponse: {
+        getStatus: () => ({ enabled: true, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+        complete: async () => translation,
+      },
+    });
+
+    expect(result).toEqual({ kind: "committed", deliveredParts: 1, totalParts: 1 });
+    expect(adapter.send).toHaveBeenCalledOnce();
+    expect(appendHistory).toHaveBeenCalledWith("session-wx-1", "assistant", "おやすみなさい、先生。");
+    resolveTranslation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adapter.send).toHaveBeenNthCalledWith(2, {
+      channel: "wechat",
+      targetId: "wx-1",
+      parts: [{ kind: "text", text: "── 中文译文（仅供理解，非角色发言）──\n晚安，老师。" }],
+    });
+    expect(appendHistory).toHaveBeenCalledTimes(1);
+    expect(appendLog).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the proactive annotation if the Active Character changes while it is translating", async () => {
+    const adapter = fakeAdapter();
+    registry.remember(incoming("wechat", "wx-1"), "session-wx-1");
+    let activeCharacterId = "local.hoshino";
+    let resolveTranslation!: () => void;
+    const translation = new Promise<{
+      characterId: string;
+      original: { text: string; language: string };
+      translation: { status: "ready"; text: string; targetLanguage: "zh-CN" };
+    }>((resolve) => {
+      resolveTranslation = () => resolve({
+        characterId: "local.hoshino",
+        original: { text: "おやすみなさい、先生。", language: "ja" },
+        translation: { status: "ready", text: "晚安，老师。", targetLanguage: "zh-CN" },
+      });
+    });
+
+    await sendProactiveChannelMessage({
+      channel: "wechat",
+      text: "おやすみなさい、先生。",
+      mobileMessageSegmentation: "off",
+      manager: { getAdapter: () => adapter },
+      recipientRegistry: registry,
+      appendHistory: vi.fn(),
+      appendLog: vi.fn(),
+      characterResponse: {
+        getStatus: () => ({ enabled: true, characterId: activeCharacterId, targetLanguage: "zh-CN" }),
+        complete: async () => translation,
+      },
+    });
+    expect(adapter.send).toHaveBeenCalledOnce();
+
+    activeCharacterId = "local.lumen";
+    resolveTranslation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(adapter.send).toHaveBeenCalledOnce();
+  });
+
   it("sends segmented text sequentially and caps it at ten parts", async () => {
     const adapter = fakeAdapter();
     const order: string[] = [];
@@ -154,6 +275,11 @@ describe("proactive channel delivery", () => {
       .mockResolvedValueOnce({ ok: false, error: "failed" });
     const appendHistory = vi.fn();
     const appendLog = vi.fn();
+    const complete = vi.fn(async () => ({
+      characterId: "local.hoshino",
+      original: { text: "第一句。第二句？", language: "ja" },
+      translation: { status: "ready" as const, text: "第一句。第二句？", targetLanguage: "zh-CN" as const },
+    }));
     const partial = await sendProactiveChannelMessage({
       channel: "wechat",
       text: "第一句。第二句？",
@@ -162,11 +288,16 @@ describe("proactive channel delivery", () => {
       recipientRegistry: registry,
       appendHistory,
       appendLog,
+      characterResponse: {
+        getStatus: () => ({ enabled: true, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+        complete,
+      },
     });
 
     expect(partial).toEqual({ kind: "committed", deliveredParts: 1, totalParts: 2 });
     expect(appendHistory).toHaveBeenCalledWith("session-wx-1", "assistant", "第一句。");
     expect(appendLog).toHaveBeenCalledWith(expect.objectContaining({ text: "第一句。" }));
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it("stops before the next segment when the proactive generation becomes invalid", async () => {

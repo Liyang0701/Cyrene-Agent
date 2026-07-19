@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC } from "../shared/ipc-channels";
+import type { CallResponsePayload } from "../shared/call-response";
 import type { UiTheme } from "../shared/ui-theme";
 import type { UiFont } from "../shared/ui-font";
 import type { DocumentIndexProgress } from "../main/rag/document-index-queue";
@@ -36,7 +37,6 @@ const chatApi = {
   close: () => ipcRenderer.send(IPC.CHAT_CLOSE),
   toggleMaximize: () => ipcRenderer.send(IPC.CHAT_TOGGLE_MAXIMIZE),
   isMaximized: () => ipcRenderer.invoke(IPC.CHAT_IS_MAXIMIZED),
-  sendMessage: (messages: unknown[], style: string) => ipcRenderer.invoke(IPC.CHAT_SEND_MESSAGE, messages, style),
   getEnabledStickers: () => ipcRenderer.invoke(IPC.STICKERS_GET_ENABLED),
   /** 从 dataTransfer.files 或 fileInput.files 提取路径后批量摄入。
    *  路径提取在 preload（webUtils.getPathForFile），避免 Electron 33 中 File.path 不可用的问题。 */
@@ -63,9 +63,6 @@ const chatApi = {
   captionImage: (filePath: string) => ipcRenderer.invoke(IPC.CHAT_CAPTION_IMAGE, { filePath }),
   getImageSendStrategy: () => ipcRenderer.invoke(IPC.CHAT_GET_IMAGE_SEND_STRATEGY),
   getGeneralSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET_GENERAL),
-  onStreamChunk: (cb: (chunk: string) => void) => { ipcRenderer.on(IPC.CHAT_STREAM_CHUNK, (_e: unknown, chunk: string) => cb(chunk)); },
-  onStreamDone: (cb: (payload: unknown) => void) => { ipcRenderer.on(IPC.CHAT_STREAM_DONE, (_e: unknown, payload: unknown) => cb(payload)); },
-  removeStreamListeners: () => { ipcRenderer.removeAllListeners(IPC.CHAT_STREAM_CHUNK); ipcRenderer.removeAllListeners(IPC.CHAT_STREAM_DONE); },
   getReasoningState: () => ipcRenderer.invoke(IPC.CHAT_GET_REASONING_STATE),
   setReasoning: (payload: { providerKey: string; preference: unknown }) => ipcRenderer.invoke(IPC.CHAT_SET_REASONING, payload),
 };
@@ -175,6 +172,11 @@ const callApi = {
     const handler = (_event: unknown, data: { partial?: string; final?: string }) => callback(data);
     ipcRenderer.on(IPC.CALL_ASR_RESULT, handler);
     return () => ipcRenderer.removeListener(IPC.CALL_ASR_RESULT, handler);
+  },
+  onResponse: (callback: (data: CallResponsePayload) => void) => {
+    const handler = (_event: unknown, data: CallResponsePayload) => callback(data);
+    ipcRenderer.on(IPC.CALL_RESPONSE, handler);
+    return () => ipcRenderer.removeListener(IPC.CALL_RESPONSE, handler);
   },
   onTtsAudio: (callback: (data: { base64: string }) => void) => {
     const handler = (_event: unknown, data: { base64: string }) => callback(data);

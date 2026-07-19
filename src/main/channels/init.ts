@@ -78,6 +78,8 @@ export async function initChannels(): Promise<void> {
 
 /** app.on('before-quit') 调 */
 export async function shutdownChannels(): Promise<void> {
+  // 不让退出后的旧角色译文继续占用翻译 Provider 或尝试写入已经关闭的渠道。
+  channelDispatcher.cancelPendingTranslations();
   await channelManager.stopAll();
   await stopInboundServer();
   initialized = false;

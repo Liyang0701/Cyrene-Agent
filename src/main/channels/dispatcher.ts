@@ -20,6 +20,7 @@ import type {
   ChannelCapability,
   ChannelId,
   IncomingMessage,
+  ChannelDispatch,
   OutgoingMessage,
   OutgoingPart,
 } from "./types";
@@ -31,13 +32,22 @@ import { resolveLocalStickerPath } from "../sticker-protocol";
 import { getStickersDir, loadUserStickerManifest } from "../sticker-storage";
 import { BUILT_IN_STICKER_FILES } from "../sticker-descriptions";
 import { BUILT_IN_STICKER_IDS } from "../../shared/sticker-types";
-import { splitTextBySentenceBreaks } from "../../shared/message-segmentation";
 import { requireActiveCharacterState } from "../character/character-state";
 import {
   normalizeMobileMessageSegmentationMode,
   type MobileMessageSegmentationMode,
 } from "../../shared/preferences";
 import { rememberProactiveChannelRecipient } from "./proactive-delivery";
+import {
+  buildTextOutgoingParts,
+  buildTranslationAnnotationText,
+} from "./character-response-presentation";
+import type { ActiveCharacterResponseService } from "../character/character-response-service";
+
+export {
+  buildTextOutgoingParts,
+  buildTranslationAnnotationText,
+} from "./character-response-presentation";
 
 /** Phase A：用于拼接历史对话的轻量 ChatMessage 形状（与 orchestrator ChatMessage 兼容）。 */
 interface ChatMessage {
@@ -57,6 +67,12 @@ interface DispatcherTtsResult {
   mime: string;
   extension: ".mp3" | ".wav";
 }
+
+export type ChannelAgentResult = {
+  /** 唯一业务回复：进入 TTS、历史、日志、记忆与动作推断。 */
+  text: string;
+  sticker: string | null;
+};
 
 const LOG = "[ChannelDispatcher]";
 
@@ -172,7 +188,7 @@ export interface DispatcherDeps {
   /** Phase 1+：完整 agent 调用。Phase 0 留空，返回纯 echo。
    *  返回 text（必填）+ sticker（可选 sticker id，由 dispatcher 解析成本地路径后纳入 OutgoingMessage.parts）。
    *  sticker 解析失败的会静默跳过（不会把坏数据塞进 parts）。 */
-  buildAndRunAgent?: (msg: IncomingMessage, sessionId: string, priorMessages?: ChatMessage[]) => Promise<{ text: string; sticker: string | null }>;
+  buildAndRunAgent?: (msg: IncomingMessage, sessionId: string, priorMessages?: ChatMessage[]) => Promise<ChannelAgentResult>;
   /** Phase A：读这个 sessionId 最近 N 条对话历史（按时间顺序）。不提供时不拼历史，行为同 Phase 0。 */
   loadRecentChannelHistory?: (sessionId: string, limit: number) => Promise<ChatMessage[]>;
   /** Phase 3：可选 — 把文本合成成音频。失败返回 null，dispatcher 会跳过 audio。 */
@@ -187,17 +203,10 @@ export interface DispatcherDeps {
     text: string;
     at: number;
   }) => void;
+  /** 活动角色的统一原文/展示译文服务。译文在原文成功送达后才异步投递。 */
+  characterResponse?: ActiveCharacterResponseService;
   /** 读取通用设置中与渠道发送有关的偏好。 */
   loadGeneralSettings?: () => { mobileMessageSegmentation?: MobileMessageSegmentationMode };
-}
-
-export function buildTextOutgoingParts(
-  replyText: string,
-  mobileMessageSegmentation: MobileMessageSegmentationMode,
-): OutgoingPart[] {
-  const mode = normalizeMobileMessageSegmentationMode(mobileMessageSegmentation);
-  const texts = mode === "on" ? splitTextBySentenceBreaks(replyText) : [replyText];
-  return texts.map((text) => ({ kind: "text", text }));
 }
 
 export function shouldAppendChannelTtsAudio(
@@ -212,6 +221,8 @@ export function shouldAppendChannelTtsAudio(
 export class ChannelDispatcher {
   private settings: ChannelsSettings;
   private limiter: RateLimiter;
+  /** 同一渠道会话只保留最新一条尚未投递的 Translation Overlay。 */
+  private pendingTranslationControllers = new Map<string, AbortController>();
   deps: DispatcherDeps;
 
   constructor(deps: DispatcherDeps) {
@@ -227,19 +238,35 @@ export class ChannelDispatcher {
     this.limiter = new RateLimiter(this.settings);
   }
 
+  /** 角色切换、渠道关闭时取消所有尚未完成的展示译文。 */
+  cancelPendingTranslations(): void {
+    for (const [sessionId, controller] of this.pendingTranslationControllers) {
+      this.cancelPendingTranslation(sessionId, controller);
+    }
+  }
+
+  /** 统一替换 Active Character Response 服务，避免旧角色的附注越过切换边界。 */
+  setCharacterResponseService(service: ActiveCharacterResponseService | null): void {
+    this.cancelPendingTranslations();
+    if (service) this.deps.characterResponse = service;
+    else delete this.deps.characterResponse;
+  }
+
   /**
    * 处理一条入站消息。这是 manager 注入到 adapter.onMessage 的回调。
    *
    * Phase 0 行为：限速 → 计算 sessionId → 调 buildAndRunAgent（如果有）→ 构造 OutgoingMessage。
    * 如果没注入 buildAndRunAgent，返回 echo 作为占位（仅 Phase 0 用于联调）。
    */
-  async handleIncoming(msg: IncomingMessage): Promise<OutgoingMessage | null> {
+  async handleIncoming(msg: IncomingMessage): Promise<ChannelDispatch | null> {
     if (!this.limiter.hit(msg.channel, msg.senderId)) {
       console.warn(LOG, `限速: ${msg.channel}:${msg.senderId}`);
       return null;
     }
 
     const sessionId = makeSessionId(msg.channel, msg.senderId);
+    // 用户已开始新一轮对话，上一条尚未送达的附注不应再插入当前会话。
+    this.cancelPendingTranslation(sessionId);
     recordSession(msg.channel, msg.senderId, sessionId);
     rememberProactiveChannelRecipient(msg, sessionId);
 
@@ -400,7 +427,92 @@ export class ChannelDispatcher {
       threadId: msg.threadId,
       parts,
     };
-    return this.downgradeToCapability(outgoing, this.deps.manager.getAdapter(msg.channel)?.capability);
+    const message = this.downgradeToCapability(outgoing, this.deps.manager.getAdapter(msg.channel)?.capability);
+    const afterDelivery = this.createTranslationAfterDelivery({
+      sessionId,
+      originalText: replyText,
+      channel: msg.channel,
+      targetId: msg.chatId,
+      threadId: msg.threadId,
+    });
+    return { message, ...(afterDelivery ? { afterDelivery } : {}) };
+  }
+
+  private createTranslationAfterDelivery(input: Readonly<{
+    sessionId: string;
+    originalText: string;
+    channel: ChannelId;
+    targetId: string;
+    threadId?: string;
+  }>): ChannelDispatch["afterDelivery"] | undefined {
+    const service = this.deps.characterResponse;
+    if (!service) return undefined;
+    let status: ReturnType<ActiveCharacterResponseService["getStatus"]>;
+    try {
+      status = service.getStatus();
+      if (!status.enabled) return undefined;
+    } catch (error) {
+      console.warn(LOG, "读取角色翻译状态失败，按原文继续:", error);
+      return undefined;
+    }
+    const controller = new AbortController();
+    this.pendingTranslationControllers.set(input.sessionId, controller);
+
+    return async (originalDelivered: boolean): Promise<void> => {
+      if (!originalDelivered) {
+        this.cancelPendingTranslation(input.sessionId, controller);
+        return;
+      }
+      try {
+        const response = await service.complete(input.originalText, controller.signal);
+        if (!this.isCurrentPendingTranslation(input.sessionId, controller)) return;
+        const currentStatus = service.getStatus();
+        if (
+          !currentStatus.enabled
+          || currentStatus.characterId !== status.characterId
+          || currentStatus.targetLanguage !== status.targetLanguage
+          || response.characterId !== status.characterId
+        ) return;
+        const annotation = buildTranslationAnnotationText(response.translation);
+        if (!annotation) return;
+        const adapter = this.deps.manager.getAdapter(input.channel);
+        if (!adapter?.send) return;
+        const annotationMessage = this.downgradeToCapability({
+          channel: input.channel,
+          targetId: input.targetId,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          parts: [{ kind: "text", text: annotation }],
+        }, adapter.capability);
+        const result = await adapter.send(annotationMessage);
+        if (!result.ok) {
+          console.warn(LOG, `Translation Overlay 发送失败 [${input.channel}]:`, result.error);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          console.warn(LOG, "Translation Pass 失败，按原文继续:", error);
+        }
+      } finally {
+        this.releasePendingTranslation(input.sessionId, controller);
+      }
+    };
+  }
+
+  private isCurrentPendingTranslation(sessionId: string, controller: AbortController): boolean {
+    return !controller.signal.aborted
+      && this.pendingTranslationControllers.get(sessionId) === controller;
+  }
+
+  private cancelPendingTranslation(sessionId: string, expected?: AbortController): void {
+    const controller = this.pendingTranslationControllers.get(sessionId);
+    if (!controller || (expected && controller !== expected)) return;
+    this.pendingTranslationControllers.delete(sessionId);
+    controller.abort(new Error("渠道回复译文已失效"));
+  }
+
+  private releasePendingTranslation(sessionId: string, controller: AbortController): void {
+    if (this.pendingTranslationControllers.get(sessionId) === controller) {
+      this.pendingTranslationControllers.delete(sessionId);
+    }
   }
 
   /** 按目标渠道 cap 做降级。返回新对象不修改原对象。 */
@@ -463,9 +575,14 @@ export const channelDispatcher = new ChannelDispatcher({
 /** 给 index.ts 调：注入 buildAndRunAgent（让 dispatcher 真正跑 agent）
  *  返回 text + sticker：text 直接做 reply；sticker 由 dispatcher 解析成本地路径后纳入 OutgoingMessage.parts。 */
 export function setDispatcherBuildAndRunAgent(
-  fn: (msg: IncomingMessage, sessionId: string, priorMessages?: ChatMessage[]) => Promise<{ text: string; sticker: string | null }>,
+  fn: (msg: IncomingMessage, sessionId: string, priorMessages?: ChatMessage[]) => Promise<ChannelAgentResult>,
 ): void {
   channelDispatcher.deps.buildAndRunAgent = fn;
+}
+
+/** 注入活动角色响应服务；普通渠道只在原文成功送达后异步发送展示附注。 */
+export function setDispatcherCharacterResponse(service: ActiveCharacterResponseService | null): void {
+  channelDispatcher.setCharacterResponseService(service);
 }
 
 /** Phase 3.1：注入 TTS 合成（返回音频或 null） */
