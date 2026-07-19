@@ -34,6 +34,9 @@ verify-*.html
 # Raw/licensed Character Corpus evidence must stay local and outside Git.
 character-corpus-private/
 
+# Fidelity Baseline、原始角色回答、匿名映射和用户评分只属于本机私有验收记录。
+character-fidelity-private/
+
 # Debug previews / scratch files generated during UI work
 cyrene-*-preview.html
 tmp_*.txt
