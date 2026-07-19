@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "corpus:validate": "npm run build:main && node dist/main/main/character-corpus/character-corpus-cli.js",
+    "fidelity": "npm run build:main && node dist/main/main/character-fidelity/character-fidelity-cli.js",
     "build:sim": "tsc -p tsconfig.sim.json",
     "sim": "tsc -p tsconfig.sim.json && node dist/sim/main/sim/dmae-sim.js",
     "sim:coffee": "tsc -p tsconfig.sim.json && node dist/sim/main/sim/dmae-sim.js --scenario=coffee",

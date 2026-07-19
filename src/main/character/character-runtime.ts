@@ -16,6 +16,7 @@ import {
 
 export const CHARACTER_PACKAGE_SCHEMA_VERSION = 1 as const;
 export const BUILT_IN_CYRENE_ID = "cyrene" as const;
+export const BUILT_IN_CYRENE_DISPLAY_NAME = "昔涟" as const;
 
 export type CharacterCapabilityName =
   | "worldbook"
@@ -2296,7 +2297,7 @@ export function createDefaultCharacterRuntime(
     schemaVersion: CHARACTER_PACKAGE_SCHEMA_VERSION,
     id: BUILT_IN_CYRENE_ID,
     version: "1.0.0",
-    displayName: "昔涟",
+    displayName: BUILT_IN_CYRENE_DISPLAY_NAME,
     distributionStatus: "redistributable",
     compatibility: { minimumAppVersion: "0.1.0" },
     assetProvenance: [
