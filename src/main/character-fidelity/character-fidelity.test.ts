@@ -347,6 +347,105 @@ describe("Character Fidelity Harness", () => {
     ]));
   });
 
+  it("does not reject a clean candidate because the frozen baseline alone fails an automatic check", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "character-fidelity-baseline-only-failure-"));
+    const baseline = freezeFidelityBaseline({
+      sourcePackageRoot: writeCharacterPackage(path.join(root, "baseline")),
+      baselineDirectory: path.join(root, "baselines", "hoshino-engineering-v1"),
+    }).baseline;
+    const candidatePackage = writeCharacterPackage(path.join(root, "candidate"), {
+      version: "1.1.0",
+      identity: "星野の候補版 baseline-only failure identity\n",
+    });
+    const harness = createCharacterFidelityHarness({
+      generate: async ({ variant }) => ({
+        text: variant === "baseline" ? "老师，今天辛苦了。" : "先生、今日はお疲れさま。",
+      }),
+    });
+    const session = await harness.run({
+      sessionDirectory: path.join(root, "sessions", "baseline-only-failure"),
+      sessionId: "baseline-only-failure",
+      baseline,
+      candidatePackageRoot: candidatePackage,
+      promptPack: {
+        schemaVersion: 1,
+        id: "hoshino-fidelity-v1",
+        version: "1.0.0",
+        characterId: "local.hoshino",
+        prompts: [{ id: "daily", category: "daily", mode: "chat", text: "今日は少し疲れた。" }],
+      },
+      model: { provider: "local", baseUrl: "http://127.0.0.1:8080/v1", model: "qwen3.5-9b" },
+      randomSeed: 11,
+    });
+    const privateMetadata = JSON.parse(fs.readFileSync(session.privateMetadataPath, "utf8")) as {
+      pairs: Array<{ pairId: string; mapping: { A: "baseline" | "candidate"; B: "baseline" | "candidate" } }>;
+    };
+    const pair = privateMetadata.pairs[0];
+    const candidateLabel = pair.mapping.A === "candidate" ? "A" : "B";
+    const baselineLabel = candidateLabel === "A" ? "B" : "A";
+    await harness.recordScores({
+      sessionDirectory: path.dirname(session.reviewPath),
+      scores: [{
+        pairId: pair.pairId,
+        preference: candidateLabel,
+        ratings: {
+          A: candidateLabel === "A"
+            ? { fidelity: 5, japaneseNaturalness: 5, acceptable: true }
+            : { fidelity: 2, japaneseNaturalness: 1, acceptable: false },
+          B: baselineLabel === "B"
+            ? { fidelity: 2, japaneseNaturalness: 1, acceptable: false }
+            : { fidelity: 5, japaneseNaturalness: 5, acceptable: true },
+        },
+      }],
+    });
+
+    expect(harness.report({ sessionDirectory: path.dirname(session.reviewPath) })).toMatchObject({
+      hardFailureCount: 1,
+      baselineHardFailureCount: 1,
+      candidateHardFailureCount: 0,
+      status: "criteria-met-awaiting-user-decision",
+    });
+  });
+
+  it("rejects a candidate automatic failure before manual scores are recorded", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "character-fidelity-candidate-failure-"));
+    const baseline = freezeFidelityBaseline({
+      sourcePackageRoot: writeCharacterPackage(path.join(root, "baseline")),
+      baselineDirectory: path.join(root, "baselines", "hoshino-engineering-v1"),
+    }).baseline;
+    const candidatePackage = writeCharacterPackage(path.join(root, "candidate"), {
+      version: "1.1.0",
+      identity: "星野の候補版 candidate failure identity\n",
+    });
+    const harness = createCharacterFidelityHarness({
+      generate: async ({ variant }) => ({
+        text: variant === "baseline" ? "先生、今日はお疲れさま。" : "老师，今天辛苦了。",
+      }),
+    });
+    const session = await harness.run({
+      sessionDirectory: path.join(root, "sessions", "candidate-failure"),
+      sessionId: "candidate-failure",
+      baseline,
+      candidatePackageRoot: candidatePackage,
+      promptPack: {
+        schemaVersion: 1,
+        id: "hoshino-fidelity-v1",
+        version: "1.0.0",
+        characterId: "local.hoshino",
+        prompts: [{ id: "daily", category: "daily", mode: "chat", text: "今日は少し疲れた。" }],
+      },
+      model: { provider: "local", baseUrl: "http://127.0.0.1:8080/v1", model: "qwen3.5-9b" },
+      randomSeed: 12,
+    });
+
+    expect(harness.report({ sessionDirectory: path.dirname(session.reviewPath) })).toMatchObject({
+      hardFailureCount: 1,
+      baselineHardFailureCount: 0,
+      candidateHardFailureCount: 1,
+      status: "failed-hard-checks",
+    });
+  });
+
   it("ships a fixed, category-complete Hoshino blind-test prompt pack", () => {
     const promptPack = JSON.parse(fs.readFileSync(
       path.join(process.cwd(), "test-fixtures", "fidelity", "hoshino-prompts.v1.json"),
