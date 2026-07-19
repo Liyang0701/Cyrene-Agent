@@ -4,6 +4,7 @@ import type { UiTheme } from "../shared/ui-theme";
 import type { UiFont } from "../shared/ui-font";
 import type { DocumentIndexProgress } from "../main/rag/document-index-queue";
 import { getLive2DIpcListenerCounts } from "./live2d-listener-diagnostics";
+import { exposeMusicApi } from "./music";
 
 const cyreneApi = {
   minimize: () => ipcRenderer.send(IPC.WINDOW_MINIMIZE),
@@ -611,3 +612,4 @@ const gameBotApi = {
   },
 };
 contextBridge.exposeInMainWorld("gameBot", gameBotApi);
+exposeMusicApi();

@@ -103,6 +103,9 @@ import { registerDocumentTools } from "./orchestrator/document-tools";
 import { registerLifeTools, setTranslateConfig } from "./orchestrator/life-tools";
 import { registerTravelTools, setTravelConfig } from "./orchestrator/travel-tools";
 import { registerEmailTools, setEmailConfig } from "./orchestrator/email-tools";
+import { resolveMusicPaths } from "./music/paths";
+import { bootstrapMusicService } from "./music/bootstrap";
+import { installShutdownLatch } from "./music/shutdown-latch";
 import {
   buildConversationTimeContext,
   normalizeChatMessagesWithTime,
@@ -113,7 +116,13 @@ import { setAsrConfig } from "./asr/volcano-asr-engine";
 import { disposeAsr } from "./asr/asr-service";
 import { localAsrWorker } from "./asr/local-asr-worker-manager";
 import { isCallActive, setCallWindow, registerCallIpc, setCallSettings, stopCall } from "./call/call-manager";
-import { initSkills, skillRegistry, buildSkillCatalog, parseSlashCommand, setSkillEnabled, listSkillsForUi } from "./skills";
+import { initSkills, skillRegistry, buildAutoInjectedSkillContext, buildSkillCatalog, parseSlashCommand, setSkillEnabled, listSkillsForUi } from "./skills";
+import {
+  buildMusicCompanionContext,
+  isMusicCompanionAvailable,
+  loadMusicCompanionHost,
+  recordMusicCompanionPresentation,
+} from "./skills/music-companion-host";
 import { initGameBot } from "./game-bot";
 import { initChannels, shutdownChannels, setChannelsConversationLifecycle } from "./channels/init";
 import { getWechatChannelIdentityState } from "./channels/adapters/wechat/wechat-account-runtime";
@@ -2226,7 +2235,7 @@ function resolveSlashActivation<T extends { role: string; content: string }>(mes
   const parsed = parseSlashCommand(lastUser.content, knownIds);
   if (!parsed.hit || !parsed.skillId) return "";
   const skill = skillRegistry.getById(parsed.skillId);
-  if (skill && skill.enabled) {
+  if (skill && skill.enabled && skillRegistry.isAvailable(parsed.skillId)) {
     const body = skillRegistry.getBody(parsed.skillId);
     if (body !== null) {
       console.log("[Cyrene] /命令激活 skill:", parsed.skillId);
@@ -4647,8 +4656,38 @@ app.whenReady().then(async () => {
     console.error("[Cyrene] playwright MCP sync failed:", e)
   );
 
+  // Cloud Music MCP wiring (MusicService + IPC + 5 Agent tools + shutdown latch)
+  const musicPaths = resolveMusicPaths();
+  const musicBootstrap = bootstrapMusicService(musicPaths, {
+    onPresented: recordMusicCompanionPresentation,
+    sendCard: (card) => {
+      if (chatWindow && !chatWindow.isDestroyed()) {
+        chatWindow.webContents.send(IPC.AGUI_EVENT, {
+          type: "CUSTOM",
+          name: "cyrene.music",
+          value: card,
+        });
+      }
+    },
+  });
+  installShutdownLatch(musicBootstrap);
+
   // Skill 系统：扫描双源 skills + 注册 meta-tool
   initSkills();
+  try {
+    loadMusicCompanionHost(
+      path.join(app.getAppPath(), "dist", "skills", "cyrene-music-companion", "index.js"),
+      () => ({
+        skillEnabled: skillRegistry.getById("cyrene-music-companion")?.enabled === true,
+        backendAvailable: ["ready", "degraded"].includes(musicBootstrap.service.getBackendState()),
+        enabledTools: toolRegistry.getEnabledTools().map((tool) => tool.id),
+      }),
+    );
+    skillRegistry.setAvailability("cyrene-music-companion", isMusicCompanionAvailable);
+  } catch (err) {
+    console.error("[MusicCompanion] 复合 Skill 加载失败:", err);
+    skillRegistry.setAvailability("cyrene-music-companion", () => false);
+  }
 
   // 游戏代肝：IPC + game_bot_start 工具
   initGameBot();
@@ -4974,6 +5013,8 @@ app.whenReady().then(async () => {
       buildEnvironmentContext(model as any, profile as any)) as BuildOptionsDeps["buildEnvironmentContext"],
     buildSkillCatalog: ((skills: ReadonlyArray<unknown>) =>
       buildSkillCatalog(skills as any)) as BuildOptionsDeps["buildSkillCatalog"],
+    buildAutoInjectedSkillContext: ((skills: ReadonlyArray<unknown>) =>
+      buildAutoInjectedSkillContext(skills as any, (id) => skillRegistry.getBody(id))) as BuildOptionsDeps["buildAutoInjectedSkillContext"],
     skillRegistry: skillRegistry as unknown as BuildOptionsDeps["skillRegistry"],
     resolveSlashActivation: ((messages: ReadonlyArray<{ role: string; content?: string }>) =>
       resolveSlashActivation(messages as any)) as BuildOptionsDeps["resolveSlashActivation"],
@@ -5011,6 +5052,7 @@ app.whenReady().then(async () => {
         return { ok: false, error: err?.message || String(err) };
       }
     },
+    buildMusicCompanionContext,
   };
   const onRunFinishedDeps: OnRunFinishedDeps = {
     loadModelSettings: () => loadModelSettings(),

@@ -38,9 +38,12 @@ export interface CyreneRunOptions {
   settings: AgentLoopSettings;
   /** 原始消息（不含 system）。FC 循环按阶段动态注入。 */
   messages: ChatMessage[];
+  conversationId?: string;
   timeoutMs: number;
   /** 可选：本次 run 的工具集合。未传时使用当前所有已启用工具。 */
   tools?: ToolDefinition[];
+  /** 明确意图在首轮必须调用的工具。 */
+  requiredToolName?: string;
   /** 直发图片被主模型接口拒绝时，懒加载 caption fallback 消息并重试。 */
   imageCaptionFallback?: () => Promise<ChatMessage[]>;
   /** 工具阶段使用的 system prompt（仅含工具调度规则 + 自动生成的工具目录）。 */
@@ -160,9 +163,8 @@ async function executeToolCall(
   const ctx: ToolContext | undefined = tool.needsContext
     ? runContext ?? { userQuery: "" }
     : undefined;
-
   try {
-    return await tool.execute(args, ctx);
+    return await tool.execute(args, tool.needsContext ? ctx : undefined);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     return "[工具执行失败] " + errMsg;
@@ -206,6 +208,7 @@ export class CyreneAgent extends AbstractAgent {
             adapter,
             messages: options.messages,
             tools: options.tools ?? toolRegistry.getEnabledTools(),
+            requiredToolName: options.requiredToolName,
             toolSystemContent: options.toolSystemContent,
             soulSystemBaseContent: options.soulSystemBaseContent,
             soulSystemStableContent: options.soulSystemStableContent,
@@ -226,6 +229,7 @@ export class CyreneAgent extends AbstractAgent {
             executeTool: (tc, runnableToolIds) => executeToolCall(tc, runnableToolIds, {
               userQuery: extractLastUserQuery(options.messages),
               ...(options.toolContextMetadata ? { metadata: options.toolContextMetadata } : {}),
+              conversationId: options.conversationId ?? "default",
             }),
             onEvent: (event) => {
               if (cancelled) return;
