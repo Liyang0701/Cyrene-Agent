@@ -48,6 +48,7 @@ vi.mock("../orchestrator/vendors", () => ({
 import {
   endTurn,
   handleAudioFrame,
+  setCallCharacterResponseService,
   setCallSettings,
   setCallWindow,
   startCall,
@@ -58,6 +59,7 @@ describe("call manager ASR sequencing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     stopCall();
+    setCallCharacterResponseService(null);
   });
 
   it("awaits final ASR once before sending its text to the LLM and TTS", async () => {
@@ -108,6 +110,194 @@ describe("call manager ASR sequencing", () => {
     }));
     expect(sent.some((entry) => (entry.payload as { state?: string }).state === "ASR")).toBe(true);
     expect(sent.some((entry) => entry.channel.includes("tts-audio"))).toBe(true);
+    stopCall();
+  });
+
+  it("speaks only the Japanese original while separately publishing its Chinese call transcript note", async () => {
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    let completeTranslation!: () => void;
+    const translation = new Promise<{
+      characterId: string;
+      original: { text: string; language: string };
+      translation: { status: "ready"; text: string; targetLanguage: "zh-CN" };
+    }>((resolve) => {
+      completeTranslation = () => resolve({
+        characterId: "local.hoshino",
+        original: { text: "おやすみなさい、先生。", language: "ja" },
+        translation: { status: "ready", text: "晚安，老师。", targetLanguage: "zh-CN" },
+      });
+    });
+    setCallWindow({
+      isDestroyed: () => false,
+      webContents: { send: (channel: string, payload: unknown) => sent.push({ channel, payload }) },
+    } as never);
+    setCallSettings(
+      () => ({ provider: "openai", baseUrl: "http://127.0.0.1:8080/v1", model: "qwen3.5-9b", apiKey: "local" }),
+      () => ({
+        ttsEngine: "gptsovits", ttsMinimaxKey: "", ttsMinimaxVoiceId: "", ttsMinimaxModel: "speech-2.8-hd",
+        ttsSpeed: 1, ttsVolume: 1, ttsGptsovitsBaseUrl: "http://127.0.0.1:9880",
+        ttsGptsovitsRefAudioPath: "/tmp/ref.wav", ttsGptsovitsPromptText: "ref", ttsGptsovitsFormat: "wav",
+        ttsGptsovitsPromptLang: "ja", ttsGptsovitsTextLang: "ja",
+        ttsCustomCloudEndpointUrl: "", ttsCustomCloudApiKey: "", ttsCustomCloudVoiceId: "",
+        ttsCustomCloudFormat: "wav", ttsCustomCloudTimeoutMs: 30_000,
+        ttsMimoKey: "", ttsMimoVoiceAudioPath: "", ttsMimoStylePrompt: "",
+      }),
+      async () => "system",
+      async () => null,
+    );
+    setCallCharacterResponseService({
+      getStatus: () => ({ enabled: true, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+      complete: async () => translation,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "おやすみなさい、先生。" } }],
+    }), { status: 200 })));
+
+    await startCall();
+    const turn = endTurn();
+    mocks.resolveFinish("晚安");
+    await turn;
+
+    expect(mocks.synthesize).toHaveBeenLastCalledWith("gptsovits", expect.objectContaining({
+      text: "おやすみなさい、先生。",
+    }));
+    expect(sent).toContainEqual(expect.objectContaining({
+      channel: "call:response",
+      payload: expect.objectContaining({ original: "おやすみなさい、先生。" }),
+    }));
+
+    completeTranslation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent).toContainEqual(expect.objectContaining({
+      channel: "call:response",
+      payload: expect.objectContaining({
+        original: "おやすみなさい、先生。",
+        translation: { status: "ready", text: "晚安，老师。", targetLanguage: "zh-CN" },
+      }),
+    }));
+    stopCall();
+  });
+
+  it("cancels a delayed translation when the call is hung up without affecting the original reply", async () => {
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    let completeTranslation!: () => void;
+    const translation = new Promise<{
+      characterId: string;
+      original: { text: string; language: string };
+      translation: { status: "ready"; text: string; targetLanguage: "zh-CN" };
+    }>((resolve) => {
+      completeTranslation = () => resolve({
+        characterId: "local.hoshino",
+        original: { text: "おやすみなさい、先生。", language: "ja" },
+        translation: { status: "ready", text: "晚安，老师。", targetLanguage: "zh-CN" },
+      });
+    });
+    setCallWindow({
+      isDestroyed: () => false,
+      webContents: { send: (channel: string, payload: unknown) => sent.push({ channel, payload }) },
+    } as never);
+    setCallSettings(
+      () => ({ provider: "openai", baseUrl: "http://127.0.0.1:8080/v1", model: "qwen3.5-9b", apiKey: "local" }),
+      () => ({
+        ttsEngine: "gptsovits", ttsMinimaxKey: "", ttsMinimaxVoiceId: "", ttsMinimaxModel: "speech-2.8-hd",
+        ttsSpeed: 1, ttsVolume: 1, ttsGptsovitsBaseUrl: "http://127.0.0.1:9880",
+        ttsGptsovitsRefAudioPath: "/tmp/ref.wav", ttsGptsovitsPromptText: "ref", ttsGptsovitsFormat: "wav",
+        ttsGptsovitsPromptLang: "ja", ttsGptsovitsTextLang: "ja",
+        ttsCustomCloudEndpointUrl: "", ttsCustomCloudApiKey: "", ttsCustomCloudVoiceId: "",
+        ttsCustomCloudFormat: "wav", ttsCustomCloudTimeoutMs: 30_000,
+        ttsMimoKey: "", ttsMimoVoiceAudioPath: "", ttsMimoStylePrompt: "",
+      }),
+      async () => "system",
+      async () => null,
+    );
+    setCallCharacterResponseService({
+      getStatus: () => ({ enabled: true, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+      complete: async () => translation,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "おやすみなさい、先生。" } }],
+    }), { status: 200 })));
+
+    await startCall();
+    const turn = endTurn();
+    mocks.resolveFinish("晚安");
+    await turn;
+    expect(mocks.synthesize).toHaveBeenLastCalledWith("gptsovits", expect.objectContaining({
+      text: "おやすみなさい、先生。",
+    }));
+
+    stopCall();
+    completeTranslation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sent.filter((entry) => entry.channel === "call:response")).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          phase: "original",
+          original: "おやすみなさい、先生。",
+        }),
+      }),
+    ]);
+  });
+
+  it("does not publish a stale call annotation after the Active Character changes", async () => {
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    let activeCharacterId = "local.hoshino";
+    let completeTranslation!: () => void;
+    const translation = new Promise<{
+      characterId: string;
+      original: { text: string; language: string };
+      translation: { status: "ready"; text: string; targetLanguage: "zh-CN" };
+    }>((resolve) => {
+      completeTranslation = () => resolve({
+        characterId: "local.hoshino",
+        original: { text: "おやすみなさい、先生。", language: "ja" },
+        translation: { status: "ready", text: "晚安，老师。", targetLanguage: "zh-CN" },
+      });
+    });
+    setCallWindow({
+      isDestroyed: () => false,
+      webContents: { send: (channel: string, payload: unknown) => sent.push({ channel, payload }) },
+    } as never);
+    setCallSettings(
+      () => ({ provider: "openai", baseUrl: "http://127.0.0.1:8080/v1", model: "qwen3.5-9b", apiKey: "local" }),
+      () => ({
+        ttsEngine: "gptsovits", ttsMinimaxKey: "", ttsMinimaxVoiceId: "", ttsMinimaxModel: "speech-2.8-hd",
+        ttsSpeed: 1, ttsVolume: 1, ttsGptsovitsBaseUrl: "http://127.0.0.1:9880",
+        ttsGptsovitsRefAudioPath: "/tmp/ref.wav", ttsGptsovitsPromptText: "ref", ttsGptsovitsFormat: "wav",
+        ttsGptsovitsPromptLang: "ja", ttsGptsovitsTextLang: "ja",
+        ttsCustomCloudEndpointUrl: "", ttsCustomCloudApiKey: "", ttsCustomCloudVoiceId: "",
+        ttsCustomCloudFormat: "wav", ttsCustomCloudTimeoutMs: 30_000,
+        ttsMimoKey: "", ttsMimoVoiceAudioPath: "", ttsMimoStylePrompt: "",
+      }),
+      async () => "system",
+      async () => null,
+    );
+    setCallCharacterResponseService({
+      getStatus: () => ({ enabled: true, characterId: activeCharacterId, targetLanguage: "zh-CN" as const }),
+      complete: async () => translation,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "おやすみなさい、先生。" } }],
+    }), { status: 200 })));
+
+    await startCall();
+    const turn = endTurn();
+    mocks.resolveFinish("晚安");
+    await turn;
+
+    activeCharacterId = "local.lumen";
+    completeTranslation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sent.filter((entry) => entry.channel === "call:response")).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          phase: "original",
+          original: "おやすみなさい、先生。",
+        }),
+      }),
+    ]);
     stopCall();
   });
 });

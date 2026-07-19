@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC } from "../shared/ipc-channels";
+import type { CallResponsePayload } from "../shared/call-response";
 import type { UiTheme } from "../shared/ui-theme";
 import type { UiFont } from "../shared/ui-font";
 import type { DocumentIndexProgress } from "../main/rag/document-index-queue";
@@ -175,6 +176,11 @@ const callApi = {
     const handler = (_event: unknown, data: { partial?: string; final?: string }) => callback(data);
     ipcRenderer.on(IPC.CALL_ASR_RESULT, handler);
     return () => ipcRenderer.removeListener(IPC.CALL_ASR_RESULT, handler);
+  },
+  onResponse: (callback: (data: CallResponsePayload) => void) => {
+    const handler = (_event: unknown, data: CallResponsePayload) => callback(data);
+    ipcRenderer.on(IPC.CALL_RESPONSE, handler);
+    return () => ipcRenderer.removeListener(IPC.CALL_RESPONSE, handler);
   },
   onTtsAudio: (callback: (data: { base64: string }) => void) => {
     const handler = (_event: unknown, data: { base64: string }) => callback(data);

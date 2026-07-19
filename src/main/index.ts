@@ -111,7 +111,7 @@ import {
 import { setAsrConfig } from "./asr/volcano-asr-engine";
 import { disposeAsr } from "./asr/asr-service";
 import { localAsrWorker } from "./asr/local-asr-worker-manager";
-import { isCallActive, setCallWindow, registerCallIpc, setCallSettings, stopCall } from "./call/call-manager";
+import { isCallActive, setCallWindow, registerCallIpc, setCallSettings, setCallCharacterResponseService, stopCall } from "./call/call-manager";
 import { initSkills, skillRegistry, buildSkillCatalog, parseSlashCommand, setSkillEnabled, listSkillsForUi } from "./skills";
 import { initGameBot } from "./game-bot";
 import { initChannels, shutdownChannels, setChannelsConversationLifecycle } from "./channels/init";
@@ -120,7 +120,15 @@ import { planChannelExecution } from "./channels/channel-execution-plan";
 import { selectChannelHistoryContext } from "./channels/channel-history-context";
 import { shouldUseWechatQwenSoftNoThink } from "./channels/channel-model-policy";
 import { resolveWechatLocalModelFallback } from "./channels/channel-model-fallback";
-import { setDispatcherBuildAndRunAgent, setDispatcherSynthesizeTts, setDispatcherBroadcastChat, setDispatcherLoadGeneralSettings, setDispatcherLoadRecentHistory } from "./channels/dispatcher";
+import {
+  setDispatcherBuildAndRunAgent,
+  setDispatcherSynthesizeTts,
+  setDispatcherBroadcastChat,
+  setDispatcherCharacterResponse,
+  setDispatcherLoadGeneralSettings,
+  setDispatcherLoadRecentHistory,
+  type ChannelAgentResult,
+} from "./channels/dispatcher";
 import { createWindowLifecycleTracker } from "./electron-window-lifecycle";
 import {
   buildAgentRunOptions,
@@ -148,6 +156,10 @@ import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/p
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
 import { createCharacterResponsePipeline } from "./character/character-response-pipeline";
+import {
+  createActiveCharacterResponseService,
+  type ActiveCharacterResponseService,
+} from "./character/character-response-service";
 import {
   createLocalCharacterTranslationProvider,
   resolveLocalCharacterTranslationConfig,
@@ -217,6 +229,7 @@ let stickerManagerWindow: BrowserWindow | null = null;
 let callWindow: BrowserWindow | null = null;
 let schedulerEngine: SchedulerEngine | null = null;
 let proactiveChatService: ProactiveChatService | null = null;
+let activeCharacterResponseService: ActiveCharacterResponseService | null = null;
 let normalConversationBusyCount = 0;
 let proactiveScreenLocked = false;
 const petWindowMoveController = new PetWindowMoveController(
@@ -2104,6 +2117,7 @@ async function commitSelectedProactiveMessage(input: ProactiveCommitInput): Prom
       const channelResult = await sendProactiveChannelMessage({
         channel,
         text: input.text,
+        characterResponse: activeCharacterResponseService ?? undefined,
         mobileMessageSegmentation: settings.mobileMessageSegmentation,
         manager: channelManager,
         canContinue: () => {
@@ -4007,6 +4021,31 @@ app.whenReady().then(async () => {
   );
   configureActiveCharacter(characterSnapshot.activeCharacter);
   configureActiveCharacterState(characterSnapshot.activeCharacter.state);
+  const activeCharacterRuntime = characterRuntime;
+  if (!activeCharacterRuntime) throw new Error("角色运行时尚未就绪");
+  const characterResponsePipeline = createCharacterResponsePipeline({
+    translate: createLocalCharacterTranslationProvider({
+      getSettings: () => {
+        const settings = loadModelSettings();
+        return resolveLocalCharacterTranslationConfig({
+          provider: settings.provider,
+          baseUrl: settings.baseUrl,
+          model: settings.model,
+          apiKey: settings.apiKey,
+          explicitTransport: settings.explicitTransport,
+          reasoning: settings.reasoning,
+          perProvider: settings.perProvider,
+        });
+      },
+    }),
+  });
+  const characterResponseService = createActiveCharacterResponseService({
+    runtime: activeCharacterRuntime,
+    pipeline: characterResponsePipeline,
+  });
+  activeCharacterResponseService = characterResponseService;
+  setCallCharacterResponseService(characterResponseService);
+  setDispatcherCharacterResponse(characterResponseService);
   const stateMigrationFailed = characterSnapshot.diagnostics.some(({ code }) => (
     code.startsWith("character.state_migration.")
   ));
@@ -4660,7 +4699,7 @@ app.whenReady().then(async () => {
   setDispatcherBuildAndRunAgent(async (msg, sessionId, priorMessages) => {
     // 渠道响应结果：统一由 dispatcher 按 cap 降级到 OutgoingMessage.parts。
     // 包含 sticker 决定（从 onAgentRunFinished 返回，避免在 dispatcher 端重新算一遍 embedding）。
-    const channelResult: { text: string; sticker: string | null } = { text: "", sticker: null };
+    const channelResult: ChannelAgentResult = { text: "", sticker: null };
 
     // Phase 3.3：按 toolSandbox 过滤可用工具
     const sandbox = loadChannelsSettings().toolSandbox;
@@ -5019,55 +5058,13 @@ app.whenReady().then(async () => {
     recordRelationshipTurn,
     getChatWindow: () => chatWindow,
   };
-  const characterResponsePipeline = createCharacterResponsePipeline({
-    translate: createLocalCharacterTranslationProvider({
-      getSettings: () => {
-        const settings = loadModelSettings();
-        return resolveLocalCharacterTranslationConfig({
-          provider: settings.provider,
-          baseUrl: settings.baseUrl,
-          model: settings.model,
-          apiKey: settings.apiKey,
-          explicitTransport: settings.explicitTransport,
-          reasoning: settings.reasoning,
-          perProvider: settings.perProvider,
-        });
-      },
-    }),
-  });
   registerAgUiIpc(
     async (input: AguiRunInput) => buildAgentRunOptions(input, buildOptionsDeps),
     // 桌面 IPC 路径不消费 sticker（sticker 由 onAgentRunFinished 内部 IPC 广播承担）
     async (result, latestUserText) => { await onAgentRunFinished(result, latestUserText, onRunFinishedDeps); },
     () => chatWindow,
     proactiveConversationLifecycle,
-    {
-      getStatus: () => {
-        if (!characterRuntime) throw new Error("角色运行时尚未就绪");
-        const settings = characterRuntime.getActiveResponseSettings();
-        return {
-          enabled: settings.translation.status === "available" && settings.translation.enabled,
-          characterId: settings.characterId,
-          ...(settings.translation.status === "available"
-            ? { targetLanguage: settings.translation.targetLanguage }
-            : {}),
-        };
-      },
-      complete: async (originalText, signal) => {
-        if (!characterRuntime) throw new Error("角色运行时尚未就绪");
-        const active = characterRuntime.getSnapshot().activeCharacter;
-        if (!active) throw new Error("当前没有可用的活动角色");
-        const settings = characterRuntime.getActiveResponseSettings();
-        return characterResponsePipeline.complete({
-          characterId: active.id,
-          originalText,
-          language: settings.language,
-          translation: settings.translation,
-          cacheRoot: active.state.translationCacheRoot,
-          signal,
-        });
-      },
-    },
+    characterResponseService,
   );
 
   ipcMain.handle(IPC.CHATS_OPEN_IN_CHAT_WINDOW, (_event, sessionId: string) => {

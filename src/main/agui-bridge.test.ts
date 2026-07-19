@@ -170,4 +170,129 @@ describe("agui-bridge sticker event ordering", () => {
       },
     });
   });
+
+  it("resolves a started overlay when translation is disabled before its asynchronous pass finishes", async () => {
+    vi.resetModules();
+    mocks.handlers.clear();
+    const { registerAgUiIpc } = await import("./agui-bridge");
+    const sent: unknown[] = [];
+    const sender = {
+      isDestroyed: () => false,
+      send: (_channel: string, event: unknown) => sent.push(event),
+    };
+
+    registerAgUiIpc(
+      async () => ({
+        options: {
+          settings: { provider: "test", baseUrl: "", model: "", apiKey: "" },
+          messages: [],
+          timeoutMs: 1000,
+          toolSystemContent: "TOOL",
+          soulSystemBaseContent: "SOUL",
+        },
+        latestUserText: "累了",
+      }),
+      async () => {},
+      () => null,
+      undefined,
+      {
+        getStatus: () => ({ enabled: true, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+        complete: async () => ({
+          characterId: "local.hoshino",
+          original: { text: "抱抱你", language: "ja" },
+        }),
+      },
+    );
+
+    const handler = mocks.handlers.get(IPC.AGUI_RUN);
+    if (!handler) throw new Error("AGUI_RUN handler was not registered");
+    await handler({ sender }, { messages: [{ role: "user", content: "累了" }], style: "01_default.md" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sent.map((event) => (
+      (event as { name?: string }).name ?? (event as { type?: string }).type
+    ))).toEqual([
+      "RUN_STARTED",
+      "character.translation.started",
+      "RUN_FINISHED",
+      "character.translation.failed",
+    ]);
+    expect(sent[3]).toMatchObject({
+      name: "character.translation.failed",
+      value: {
+        translation: {
+          status: "failed",
+          code: "cancelled",
+          message: "翻译已关闭",
+        },
+      },
+    });
+  });
+
+  it("does not publish a ready overlay from a character that changed during the Translation Pass", async () => {
+    vi.resetModules();
+    mocks.handlers.clear();
+    const { registerAgUiIpc } = await import("./agui-bridge");
+    const sent: unknown[] = [];
+    let activeCharacterId = "local.hoshino";
+    let finishTranslation!: () => void;
+    const translationDone = new Promise<{
+      characterId: string;
+      original: { text: string; language: string };
+      translation: { status: "ready"; text: string; targetLanguage: "zh-CN" };
+    }>((resolve) => {
+      finishTranslation = () => resolve({
+        characterId: "local.hoshino",
+        original: { text: "抱抱你", language: "ja" },
+        translation: { status: "ready", text: "抱抱你。", targetLanguage: "zh-CN" },
+      });
+    });
+    const sender = {
+      isDestroyed: () => false,
+      send: (_channel: string, event: unknown) => sent.push(event),
+    };
+
+    registerAgUiIpc(
+      async () => ({
+        options: {
+          settings: { provider: "test", baseUrl: "", model: "", apiKey: "" },
+          messages: [],
+          timeoutMs: 1000,
+          toolSystemContent: "TOOL",
+          soulSystemBaseContent: "SOUL",
+        },
+        latestUserText: "累了",
+      }),
+      async () => {},
+      () => null,
+      undefined,
+      {
+        getStatus: () => ({ enabled: true, characterId: activeCharacterId, targetLanguage: "zh-CN" as const }),
+        complete: async () => translationDone,
+      },
+    );
+
+    const handler = mocks.handlers.get(IPC.AGUI_RUN);
+    if (!handler) throw new Error("AGUI_RUN handler was not registered");
+    await handler({ sender }, { messages: [{ role: "user", content: "累了" }], style: "01_default.md" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    activeCharacterId = "local.lumen";
+    finishTranslation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const names = sent.map((event) => (
+      (event as { name?: string }).name ?? (event as { type?: string }).type
+    ));
+    expect(names).toEqual([
+      "RUN_STARTED",
+      "character.translation.started",
+      "RUN_FINISHED",
+      "character.translation.failed",
+    ]);
+    expect(sent.at(-1)).toMatchObject({
+      name: "character.translation.failed",
+      value: { translation: { status: "failed", code: "cancelled" } },
+    });
+  });
 });

@@ -7,6 +7,7 @@
 
 import { BrowserWindow, ipcMain } from "electron";
 import { IPC } from "../../shared/ipc-channels";
+import type { CallResponsePayload } from "../../shared/call-response";
 import { getAsrConfig } from "../asr/volcano-asr-engine";
 import { createAsrSession, requireAsrConfig } from "../asr/asr-service";
 import type { AsrConfig, AsrSession } from "../asr/types";
@@ -16,6 +17,7 @@ import { runFunctionCallingLoop } from "../orchestrator";
 import { getAdapter, buildVendorUrlByProvider } from "../orchestrator/vendors";
 import type { ChatMessage } from "../orchestrator/vendors/types";
 import { getActiveCharacter } from "../character/active-character";
+import type { ActiveCharacterResponseService } from "../character/character-response-service";
 import {
   applySpeechRecognitionHints,
   applyVoiceProfileToTtsSettings,
@@ -31,6 +33,10 @@ let currentState: CallState = "IDLE";
 let finalText = "";
 let active = false;
 let callGeneration = 0;
+let callResponseService: ActiveCharacterResponseService | null = null;
+let callResponseAbortController: AbortController | null = null;
+let activeCallResponseSequence = 0;
+let nextCallResponseSequence = 0;
 
 /** 通话上下文：保留最近 N 轮对话历史（每轮 = user + assistant 一对）。
  * 主聊天窗口（src/main/index.ts:1276 normalizeChatMessages）默认保留 24 条（12 轮）。
@@ -92,6 +98,15 @@ export function setCallSettings(
   weatherHandler = weatherFn;
 }
 
+/**
+ * 注入活动角色的原文/译文服务。通话模块只消费其不可变结果：
+ * 原文始终流向 TTS、通话上下文与角色系统；译文仅走 CALL_RESPONSE 的展示注释。
+ */
+export function setCallCharacterResponseService(service: ActiveCharacterResponseService | null): void {
+  callResponseService = service;
+  cancelCallResponseTranslation();
+}
+
 /** 绑定通话窗口（createCallWindow 调一次）。 */
 export function setCallWindow(win: BrowserWindow | null): void {
   callWindow = win;
@@ -123,6 +138,107 @@ function sendAsrResult(partial: string | undefined, final: string | undefined): 
   }
 }
 
+function sendCallResponse(payload: CallResponsePayload): void {
+  if (callWindow && !callWindow.isDestroyed()) {
+    callWindow.webContents.send(IPC.CALL_RESPONSE, payload);
+  }
+}
+
+function cancelCallResponseTranslation(): void {
+  activeCallResponseSequence = 0;
+  if (callResponseAbortController) {
+    callResponseAbortController.abort(new Error("通话回复已不再需要译文"));
+    callResponseAbortController = null;
+  }
+}
+
+function isCurrentCallResponse(
+  generation: number,
+  sequence: number,
+  controller: AbortController,
+): boolean {
+  return active
+    && generation === callGeneration
+    && !controller.signal.aborted
+    && activeCallResponseSequence === sequence;
+}
+
+/**
+ * Translation Overlay 只能跟随生成原文时的同一角色与同一展示配置。
+ * 角色切换走受控重启，但这个检查仍是异步结果的最后一道防线；
+ * 翻译设置在通话中被关闭时也不应补发旧附注。
+ */
+function isCurrentCallTranslationConfiguration(
+  service: ActiveCharacterResponseService,
+  expected: ReturnType<ActiveCharacterResponseService["getStatus"]>,
+  responseCharacterId?: string,
+): boolean {
+  try {
+    const current = service.getStatus();
+    return current.enabled
+      && current.characterId === expected.characterId
+      && current.targetLanguage === expected.targetLanguage
+      && (!responseCharacterId || responseCharacterId === expected.characterId);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 先即时发布角色原文，再异步补充同一条回复的译文。翻译绝不能阻塞或污染通话主链路。
+ */
+function publishCallResponse(original: string, generation: number): void {
+  cancelCallResponseTranslation();
+  const sequence = ++nextCallResponseSequence;
+  activeCallResponseSequence = sequence;
+  const responseId = `${generation}:${sequence}`;
+  sendCallResponse({ responseId, phase: "original", original });
+
+  const service = callResponseService;
+  if (!service) return;
+
+  let status: ReturnType<ActiveCharacterResponseService["getStatus"]>;
+  try {
+    status = service.getStatus();
+  } catch (error) {
+    console.warn(LOG_PREFIX, "读取通话角色翻译状态失败，继续原文:", error);
+    return;
+  }
+  if (!status.enabled) return;
+
+  const controller = new AbortController();
+  callResponseAbortController = controller;
+  void service.complete(original, controller.signal)
+    .then((response) => {
+      if (
+        !isCurrentCallResponse(generation, sequence, controller)
+        || !isCurrentCallTranslationConfiguration(service, status, response.characterId)
+      ) return;
+      const translation = response.translation;
+      if (translation) sendCallResponse({ responseId, phase: "translation", original, translation });
+    })
+    .catch((error) => {
+      if (
+        !isCurrentCallResponse(generation, sequence, controller)
+        || !isCurrentCallTranslationConfiguration(service, status)
+      ) return;
+      sendCallResponse({
+        responseId,
+        phase: "translation",
+        original,
+        translation: {
+          status: "failed",
+          targetLanguage: status.targetLanguage ?? "zh-CN",
+          code: "provider-error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    })
+    .finally(() => {
+      if (callResponseAbortController === controller) callResponseAbortController = null;
+    });
+}
+
 function sendTtsAudio(base64: string): void {
   if (callWindow && !callWindow.isDestroyed()) {
     callWindow.webContents.send(IPC.CALL_TTS_AUDIO, { base64 });
@@ -132,6 +248,7 @@ function sendTtsAudio(base64: string): void {
 /** 开始通话：初始化 ASR 流，进入 LISTENING。 */
 export async function startCall(): Promise<void> {
   if (active) return;
+  cancelCallResponseTranslation();
   let cfg: AsrConfig;
   try {
     cfg = applySpeechRecognitionHints(requireAsrConfig(), getActiveCharacter().speechRecognitionHints);
@@ -176,6 +293,8 @@ export async function endTurn(): Promise<void> {
   if (!active || currentState !== "LISTENING") return;
   // 先离开 LISTENING，保证重复的 VAD turnEnd 不会启动第二次推理。
   sendState("ASR");
+  // 新一轮用户话语已开始处理，旧回复若还在翻译就无需再覆盖当前转写区。
+  cancelCallResponseTranslation();
   const generation = callGeneration;
   const session = asrStream;
   asrStream = null;
@@ -210,6 +329,9 @@ export async function endTurn(): Promise<void> {
       await restartAsr();
       return;
     }
+
+    // 原文是唯一角色发言：先发布给通话转写区，且只把原文交给 TTS。
+    publishCallResponse(reply, generation);
 
     // TTS 合成（按 ttsEngine 分发到对应引擎）
     const globalTts = ttsSettingsGetter?.();
@@ -331,6 +453,7 @@ async function restartAsr(): Promise<void> {
 export function stopCall(): void {
   active = false;
   callGeneration += 1;
+  cancelCallResponseTranslation();
   callHistory.length = 0;
   if (asrStream) {
     asrStream.dispose();

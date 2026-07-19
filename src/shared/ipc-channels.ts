@@ -245,6 +245,8 @@ export const IPC = {
   CALL_START: "call:start",               // renderer → main：开始通话（初始化 ASR）
   CALL_AUDIO_FRAME: "call:audio-frame",    // renderer → main：PCM 音频帧
   CALL_ASR_RESULT: "call:asr-result",     // main → renderer：ASR 识别结果
+  // 主进程 → renderer：角色原文回复，以及可选的展示层译文（绝不作为 TTS/记忆输入）
+  CALL_RESPONSE: "call:response",
   CALL_TURN_END: "call:turn-end",         // renderer → main：VAD 静默，结束本轮
   CALL_TTS_AUDIO: "call:tts-audio",       // main → renderer：TTS 音频
   CALL_TTS_DONE: "call:tts-done",         // renderer → main：TTS 播放完毕

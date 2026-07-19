@@ -1,6 +1,10 @@
 // dispatcher 核心单元测试：sessionId hash + 限速
 import { describe, it, expect } from "vitest";
-import { makeSessionId, lookupOriginalSender } from "./dispatcher";
+import {
+  buildTranslationAnnotationText,
+  makeSessionId,
+  lookupOriginalSender,
+} from "./dispatcher";
 
 describe("channels/dispatcher", () => {
   it("makeSessionId: 同 channel + 同 sender → 同 sessionId", () => {
@@ -29,5 +33,28 @@ describe("channels/dispatcher", () => {
 
   it("lookupOriginalSender: 未知 sessionId 返回 null", () => {
     expect(lookupOriginalSender("channel:feishu:0000000000000000")).toBeNull();
+  });
+
+  it("labels a ready translation as a non-speech channel annotation", () => {
+    expect(buildTranslationAnnotationText(
+      { status: "ready", text: "晚安，老师。", targetLanguage: "zh-CN" },
+    )).toBe("── 中文译文（仅供理解，非角色发言）──\n晚安，老师。");
+  });
+
+  it("does not produce a channel annotation when translation fails", () => {
+    expect(buildTranslationAnnotationText(
+      {
+        status: "failed",
+        targetLanguage: "zh-CN",
+        code: "timeout",
+        message: "翻译超时",
+      },
+    )).toBeNull();
+  });
+
+  it("does not produce a channel annotation when the overlay is disabled", () => {
+    expect(buildTranslationAnnotationText(
+      undefined,
+    )).toBeNull();
   });
 });
