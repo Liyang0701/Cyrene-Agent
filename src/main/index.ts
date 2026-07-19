@@ -147,6 +147,11 @@ import { runProactiveModel } from "./proactive/proactive-model";
 import type { ProactiveCandidate, ProactiveRuntimeSnapshot } from "./proactive/proactive-types";
 import { canCommitProactiveMessage } from "./proactive/proactive-policy";
 import { createDefaultCharacterRuntime, type CharacterRuntime } from "./character/character-runtime";
+import { createCharacterResponsePipeline } from "./character/character-response-pipeline";
+import {
+  createLocalCharacterTranslationProvider,
+  resolveLocalCharacterTranslationConfig,
+} from "./character/character-translation-provider";
 import { createElectronCharacterSwitchAdapters } from "./character/character-electron-switch";
 import { getCharacterBoundActivitySnapshot } from "./character/character-bound-activity";
 import { buildCharacterSafeModeDialog } from "./character/character-safe-mode";
@@ -156,6 +161,7 @@ import {
   listArchivedCharacterStates,
   requestCharacterSwitch,
   uninstallCharacterPackage,
+  updateCharacterResponseSettings,
 } from "./character/character-ipc";
 import { configureActiveCharacterState, requireActiveCharacterState } from "./character/character-state";
 import { resolveGlobalUserDataLayout } from "./character/global-user-data";
@@ -3445,6 +3451,11 @@ ipcMain.handle(IPC.CHARACTER_LIST, () => {
   return getCharacterSettingsSnapshot(characterRuntime);
 });
 
+ipcMain.handle(IPC.CHARACTER_RESPONSE_SAVE, (_event, input: unknown) => {
+  if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+  return updateCharacterResponseSettings(characterRuntime, input);
+});
+
 ipcMain.handle(IPC.CHARACTER_ACTIVE_GET, () => getActiveCharacterPublicIdentity());
 
 ipcMain.handle(IPC.CHARACTER_PICK_IMPORT_FOLDER, async () => {
@@ -5008,12 +5019,55 @@ app.whenReady().then(async () => {
     recordRelationshipTurn,
     getChatWindow: () => chatWindow,
   };
+  const characterResponsePipeline = createCharacterResponsePipeline({
+    translate: createLocalCharacterTranslationProvider({
+      getSettings: () => {
+        const settings = loadModelSettings();
+        return resolveLocalCharacterTranslationConfig({
+          provider: settings.provider,
+          baseUrl: settings.baseUrl,
+          model: settings.model,
+          apiKey: settings.apiKey,
+          explicitTransport: settings.explicitTransport,
+          reasoning: settings.reasoning,
+          perProvider: settings.perProvider,
+        });
+      },
+    }),
+  });
   registerAgUiIpc(
     async (input: AguiRunInput) => buildAgentRunOptions(input, buildOptionsDeps),
     // 桌面 IPC 路径不消费 sticker（sticker 由 onAgentRunFinished 内部 IPC 广播承担）
     async (result, latestUserText) => { await onAgentRunFinished(result, latestUserText, onRunFinishedDeps); },
     () => chatWindow,
     proactiveConversationLifecycle,
+    {
+      getStatus: () => {
+        if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+        const settings = characterRuntime.getActiveResponseSettings();
+        return {
+          enabled: settings.translation.status === "available" && settings.translation.enabled,
+          characterId: settings.characterId,
+          ...(settings.translation.status === "available"
+            ? { targetLanguage: settings.translation.targetLanguage }
+            : {}),
+        };
+      },
+      complete: async (originalText, signal) => {
+        if (!characterRuntime) throw new Error("角色运行时尚未就绪");
+        const active = characterRuntime.getSnapshot().activeCharacter;
+        if (!active) throw new Error("当前没有可用的活动角色");
+        const settings = characterRuntime.getActiveResponseSettings();
+        return characterResponsePipeline.complete({
+          characterId: active.id,
+          originalText,
+          language: settings.language,
+          translation: settings.translation,
+          cacheRoot: active.state.translationCacheRoot,
+          signal,
+        });
+      },
+    },
   );
 
   ipcMain.handle(IPC.CHATS_OPEN_IN_CHAT_WINDOW, (_event, sessionId: string) => {

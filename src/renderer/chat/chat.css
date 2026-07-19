@@ -623,6 +623,59 @@ body {
   border-top-right-radius: 6px;
 }
 
+.msg__translation {
+  max-width: min(680px, 74vw);
+  padding: 8px 12px 9px;
+  border-radius: var(--rb-radius-lg);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--rb-text-muted);
+}
+
+.msg__translation-label {
+  display: block;
+  color: var(--rb-text-faint);
+  font: var(--rb-text-micro);
+}
+
+.msg__translation-text {
+  margin: 3px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--rb-text-muted);
+  font: var(--rb-text-small);
+  line-height: 1.55;
+}
+
+.msg__translation--pending .msg__translation-label {
+  color: var(--rb-text-muted);
+}
+
+.msg__translation--failed {
+  background: rgba(244, 114, 182, 0.07);
+}
+
+.msg__translation--failed .msg__translation-label,
+.msg__translation--failed .msg__translation-text {
+  color: var(--rb-pink-200);
+}
+
+[data-ui-theme="pearl-white"] .msg__translation {
+  background: rgba(145, 88, 121, 0.055);
+}
+
+[data-ui-theme="pearl-white"] .msg__translation-label {
+  color: #896f80;
+}
+
+[data-ui-theme="pearl-white"] .msg__translation-text {
+  color: #5e4857;
+}
+
+[data-ui-theme="pearl-white"] .msg__translation--failed .msg__translation-label,
+[data-ui-theme="pearl-white"] .msg__translation--failed .msg__translation-text {
+  color: #a52d61;
+}
+
 :root {
   --sticker-width: 140px;
   --sticker-max-height: 180px;

@@ -12,6 +12,7 @@ export interface CharacterSettingsSnapshot {
   switching?: {
     blockingActivities: Array<{ kind: string; reason: string }>;
   };
+  responseSettings?: CharacterResponseSettingsViewInput;
   packages: Array<{
     id: string;
     displayName: string;
@@ -25,6 +26,49 @@ export interface CharacterSettingsSnapshot {
       diagnostics: Array<{ code: string; message: string }>;
     };
   }>;
+}
+
+export type CharacterResponseSettingsViewInput = Readonly<{
+  characterId: string;
+  language: string;
+  translation:
+    | Readonly<{ status: "unavailable"; enabled: false }>
+    | Readonly<{ status: "available"; targetLanguage: "zh-CN"; enabled: boolean }>;
+}>;
+
+export type CharacterResponseSettingsView = Readonly<{
+  languageLabel: string;
+  translationChecked: boolean;
+  translationDisabled: boolean;
+  statusText: string;
+}>;
+
+function responseLanguageLabel(language: string): string {
+  if (language === "ja") return "日语（ja）";
+  if (language === "zh-CN") return "中文（zh-CN）";
+  if (language === "en") return "英语（en）";
+  return language;
+}
+
+export function getCharacterResponseSettingsView(
+  settings: CharacterResponseSettingsViewInput,
+): CharacterResponseSettingsView {
+  if (settings.translation.status === "unavailable") {
+    return {
+      languageLabel: responseLanguageLabel(settings.language),
+      translationChecked: false,
+      translationDisabled: true,
+      statusText: "当前角色包未声明中文译文能力。",
+    };
+  }
+  return {
+    languageLabel: responseLanguageLabel(settings.language),
+    translationChecked: settings.translation.enabled,
+    translationDisabled: false,
+    statusText: settings.translation.enabled
+      ? "中文译文已开启，将在日文原文下方显示。"
+      : "中文译文已关闭，日文原文保持为主回复。",
+  };
 }
 
 export interface ArchivedCharacterStateView {

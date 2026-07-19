@@ -26,6 +26,11 @@ import {
   type DocumentIndexCardStatus,
   type DocumentIndexProgress,
 } from "./types";
+import {
+  parseTranslationOverlayEvent,
+  translationOverlayView,
+  type TranslationOverlay,
+} from "./translation-overlay";
 
 type Role = "user" | "model";
 
@@ -40,6 +45,7 @@ interface Message {
   thinking?: boolean;
   transient?: boolean;
   ttsCacheKey?: string;
+  translation?: Exclude<TranslationOverlay, Readonly<{ status: "loading" }>>;
 }
 
 type MessageAttachment = ImageMessageAttachment | DocumentMessageAttachment;
@@ -150,7 +156,7 @@ interface AguiApi {
     sessionId?: string;
     attachments?: { name: string; text: string }[];
     imageAttachments?: { name: string; filePath: string; mime?: string }[];
-  }) => Promise<{ success: boolean; error?: string }>;
+  }) => Promise<{ success: boolean; error?: string; runId?: string }>;
   onEvent: (callback: (event: unknown) => void) => () => void;
   cancel: () => Promise<boolean>;
 }
@@ -395,6 +401,7 @@ interface ChatStoreSession {
     attachments?: MessageAttachment[];
     sticker?: string | null;
     ttsCacheKey?: string;
+    translation?: Exclude<TranslationOverlay, Readonly<{ status: "loading" }>>;
   }>;
   createdAt: number;
   updatedAt: number;
@@ -433,6 +440,7 @@ declare global {
 // - 丢弃仅用于本轮模型调用的 modelContext 与 thinking 等瞬态字段
 function toPersistableMessages(arr: Message[]): Array<{
   id: string; role: Role; content: string; at: number; attachments?: MessageAttachment[]; sticker?: StickerId | null; ttsCacheKey?: string;
+  translation?: Exclude<TranslationOverlay, Readonly<{ status: "loading" }>>;
 }> {
   return arr
     .filter((m) => m && (m.role === "user" || m.role === "model") && !m.thinking && !m.transient && (
@@ -448,6 +456,7 @@ function toPersistableMessages(arr: Message[]): Array<{
       attachments: m.attachments,
       sticker: m.sticker ?? null,
       ttsCacheKey: m.ttsCacheKey,
+      translation: m.translation,
     }));
 }
 
@@ -475,6 +484,7 @@ function loadSessionIntoUI(session: ChatStoreSession): void {
       attachments: m.attachments,
       sticker: m.sticker ?? null,
       ttsCacheKey: m.ttsCacheKey,
+      translation: m.translation,
     });
   }
   // 上报活跃 sessionId（设置面板"删除当前会话"差异化提示用）
@@ -1270,6 +1280,10 @@ function render(preserveScroll = false): void {
     for (const item of bubbles) body.appendChild(item);
     if (m.role === "user") renderMessageAttachments(body, m.attachments);
 
+    if (m.role === "model" && m.translation) {
+      appendTranslationOverlay(body, m.translation);
+    }
+
     if (m.sticker) {
       const stickerSrc = getStickerSrc(m.sticker);
       if (stickerSrc) {
@@ -1366,6 +1380,95 @@ function render(preserveScroll = false): void {
     messagesEl.appendChild(row);
   }
   if (!preserveScroll) messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function appendTranslationOverlay(body: HTMLElement, overlay: TranslationOverlay): void {
+  const view = translationOverlayView(overlay);
+  if (!view) return;
+  const container = document.createElement("div");
+  container.className = `msg__translation msg__translation--${view.tone}`;
+  container.setAttribute("role", "status");
+  const label = document.createElement("span");
+  label.className = "msg__translation-label";
+  label.textContent = view.label;
+  container.appendChild(label);
+  if (view.text) {
+    const text = document.createElement("p");
+    text.className = "msg__translation-text";
+    text.textContent = view.text;
+    container.appendChild(text);
+  }
+  const actions = body.querySelector(":scope > .msg__actions");
+  body.insertBefore(container, actions);
+}
+
+function updateStreamingTranslationOverlay(
+  messageId: string,
+  overlay: TranslationOverlay,
+): void {
+  const row = messagesEl.querySelector(`[data-msg-id="${CSS.escape(messageId)}"]`);
+  const body = row?.querySelector(":scope > .msg__body") as HTMLElement | null;
+  if (!body) return;
+  body.querySelector(":scope > .msg__translation")?.remove();
+  appendTranslationOverlay(body, overlay);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function handleCharacterTranslationEvent(
+  event: Pick<AguiBaseEvent, "name" | "value">,
+  messageId: string,
+): TranslationOverlay | null {
+  if (!event.name?.startsWith("character.translation.")) return null;
+  const overlay = parseTranslationOverlayEvent(event.name, event.value);
+  if (overlay) updateStreamingTranslationOverlay(messageId, overlay);
+  return overlay;
+}
+
+function persistSettledTranslation(messageId: string, overlay: TranslationOverlay): boolean {
+  if (overlay.status === "loading") return false;
+  const message = messages.find((candidate) => candidate.id === messageId);
+  if (!message || message.transient) return false;
+  message.translation = overlay;
+  void saveSession();
+  render();
+  return true;
+}
+
+function finalizeStreamedMessage(
+  message: Message | undefined,
+  content: string,
+  sticker: string | null,
+  translation: TranslationOverlay | null,
+): void {
+  if (!message) return;
+  message.thinking = false;
+  message.transient = false;
+  message.content = content;
+  message.sticker = sticker;
+  if (translation && translation.status !== "loading") message.translation = translation;
+}
+
+function releaseListenerAfterTranslation(
+  messageId: string,
+  getPendingTranslation: () => TranslationOverlay | null,
+  offEvent: () => void,
+): void {
+  if (getPendingTranslation()?.status !== "loading") {
+    offEvent();
+    return;
+  }
+  window.setTimeout(() => {
+    if (getPendingTranslation()?.status !== "loading") return;
+    const failure: TranslationOverlay = {
+      status: "failed",
+      targetLanguage: "zh-CN",
+      code: "timeout",
+      message: "翻译结果未返回",
+    };
+    updateStreamingTranslationOverlay(messageId, failure);
+    persistSettledTranslation(messageId, failure);
+    offEvent();
+  }, 10_000);
 }
 
 let schedulerEventsOff: (() => void) | null = null;
@@ -2499,6 +2602,7 @@ async function triggerCyreneGreeting(): Promise<void> {
     let pendingTtsCachePromise: Promise<{ cacheKey: string } | null> | null = null;
     let sticker: string | null = null;
     let pendingWeatherCard: Record<string, unknown> | null = null;
+    let pendingTranslation: TranslationOverlay | null = null;
 
     let finishRun!: () => void;
     let failRun!: (err: Error) => void;
@@ -2549,9 +2653,15 @@ async function triggerCyreneGreeting(): Promise<void> {
         tryFinish();
       }, 40);
     };
-    const offEvent = registerAguiListener((rawEvent) => {
+    let activeAguiRunId: string | undefined;
+    let offEvent: () => void = () => undefined;
+    offEvent = registerAguiListener((rawEvent) => {
       try {
         const event = rawEvent as AguiBaseEvent;
+        if (event.type === "RUN_STARTED" && event.runId) activeAguiRunId = event.runId;
+        const isTranslationEvent = event.name?.startsWith("character.translation.") === true;
+        if (runFinishedArrived && !isTranslationEvent) return;
+        if (isTranslationEvent && activeAguiRunId && event.runId !== activeAguiRunId) return;
         const msg = messages.find(m => m.id === streamMsgId);
         switch (event.type) {
           case "TOOL_CALL_START": {
@@ -2612,6 +2722,13 @@ async function triggerCyreneGreeting(): Promise<void> {
             }
             break;
           case "CUSTOM":
+            {
+              const overlay = handleCharacterTranslationEvent(event, streamMsgId);
+              if (overlay) {
+                pendingTranslation = overlay;
+                if (persistSettledTranslation(streamMsgId, overlay)) offEvent();
+              }
+            }
             if (event.name === "cyrene.sticker") {
               sticker = (event.value as StickerId | null) ?? null;
             } else if (event.name === "cyrene.weather") {
@@ -2650,17 +2767,12 @@ async function triggerCyreneGreeting(): Promise<void> {
       offEvent();
       throw new Error(ack.error || "模型请求发起失败");
     }
+    if (ack.runId) activeAguiRunId = ack.runId;
 
     await runDone;
-    offEvent();
 
     const msg = messages.find(m => m.id === streamMsgId);
-    if (msg) {
-      msg.thinking = false;
-      msg.transient = false;
-      msg.content = streamContent;
-      msg.sticker = sticker;
-    }
+    finalizeStreamedMessage(msg, streamContent, sticker, pendingTranslation);
     void saveSession();
     const finishedMsgId = streamMsgId;
     void pendingTtsCachePromise?.then((cache) => {
@@ -2671,6 +2783,7 @@ async function triggerCyreneGreeting(): Promise<void> {
       void saveSession();
     });
     render();
+    releaseListenerAfterTranslation(streamMsgId, () => pendingTranslation, offEvent);
     if (pendingWeatherCard) {
       const card = buildWeatherCardEl(pendingWeatherCard);
       messagesEl.appendChild(card);
@@ -2985,6 +3098,7 @@ async function send(): Promise<void> {
     let pendingTtsCachePromise: Promise<{ cacheKey: string } | null> | null = null;
     let sticker: string | null = null;
     let pendingWeatherCard: Record<string, unknown> | null = null;
+    let pendingTranslation: TranslationOverlay | null = null;
 
     // 终态信号：由事件流的 RUN_FINISHED/RUN_ERROR 触发 resolve，
     // 不依赖 invoke 的 resolve（invoke 只做 ack，可能与事件投递存在顺序竞争）。
@@ -3044,9 +3158,15 @@ async function send(): Promise<void> {
         tryFinish();
       }, 40);
     };
-    const offEvent = registerAguiListener((rawEvent) => {
+    let activeAguiRunId: string | undefined;
+    let offEvent: () => void = () => undefined;
+    offEvent = registerAguiListener((rawEvent) => {
       try {
         const event = rawEvent as AguiBaseEvent;
+        if (event.type === "RUN_STARTED" && event.runId) activeAguiRunId = event.runId;
+        const isTranslationEvent = event.name?.startsWith("character.translation.") === true;
+        if (runFinishedArrived && !isTranslationEvent) return;
+        if (isTranslationEvent && activeAguiRunId && event.runId !== activeAguiRunId) return;
         const msg = messages.find(m => m.id === streamMsgId);
         switch (event.type) {
           case "TOOL_CALL_START": {
@@ -3114,6 +3234,13 @@ async function send(): Promise<void> {
             break;
           case "CUSTOM":
             // 主进程发的自定义事件：sticker / 天气卡片 / 任务清单 / 选择卡片
+            {
+              const overlay = handleCharacterTranslationEvent(event, streamMsgId);
+              if (overlay) {
+                pendingTranslation = overlay;
+                if (persistSettledTranslation(streamMsgId, overlay)) offEvent();
+              }
+            }
             if (event.name === "cyrene.sticker") {
               sticker = (event.value as StickerId | null) ?? null;
             } else if (event.name === "cyrene.weather") {
@@ -3160,19 +3287,14 @@ async function send(): Promise<void> {
       offEvent();
       throw new Error(ack.error || "模型请求发起失败");
     }
+    if (ack.runId) activeAguiRunId = ack.runId;
     if (clearModelContexts()) void saveSession();
 
     // 等事件流终态
     await runDone;
-    offEvent();
 
     const msg = messages.find(m => m.id === streamMsgId);
-    if (msg) {
-      msg.thinking = false;
-      msg.transient = false;
-      msg.content = streamContent;
-      msg.sticker = sticker;
-    }
+    finalizeStreamedMessage(msg, streamContent, sticker, pendingTranslation);
     void saveSession();
     const finishedMsgId = streamMsgId;
     void pendingTtsCachePromise?.then((cache) => {
@@ -3183,6 +3305,7 @@ async function send(): Promise<void> {
       void saveSession();
     });
     render();
+    releaseListenerAfterTranslation(streamMsgId, () => pendingTranslation, offEvent);
     // 天气卡片在 render 后追加到末尾（模型回复之后）
     if (pendingWeatherCard) {
       console.log("[Chat] 插入天气卡片");

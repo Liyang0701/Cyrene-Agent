@@ -80,4 +80,94 @@ describe("agui-bridge sticker event ordering", () => {
     const eventTypes = sent.map((event) => (event as { type?: string; name?: string }).name ?? (event as { type?: string }).type);
     expect(eventTypes).toEqual(["RUN_STARTED", "cyrene.sticker", "RUN_FINISHED"]);
   });
+
+  it("finishes original-response side effects before publishing an asynchronous Translation Overlay", async () => {
+    vi.resetModules();
+    mocks.handlers.clear();
+    const { registerAgUiIpc } = await import("./agui-bridge");
+    const sent: unknown[] = [];
+    const sender = {
+      isDestroyed: () => false,
+      send: (_channel: string, event: unknown) => sent.push(event),
+    };
+    const order: string[] = [];
+    let finishTranslation!: () => void;
+    const translationDone = new Promise<{
+      characterId: string;
+      original: { text: string; language: string };
+      translation: {
+        status: "ready";
+        text: string;
+        targetLanguage: "zh-CN";
+        cache: "miss";
+      };
+    }>((resolve) => {
+      finishTranslation = () => resolve({
+        characterId: "local.hoshino",
+        original: { text: "抱抱你", language: "ja" },
+        translation: {
+          status: "ready",
+          text: "抱抱你。",
+          targetLanguage: "zh-CN",
+          cache: "miss",
+        },
+      });
+    });
+
+    registerAgUiIpc(
+      async () => ({
+        options: {
+          settings: { provider: "test", baseUrl: "", model: "", apiKey: "" },
+          messages: [],
+          timeoutMs: 1000,
+          toolSystemContent: "TOOL",
+          soulSystemBaseContent: "SOUL",
+        },
+        latestUserText: "累了",
+      }),
+      async () => { order.push("original-side-effects"); },
+      () => null,
+      undefined,
+      {
+        getStatus: () => ({ enabled: true, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+        complete: async (originalText: string) => {
+          order.push(`translate:${originalText}`);
+          return translationDone;
+        },
+      },
+    );
+
+    const handler = mocks.handlers.get(IPC.AGUI_RUN);
+    if (!handler) throw new Error("AGUI_RUN handler was not registered");
+    await handler({ sender }, { messages: [{ role: "user", content: "累了" }], style: "01_default.md" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(order).toEqual(["original-side-effects", "translate:抱抱你"]);
+    expect(sent.map((event) => (
+      (event as { name?: string }).name ?? (event as { type?: string }).type
+    ))).toEqual([
+      "RUN_STARTED",
+      "character.translation.started",
+      "RUN_FINISHED",
+    ]);
+
+    finishTranslation();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent.map((event) => (
+      (event as { name?: string }).name ?? (event as { type?: string }).type
+    ))).toEqual([
+      "RUN_STARTED",
+      "character.translation.started",
+      "RUN_FINISHED",
+      "character.translation.ready",
+    ]);
+    expect(sent[3]).toMatchObject({
+      type: "CUSTOM",
+      name: "character.translation.ready",
+      value: {
+        original: { text: "抱抱你", language: "ja" },
+        translation: { text: "抱抱你。" },
+      },
+    });
+  });
 });

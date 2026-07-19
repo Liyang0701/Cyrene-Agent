@@ -61,6 +61,7 @@ export const IPC = {
   SETTINGS_GET_GENERAL: "settings:get-general",
   SETTINGS_SAVE_GENERAL: "settings:save-general",
   CHARACTER_LIST: "character:list",
+  CHARACTER_RESPONSE_SAVE: "character:response-save",
   CHARACTER_ACTIVE_GET: "character:active-get",
   CHARACTER_PICK_IMPORT_FOLDER: "character:pick-import-folder",
   CHARACTER_IMPORT: "character:import",

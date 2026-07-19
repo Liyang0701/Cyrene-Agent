@@ -83,7 +83,7 @@ const aguiApi = {
     attachments?: { name: string; text: string }[];
     imageAttachments?: { name: string; filePath: string; mime?: string }[];
   }) =>
-    ipcRenderer.invoke(IPC.AGUI_RUN, input) as Promise<{ success: boolean; error?: string }>,
+    ipcRenderer.invoke(IPC.AGUI_RUN, input) as Promise<{ success: boolean; error?: string; runId?: string }>,
   onEvent: (callback: (event: unknown) => void) => {
     const listener = (_e: unknown, event: unknown) => {
       try {
@@ -227,6 +227,9 @@ const settingsApi = {
   getGeneral: () => ipcRenderer.invoke(IPC.SETTINGS_GET_GENERAL),
   saveGeneral: (config: unknown) => ipcRenderer.invoke(IPC.SETTINGS_SAVE_GENERAL, config),
   listCharacters: () => ipcRenderer.invoke(IPC.CHARACTER_LIST),
+  saveCharacterResponseSettings: (translationEnabled: boolean) => (
+    ipcRenderer.invoke(IPC.CHARACTER_RESPONSE_SAVE, { translationEnabled })
+  ),
   pickCharacterImportFolder: () => ipcRenderer.invoke(IPC.CHARACTER_PICK_IMPORT_FOLDER) as Promise<string | null>,
   importCharacter: (sourcePath: string, confirmReplacement = false) => (
     ipcRenderer.invoke(IPC.CHARACTER_IMPORT, sourcePath, confirmReplacement)

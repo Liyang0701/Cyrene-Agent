@@ -25,6 +25,13 @@ export type CharacterCapabilityName =
   | "stickers"
   | "openers";
 
+export type CharacterResponseDeclaration = Readonly<{
+  language: string;
+  translation?: Readonly<{
+    targetLanguage: "zh-CN";
+  }>;
+}>;
+
 export type CharacterPackageManifest = Readonly<{
   schemaVersion: typeof CHARACTER_PACKAGE_SCHEMA_VERSION;
   id: string;
@@ -57,6 +64,7 @@ export type CharacterPackageManifest = Readonly<{
     aliases?: readonly string[];
     terms?: readonly string[];
   }>;
+  response?: CharacterResponseDeclaration;
   capabilities?: Readonly<{
     worldbook?: Readonly<{ directory: string }>;
     live2d?: Readonly<{ model: string }>;
@@ -86,6 +94,21 @@ type VoiceCapability = Readonly<{
   filePath: string;
   profile: CharacterVoiceProfile;
 }>;
+type TranslationCapability =
+  | Readonly<{ status: "unavailable" }>
+  | Readonly<{ status: "available"; targetLanguage: "zh-CN" }>;
+
+export type CharacterResponseSettings = Readonly<{
+  characterId: string;
+  language: string;
+  translation:
+    | Readonly<{ status: "unavailable"; enabled: false }>
+    | Readonly<{
+      status: "available";
+      targetLanguage: "zh-CN";
+      enabled: boolean;
+    }>;
+}>;
 
 export type ActiveCharacterContext = Readonly<{
   id: string;
@@ -110,6 +133,10 @@ export type ActiveCharacterContext = Readonly<{
   stateRoot: string;
   state: CharacterStateLayout;
   speechRecognitionHints: SpeechRecognitionHints;
+  response: Readonly<{
+    language: string;
+    translation: TranslationCapability;
+  }>;
   capabilities: Readonly<{
     worldbook: WorldbookCapability | UnavailableCapability;
     live2d: Live2dCapability | UnavailableCapability;
@@ -412,6 +439,15 @@ function isPathInside(rootPath: string, candidatePath: string): boolean {
     && !path.isAbsolute(relativePath);
 }
 
+function isCanonicalLanguageTag(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 35) return false;
+  try {
+    return Intl.getCanonicalLocales(value)[0] === value;
+  } catch {
+    return false;
+  }
+}
+
 export const LIVE2D_RESOURCE_KEYS = new Set([
   "Moc", "Textures", "Physics", "Pose", "UserData", "DisplayInfo", "File", "Sound",
 ]);
@@ -522,6 +558,18 @@ function evaluatePackage(
   }
   if (!isRecord(rawManifest.content)) {
     invalidField("content");
+  }
+  const rawResponse = rawManifest.response;
+  if (rawResponse !== undefined && !isRecord(rawResponse)) {
+    invalidField("response");
+  } else if (isRecord(rawResponse) && !isCanonicalLanguageTag(rawResponse.language)) {
+    invalidField("response.language");
+  } else if (isRecord(rawResponse) && rawResponse.translation !== undefined) {
+    if (!isRecord(rawResponse.translation)) {
+      invalidField("response.translation");
+    } else if (rawResponse.translation.targetLanguage !== "zh-CN") {
+      invalidField("response.translation.targetLanguage");
+    }
   }
   const rawSpeechHints = rawManifest.speechRecognitionHints;
   if (rawSpeechHints !== undefined && !isRecord(rawSpeechHints)) {
@@ -825,6 +873,7 @@ function buildActiveContext(
     manifest.displayName,
     manifest.speechRecognitionHints,
   );
+  const responseLanguage = manifest.response?.language ?? "zh-CN";
   return {
     id: manifest.id,
     displayName: manifest.displayName,
@@ -862,6 +911,12 @@ function buildActiveContext(
     stateRoot: state.root,
     state,
     speechRecognitionHints,
+    response: {
+      language: responseLanguage,
+      translation: manifest.response?.translation
+        ? { status: "available", targetLanguage: manifest.response.translation.targetLanguage }
+        : unavailable(),
+    },
     capabilities: {
       worldbook: capabilities?.worldbook
         ? { status: "available", directoryPath: path.resolve(source.rootPath, capabilities.worldbook.directory) }
@@ -1215,6 +1270,37 @@ function writeRuntimeState(filePath: string, state: CharacterRuntimeState): void
   }
 }
 
+type StoredCharacterResponsePreferences = Readonly<{
+  schemaVersion: 1;
+  translationEnabled: boolean;
+}>;
+
+function readCharacterResponsePreferences(filePath: string): StoredCharacterResponsePreferences {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<StoredCharacterResponsePreferences>;
+    if (parsed.schemaVersion === 1 && typeof parsed.translationEnabled === "boolean") {
+      return { schemaVersion: 1, translationEnabled: parsed.translationEnabled };
+    }
+  } catch {
+    // Missing or malformed preferences fail closed to an opt-in overlay.
+  }
+  return { schemaVersion: 1, translationEnabled: false };
+}
+
+function writeCharacterResponsePreferences(
+  filePath: string,
+  preferences: StoredCharacterResponsePreferences,
+): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(preferences, null, 2)}\n`, { flag: "wx" });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+  }
+}
+
 const UNCONFIGURED_SWITCH_ADAPTERS: CharacterSwitchAdapters = {
   getBlockingActivities: () => [],
   persistActiveState: () => undefined,
@@ -1425,6 +1511,43 @@ export class CharacterRuntime {
   getSnapshot(): CharacterRuntimeSnapshot {
     if (!this.snapshot) throw new Error("CharacterRuntime 尚未初始化");
     return this.snapshot;
+  }
+
+  getActiveResponseSettings(): CharacterResponseSettings {
+    const active = this.getSnapshot().activeCharacter;
+    if (!active) throw new Error("当前没有可用的活动角色");
+    if (active.response.translation.status === "unavailable") {
+      return deepFreeze({
+        characterId: active.id,
+        language: active.response.language,
+        translation: { status: "unavailable", enabled: false },
+      });
+    }
+    const preferences = readCharacterResponsePreferences(active.state.responsePreferencesFile);
+    return deepFreeze({
+      characterId: active.id,
+      language: active.response.language,
+      translation: {
+        status: "available",
+        targetLanguage: active.response.translation.targetLanguage,
+        enabled: preferences.translationEnabled,
+      },
+    });
+  }
+
+  updateActiveResponseSettings(
+    update: Readonly<{ translationEnabled: boolean }>,
+  ): CharacterResponseSettings {
+    const active = this.getSnapshot().activeCharacter;
+    if (!active) throw new Error("当前没有可用的活动角色");
+    if (active.response.translation.status === "unavailable") {
+      return this.getActiveResponseSettings();
+    }
+    writeCharacterResponsePreferences(active.state.responsePreferencesFile, {
+      schemaVersion: 1,
+      translationEnabled: update.translationEnabled,
+    });
+    return this.getActiveResponseSettings();
   }
 
   getBlockingActivities(): readonly CharacterBlockingActivity[] {

@@ -41,8 +41,11 @@ function activeCharacter(input: Readonly<{
       relationshipFile: path.join(stateRoot, "relationship.json"),
       worldbookStateFile: path.join(stateRoot, "worldbook.json"),
       proactiveStateFile: path.join(stateRoot, "proactive.json"),
+      responsePreferencesFile: path.join(stateRoot, "preferences", "response.json"),
+      translationCacheRoot: path.join(stateRoot, "translation", "cache"),
       ttsCacheRoot: path.join(stateRoot, "tts"),
     },
+    response: { language: "zh-CN", translation: { status: "unavailable" } },
     capabilities: {
       worldbook: { status: "unavailable" },
       live2d: input.live2d

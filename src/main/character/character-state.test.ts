@@ -31,6 +31,8 @@ describe("Character State Root", () => {
       relationshipFile: path.join(userDataRoot, "characters", "cyrene", "relationship", "relationship-log.json"),
       worldbookStateFile: path.join(userDataRoot, "characters", "cyrene", "worldbook", "state.json"),
       proactiveStateFile: path.join(userDataRoot, "characters", "cyrene", "proactive", "opener-state.json"),
+      responsePreferencesFile: path.join(userDataRoot, "characters", "cyrene", "preferences", "response.json"),
+      translationCacheRoot: path.join(userDataRoot, "characters", "cyrene", "translation", "cache"),
       ttsCacheRoot: path.join(userDataRoot, "characters", "cyrene", "tts", "cache"),
     });
     expect(lumen.root).not.toBe(cyrene.root);

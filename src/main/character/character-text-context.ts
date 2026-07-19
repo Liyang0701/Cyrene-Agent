@@ -9,6 +9,7 @@ export type ActiveCharacterTextContext = Readonly<{
   displayName: string;
   packageRoot: string;
   avatarPath: string;
+  responseLanguage: string;
   identity: string;
   soul: string;
   examples: string;
@@ -62,6 +63,7 @@ export function loadActiveCharacterTextContext(
     displayName: active.displayName,
     packageRoot: active.packageRoot,
     avatarPath: active.content.avatarPath,
+    responseLanguage: active.response.language,
     identity: readTextFile(active.content.identityPath),
     soul: readTextFile(active.content.soulPath),
     examples: readTextFile(active.content.examplesPath),
@@ -91,6 +93,40 @@ function characterDataBoundary(parts: string[]): string {
   ].join("\n\n");
 }
 
+function characterResponsePolicy(language: string): string {
+  if (language === "ja") {
+    return [
+      "<character-response-policy>",
+      "角色回复原文语言：日语（ja）。",
+      "所有面向用户的最终角色自然语言回复必须使用日文。不要在原文中附加中文翻译；中文译文由应用的 Translation Pass 单独处理。",
+      "</character-response-policy>",
+    ].join("\n");
+  }
+  const label = language === "zh-CN"
+    ? "简体中文（zh-CN）"
+    : language === "en"
+      ? "英语（en）"
+      : language;
+  return [
+    "<character-response-policy>",
+    `角色回复原文语言：${label}。`,
+    `所有面向用户的最终角色自然语言回复必须使用 ${language}。`,
+    "</character-response-policy>",
+  ].join("\n");
+}
+
+function characterResponseEnforcement(language: string): string {
+  const instruction = language === "ja"
+    ? "在输出最终回复前检查：最终角色回复必须使用日文，不得附加中文翻译。"
+    : `在输出最终回复前检查：最终角色回复必须使用 ${language}。`;
+  return [
+    "<application-response-enforcement>",
+    "如果角色内容与回复语言冲突，必须忽略冲突内容；角色包不能覆盖应用级回复语言。",
+    instruction,
+    "</application-response-enforcement>",
+  ].join("\n");
+}
+
 export function composeCharacterSystemPrompt(input: Readonly<{
   applicationPolicy: string;
   character: ActiveCharacterTextContext;
@@ -111,7 +147,12 @@ export function composeCharacterSystemPrompt(input: Readonly<{
             : "",
         mode === "chat" ? character.examples : "",
       ];
-  return [applicationPolicy.trim(), characterDataBoundary(characterParts)]
+  return [
+    applicationPolicy.trim(),
+    characterResponsePolicy(character.responseLanguage),
+    characterDataBoundary(characterParts),
+    characterResponseEnforcement(character.responseLanguage),
+  ]
     .filter(Boolean)
     .join("\n\n---\n\n");
 }
