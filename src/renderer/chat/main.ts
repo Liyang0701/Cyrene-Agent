@@ -72,27 +72,6 @@ interface DocumentMessageAttachment {
   reason?: string;
 }
 
-interface ChatReplyPayload {
-  reply: string;
-  sticker: string | null;
-}
-
-function normalizeChatReplyPayload(payload: unknown): ChatReplyPayload {
-  if (typeof payload === "string") {
-    return { reply: payload.trim(), sticker: null };
-  }
-
-  if (payload && typeof payload === "object") {
-    const record = payload as Partial<ChatReplyPayload>;
-    return {
-      reply: typeof record.reply === "string" ? record.reply.trim() : "",
-      sticker: record.sticker ?? null,
-    };
-  }
-
-  return { reply: "", sticker: null };
-}
-
 interface ModelConfig {
   mode: "auto" | "manual";
   provider: string;
@@ -111,7 +90,6 @@ interface ChatApi {
     close: () => void;
     toggleMaximize: () => void;
     isMaximized: () => Promise<boolean>;
-    sendMessage: (messages: Array<{ role: "user" | "model"; content: string }>, style: string) => Promise<ChatReplyPayload>;
     ingestDroppedFiles: (files: File[]) => Promise<Attachment[]>;
     processDocuments: (filePaths: string[], query: string) => Promise<Attachment[]>;
     onDocumentIndexProgress?: (callback: (progress: DocumentIndexProgress) => void) => () => void;
@@ -2498,20 +2476,6 @@ function getCurrentStyle(): string {
   // 日常聊天模式：前缀 "talk" 触发后端走 talk_system.md + tools:[]
   return isTalkMode() ? "talk" : style;
 }
-async function getModelReply(): Promise<ChatReplyPayload> {
-  if (!window.chat?.sendMessage) {
-    throw new Error("聊天 IPC 尚未就绪，请重启应用后再试。");
-  }
-  const modelMessages = buildModelMessages();
-  const payload = await withTimeout(
-    window.chat.sendMessage(modelMessages, getCurrentStyle()),
-    FRONTEND_REPLY_TIMEOUT_MS,
-    "模型响应超时，请稍后重试。",
-  );
-  if (clearModelContexts()) void saveSession();
-  return normalizeChatReplyPayload(payload);
-}
-
 let sending = false;
 
 // ── 快捷预设胶囊 ──────────────────────────────────────────
