@@ -70,7 +70,7 @@ npm run fidelity -- report \
   --session "$HOME/Documents/二次元/.local/runtime/character-fidelity/sessions/hoshino-candidate-v1"
 ```
 
-The report checks hard failures first, then calculates the candidate’s blinded preference rate, median fidelity and Japanese-naturalness ratings, per-category acceptance, and repeated-template risk. It never auto-accepts a character: `criteria-met-awaiting-user-decision` still requires explicit user approval.
+The report preserves the aggregate `hardFailureCount`, and also separates `baselineHardFailureCount` from `candidateHardFailureCount`. A frozen baseline defect remains visible as comparison evidence, but cannot veto a clean candidate; only `candidateHardFailureCount > 0` produces `failed-hard-checks` and blocks the candidate before manual scoring. The report then calculates the candidate’s blinded preference rate, median fidelity and Japanese-naturalness ratings, per-category acceptance, and repeated-template risk. It never auto-accepts a character: `criteria-met-awaiting-user-decision` still requires explicit user approval.
 
 ## Hard-rule scope
 

@@ -138,7 +138,12 @@ export type FidelityReport = Readonly<{
   sessionId: string;
   scoreCount: number;
   pairCount: number;
+  /** 两个匿名版本合计的自动硬错误数，用于保留基线缺陷的可追溯性。 */
   hardFailureCount: number;
+  /** 冻结基线的自动硬错误；它不会否决候选包。 */
+  baselineHardFailureCount: number;
+  /** 候选包的自动硬错误；它会在人工评分前直接否决候选包。 */
+  candidateHardFailureCount: number;
   candidatePreferenceRate: number | null;
   candidateMedianFidelity: number | null;
   candidateMedianJapaneseNaturalness: number | null;
@@ -965,10 +970,17 @@ export function createCharacterFidelityHarness(input: Readonly<{
       if (scoreByPair.size !== scores.length || scores.some((score) => !mappings.has(score.pairId))) {
         throw new Error("Character Fidelity scores 与 review 不一致");
       }
-      const hardFailureCount = review.pairs.reduce(
-        (sum, pair) => sum + pair.answers.A.hardFailures.length + pair.answers.B.hardFailures.length,
-        0,
-      );
+      const baselineHardFailureCount = review.pairs.reduce((sum, pair) => {
+        const mapping = mappings.get(pair.pairId)!;
+        const baselineLabel = mapping.A === "baseline" ? "A" : "B";
+        return sum + pair.answers[baselineLabel].hardFailures.length;
+      }, 0);
+      const candidateHardFailureCount = review.pairs.reduce((sum, pair) => {
+        const mapping = mappings.get(pair.pairId)!;
+        const candidateLabel = mapping.A === "candidate" ? "A" : "B";
+        return sum + pair.answers[candidateLabel].hardFailures.length;
+      }, 0);
+      const hardFailureCount = baselineHardFailureCount + candidateHardFailureCount;
       const candidateFidelity: number[] = [];
       const candidateJapaneseNaturalness: number[] = [];
       const categoryRatings = new Map<string, Array<{ acceptable: boolean }>>();
@@ -1005,7 +1017,7 @@ export function createCharacterFidelityHarness(input: Readonly<{
       const categoriesMeetThreshold = Object.values(candidateCategoryAcceptance)
         .every((acceptance) => acceptance >= 0.8);
       const criteriaMet = allScoresRecorded
-        && hardFailureCount === 0
+        && candidateHardFailureCount === 0
         && candidatePreferenceRate !== null
         && candidatePreferenceRate >= 0.8
         && candidateMedianFidelity !== null
@@ -1013,10 +1025,10 @@ export function createCharacterFidelityHarness(input: Readonly<{
         && candidateMedianJapaneseNaturalness !== null
         && candidateMedianJapaneseNaturalness >= 4
         && categoriesMeetThreshold;
-      const status: FidelityReport["status"] = !allScoresRecorded
-        ? "awaiting-scores"
-        : hardFailureCount > 0
-          ? "failed-hard-checks"
+      const status: FidelityReport["status"] = candidateHardFailureCount > 0
+        ? "failed-hard-checks"
+        : !allScoresRecorded
+          ? "awaiting-scores"
           : criteriaMet
             ? "criteria-met-awaiting-user-decision"
             : "criteria-not-met";
@@ -1025,6 +1037,8 @@ export function createCharacterFidelityHarness(input: Readonly<{
         scoreCount: scoreByPair.size,
         pairCount: review.pairs.length,
         hardFailureCount,
+        baselineHardFailureCount,
+        candidateHardFailureCount,
         candidatePreferenceRate,
         candidateMedianFidelity,
         candidateMedianJapaneseNaturalness,
