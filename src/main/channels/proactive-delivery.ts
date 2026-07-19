@@ -164,22 +164,26 @@ export async function sendProactiveChannelMessage(
     hasAttachments: false,
   });
 
-  const service = input.characterResponse;
-  let responseStatus: ReturnType<ActiveCharacterResponseService["getStatus"]> | undefined;
-  try {
-    responseStatus = service?.getStatus();
-  } catch {
-    responseStatus = undefined;
-  }
-  if (service && responseStatus?.enabled) {
-    void service.complete(originalText)
-      .then((response) => {
-        if (!isCurrentProactiveTranslationConfiguration(service, responseStatus, response.characterId)) {
-          return false;
-        }
-        return sendTranslationAnnotation(input, adapter, recipient, response.translation);
-      })
-      .catch(() => false);
+  // 只有完整原文已成功投递时才允许产生附注；分段发送中断不能让用户看到
+  // 没有对应完整日文原文的中文译文。
+  if (deliveredParts === originalParts.length) {
+    const service = input.characterResponse;
+    let responseStatus: ReturnType<ActiveCharacterResponseService["getStatus"]> | undefined;
+    try {
+      responseStatus = service?.getStatus();
+    } catch {
+      responseStatus = undefined;
+    }
+    if (service && responseStatus?.enabled) {
+      void service.complete(originalText)
+        .then((response) => {
+          if (!isCurrentProactiveTranslationConfiguration(service, responseStatus, response.characterId)) {
+            return false;
+          }
+          return sendTranslationAnnotation(input, adapter, recipient, response.translation);
+        })
+        .catch(() => false);
+    }
   }
 
   return {

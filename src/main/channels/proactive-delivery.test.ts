@@ -275,6 +275,11 @@ describe("proactive channel delivery", () => {
       .mockResolvedValueOnce({ ok: false, error: "failed" });
     const appendHistory = vi.fn();
     const appendLog = vi.fn();
+    const complete = vi.fn(async () => ({
+      characterId: "local.hoshino",
+      original: { text: "第一句。第二句？", language: "ja" },
+      translation: { status: "ready" as const, text: "第一句。第二句？", targetLanguage: "zh-CN" as const },
+    }));
     const partial = await sendProactiveChannelMessage({
       channel: "wechat",
       text: "第一句。第二句？",
@@ -283,11 +288,16 @@ describe("proactive channel delivery", () => {
       recipientRegistry: registry,
       appendHistory,
       appendLog,
+      characterResponse: {
+        getStatus: () => ({ enabled: true, characterId: "local.hoshino", targetLanguage: "zh-CN" }),
+        complete,
+      },
     });
 
     expect(partial).toEqual({ kind: "committed", deliveredParts: 1, totalParts: 2 });
     expect(appendHistory).toHaveBeenCalledWith("session-wx-1", "assistant", "第一句。");
     expect(appendLog).toHaveBeenCalledWith(expect.objectContaining({ text: "第一句。" }));
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it("stops before the next segment when the proactive generation becomes invalid", async () => {
