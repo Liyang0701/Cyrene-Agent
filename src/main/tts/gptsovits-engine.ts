@@ -3,6 +3,7 @@
 // 参考：https://github.com/RVC-Boss/GPT-SoVITS
 import * as fs from "fs";
 import { trackCharacterBoundActivity } from "../character/character-bound-activity";
+import { resolveTimeoutPolicy } from "../runtime-policy";
 
 export type GptsovitsLanguage = "auto" | "zh" | "en" | "ja";
 
@@ -15,7 +16,7 @@ export interface GptsovitsSynthesizeOptions {
   textLang?: GptsovitsLanguage;   // 输出文本语言，默认 zh
   speed?: number;           // 0.5~2，默认 1
   format?: "wav" | "mp3";   // 默认 wav
-  timeoutMs?: number;      // 默认 60000（本地推理可能较慢）
+  timeoutMs?: number;      // 默认由 ../runtime-policy 的 tts-gptsovits 阶段提供，当前 3 分钟
   debugLog?: (entry: Record<string, unknown>) => void;
 }
 
@@ -24,7 +25,7 @@ export interface GptsovitsSynthesizeResult {
   format: "wav" | "mp3";
 }
 
-const DEFAULT_TIMEOUT_MS = 60000;
+const DEFAULT_TIMEOUT_MS = resolveTimeoutPolicy({ stage: "tts-gptsovits" }).totalMs;
 const TTS_PATH = "/tts";
 
 /**

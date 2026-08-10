@@ -258,11 +258,6 @@ export class HybridRetriever {
     }));
 
     scored.sort((a, b) => b.score - a.score);
-
-    // Cross-encoder reranking is intentionally applied after hybrid recall:
-    // vector/BM25 first build a broader candidate set, then the configured
-    // reranker determines the final topK order.  If reranking fails, preserve
-    // the hybrid results so RAG remains available.
     const reranker = this.resolveReranker();
     if (!reranker || scored.length < 2) return scored.slice(0, topK);
 

@@ -1,22 +1,33 @@
-import "./theme.css";
+import "./window-corner-radius";
 import { normalizeUiTheme, type UiTheme } from "../../shared/ui-theme";
 import { DEFAULT_UI_FONT, normalizeUiFont, type UiFont } from "../../shared/ui-font";
+import type { ChatAppearanceSettings } from "../../shared/chat-appearance";
 
 declare global {
   interface Window {
     cyreneTheme?: {
       get: () => Promise<UiTheme>;
       onChanged: (callback: (theme: UiTheme) => void) => () => void;
+      getRadius: () => Promise<boolean>;
+      onRadiusChanged: (callback: (theme: boolean) => void) => () => void;
     };
     cyreneFont?: {
       get: () => Promise<UiFont>;
       onChanged: (callback: (font: UiFont) => void) => () => void;
+    };
+    cyreneAppearance?: {
+      get: () => Promise<ChatAppearanceSettings>;
+      onChanged: (callback: (settings: ChatAppearanceSettings) => void) => () => void;
     };
   }
 }
 
 function applyTheme(theme: unknown): void {
   document.documentElement.dataset.uiTheme = normalizeUiTheme(theme);
+}
+
+function applyRadius(radius: boolean): void {
+  document.documentElement.dataset.uiRadius = radius ? undefined : "false";
 }
 
 const CUSTOM_FONT_STYLE_ID = "cyrene-custom-font";
@@ -38,14 +49,22 @@ function applyFont(value: unknown): void {
   document.documentElement.dataset.uiFont = "custom";
 }
 
-applyTheme("classic");
+applyTheme("pearl-white");
 
 void window.cyreneTheme?.get()
   .then(applyTheme)
-  .catch(() => applyTheme("classic"));
+  .catch(() => applyTheme("pearl-white"));
 
 window.cyreneTheme?.onChanged((theme) => {
   applyTheme(theme);
+});
+
+void window.cyreneTheme?.getRadius()
+  .then(applyRadius)
+  .catch(() => applyRadius(true));
+
+window.cyreneTheme?.onRadiusChanged((theme) => {
+  applyRadius(theme);
 });
 
 applyFont(DEFAULT_UI_FONT);

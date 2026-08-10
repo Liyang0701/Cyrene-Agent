@@ -2,6 +2,8 @@
 // 固定 HTTP 合约：POST endpointUrl，返回音频二进制或 JSON base64。
 import { trackCharacterBoundActivity } from "../character/character-bound-activity";
 
+import { resolveTimeoutPolicy } from "../runtime-policy";
+
 export interface CustomCloudSynthesizeOptions {
   endpointUrl: string;
   apiKey?: string;
@@ -19,7 +21,7 @@ export interface CustomCloudSynthesizeResult {
   format: "wav" | "mp3";
 }
 
-const DEFAULT_TIMEOUT_MS = 30000;
+const DEFAULT_TIMEOUT_MS = resolveTimeoutPolicy({ stage: "tts-custom-cloud" }).totalMs;
 
 function normalizeFormat(value: unknown, fallback: "wav" | "mp3"): "wav" | "mp3" {
   return value === "wav" || value === "mp3" ? value : fallback;

@@ -36,15 +36,55 @@ function createBuildDeps(): BuildOptionsDeps {
     readStylePrompt: (styleId) => `STYLE_PROMPT:${styleId}`,
     resolveSoulSampling: () => ({}),
     toolRegistry: { getEnabled: () => [] },
-    logWorldbookInjection: () => {},
     normalizeChatMessages: (raw) => raw as never,
     chatRequestTimeoutMs: 1000,
     loadActionGateSystemPrompt: () => "",
     loadNativeFcSystemPrompt: () => "",
+    loadAskSystemPrompt: () => "ASK_SYSTEM",
+    loadAskPersonaPrompt: () => "ASK_PERSONA",
+    loadAskQuotesPrompt: () => "ASK_QUOTES",
   }
 }
 
 describe("build-options", () => {
+  it("builds the lightweight Ask Soul prompt in the approved order with trusted identity only", async () => {
+    const deps = createBuildDeps()
+    deps.loadUserProfile = () => ({
+      nickname: "小王",
+      callPreference: "伙伴",
+      gender: "male",
+      birthday: "2000-01-01",
+      defaultCity: "淄博",
+    })
+
+    const result = await buildAgentRunOptions({
+      messages: [{ role: "user", content: "生成一份文档" }],
+      style: "01_default.md",
+    }, deps)
+    const askOptions = result.options as typeof result.options & {
+      askSystemContent?: string
+      trustedAskUserProfile?: Record<string, unknown>
+    }
+
+    expect(askOptions.askSystemContent).toBe("ASK_SYSTEM\n\nASK_PERSONA\n\nASK_QUOTES")
+    expect(askOptions.trustedAskUserProfile).toEqual({
+      nickname: "小王",
+      callPreference: "伙伴",
+      gender: "male",
+    })
+  })
+
+  it("passes the trusted runtime environment to the agent decision stages", async () => {
+    const result = await buildAgentRunOptions({
+      messages: [{ role: "user", content: "帮我查一下今天的天气" }],
+      style: "01_default.md",
+    }, createBuildDeps())
+
+    expect((result.options as typeof result.options & {
+      runtimeEnvironmentContext?: string
+    }).runtimeEnvironmentContext).toBe("ENV")
+  })
+
   it("passes the saved reasoning preference into the Agent Runtime", async () => {
     const deps = createBuildDeps()
     deps.loadModelSettings = () => ({
@@ -182,40 +222,6 @@ describe("build-options", () => {
     expect(result.options.soulSystemBaseContent).toContain("SOUL_SYSTEM_BASE")
   })
 
-  it("固定 Soul 原文作为稳定前缀，动态上下文完整放在后缀", async () => {
-    const result = await buildAgentRunOptions({
-      messages: [{ role: "user", content: "你好" }],
-      style: "01_default.md",
-      channel: "wechat",
-    }, createBuildDeps())
-
-    expect(result.options.soulSystemStableContent).toBe("SOUL_SYSTEM_BASE")
-    expect(result.options.soulSystemDynamicContent).toContain("ENV")
-    expect(result.options.soulSystemDynamicContent).toContain("你正在通过微信回复用户")
-    expect(result.options.soulSystemDynamicContent).toContain("ALWAYS")
-    expect(result.options.soulSystemDynamicContent).toContain("RELATIONSHIP")
-
-    const combined = [
-      result.options.soulSystemStableContent,
-      result.options.soulSystemDynamicContent,
-    ].filter(Boolean).join("\n\n")
-    for (const marker of ["SOUL_SYSTEM_BASE", "ENV", "ALWAYS", "RELATIONSHIP"]) {
-      expect(combined.match(new RegExp(marker, "g"))).toHaveLength(1)
-    }
-  })
-
-  it("桌面入口保持单一 Soul system，不改变提示消息边界", async () => {
-    const result = await buildAgentRunOptions({
-      messages: [{ role: "user", content: "你好" }],
-      style: "01_default.md",
-    }, createBuildDeps())
-
-    expect(result.options.soulSystemStableContent).toBeUndefined()
-    expect(result.options.soulSystemDynamicContent).toBeUndefined()
-    expect(result.options.soulSystemBaseContent).toContain("SOUL_SYSTEM_BASE")
-    expect(result.options.soulSystemBaseContent).toContain("ENV")
-  })
-
   it("builds Chat mode without CITA or tools", async () => {
     const deps = createBuildDeps()
     deps.prepareCitaTurn = vi.fn(async () => ({ contextBlock: "unexpected" }))
@@ -236,6 +242,24 @@ describe("build-options", () => {
     expect(result.options.citaContextBlock).toBe("")
     expect(result.options.soulSystemBaseContent).toContain("STYLE_PROMPT:lively")
     expect(result.options.toolSystemContent).not.toContain("STYLE_PROMPT:lively")
+  })
+
+  it("injects the trusted session workspace into tool instructions", async () => {
+    const deps = createBuildDeps()
+    deps.getWorkspaceBinding = (conversationId) => conversationId === "daily-session"
+      ? { workspaceRoot: "C:\\projects\\daily", displayName: "daily", boundAt: 1 }
+      : undefined
+
+    const result = await buildAgentRunOptions({
+      sessionId: "daily-session",
+      messages: [{ role: "user", content: "搜索后写一份 Markdown 报告" }],
+      style: "01_default.md",
+      executionMode: "work",
+    }, deps)
+
+    expect(result.options.resolvedWorkspaceRoot).toBe("C:\\projects\\daily")
+    expect(result.options.toolSystemContent).toContain("可信根目录：C:\\projects\\daily")
+    expect(result.options.toolSystemContent).toContain("不得写入桌面")
   })
 
   it("adds a bounded social background only to enabled Chat runs", async () => {
@@ -556,7 +580,6 @@ describe("build-options", () => {
       observeRuntimeState: async () => {},
       recordRelationshipTurn,
       recordChannelRelationshipTurn,
-      getChatWindow: () => null,
     }
 
     await onAgentRunFinished(
@@ -579,7 +602,6 @@ describe("build-options", () => {
 
   it("uses the latest sticker embedding index when agent run finishes", async () => {
     const matchSticker = vi.fn(async () => ({ id: "hugtight" }))
-    const send = vi.fn()
     const latestIndex = [{ id: "hugtight", embedding: [1, 0] }]
     const deps: OnRunFinishedDeps & { getStickerEmbeddingIndex: () => unknown } = {
       loadModelSettings: () => ({
@@ -604,16 +626,9 @@ describe("build-options", () => {
       broadcastRuntimeStateChanged: () => {},
       observeRuntimeState: async () => {},
       recordRelationshipTurn: async () => {},
-      getChatWindow: () => ({
-        isDestroyed: () => false,
-        webContents: {
-          isDestroyed: () => false,
-          send,
-        },
-      }),
     }
 
-    await onAgentRunFinished({ reply: "来，抱抱你", toolResults: [] }, "今天好累", deps)
+    const effects = await onAgentRunFinished({ reply: "来，抱抱你", toolResults: [] }, "今天好累", deps)
 
     expect(matchSticker).toHaveBeenCalledWith(
       "来，抱抱你\n今天好累",
@@ -621,15 +636,11 @@ describe("build-options", () => {
       latestIndex,
       0.55,
     )
-    expect(send).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
-      name: "cyrene.sticker",
-      value: "hugtight",
-    }))
+    expect(effects).toEqual({ sticker: "hugtight" })
   })
 
   it("does not inherit the global sticker index when the Active Character has no sticker capability", async () => {
     const matchSticker = vi.fn(async () => ({ id: "cyrene-hugtight" }))
-    const send = vi.fn()
     const deps: OnRunFinishedDeps & { canUseActiveCharacterStickers: () => boolean } = {
       loadModelSettings: () => ({
         provider: "test",
@@ -653,13 +664,6 @@ describe("build-options", () => {
       broadcastRuntimeStateChanged: () => {},
       observeRuntimeState: async () => {},
       recordRelationshipTurn: async () => {},
-      getChatWindow: () => ({
-        isDestroyed: () => false,
-        webContents: {
-          isDestroyed: () => false,
-          send,
-        },
-      }),
     }
 
     const result = await onAgentRunFinished(
@@ -671,10 +675,6 @@ describe("build-options", () => {
 
     expect(matchSticker).not.toHaveBeenCalled()
     expect(result.sticker).toBeNull()
-    expect(send).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
-      name: "cyrene.sticker",
-      value: null,
-    }))
   })
 
   it("does not send document model context into memory or sticker embedding side effects", async () => {
@@ -709,18 +709,45 @@ describe("build-options", () => {
       broadcastRuntimeStateChanged: () => {},
       observeRuntimeState: async () => {},
       recordRelationshipTurn: async () => {},
-      getChatWindow: () => null,
     }
 
     await onAgentRunFinished({ reply: "总结好了", toolResults: [] }, latestUserText, deps)
 
-    expect(scheduleMemoryWrite).toHaveBeenCalledWith("帮我总结这个 md", "总结好了")
+    expect(scheduleMemoryWrite).toHaveBeenCalledWith("帮我总结这个 md", "总结好了", undefined)
     expect(matchSticker).toHaveBeenCalledWith(
       "总结好了\n帮我总结这个 md",
       expect.anything(),
       latestIndex,
       0.55,
     )
+  })
+
+  it("skips sticker embedding when reply and user content contain only code or math", async () => {
+    const matchSticker = vi.fn(async () => ({ id: "hugtight" }))
+    const deps: OnRunFinishedDeps = {
+      loadModelSettings: () => ({ provider: "test", baseUrl: "", model: "", apiKey: "", runtimeSync: "off", stickerEnabled: true }),
+      scheduleMemoryWrite: () => {},
+      inferRuntimeState: () => ({ status: "陪伴中" }),
+      runtimeState: { status: "陪伴中", feeling: "温柔", expression: 0, updatedAt: 0 },
+      feelingToExpression: { "温柔": 0 },
+      setRuntimeState: () => {},
+      stickerEmbeddingIndex: [{ id: "hugtight", embedding: [1, 0] }],
+      getEmbeddingProvider: () => ({ embed: async () => [1, 0] }),
+      matchSticker,
+      loadStickerSettings: () => ({}),
+      broadcastRuntimeStateChanged: () => {},
+      observeRuntimeState: async () => {},
+      recordRelationshipTurn: async () => {},
+    }
+
+    const effects = await onAgentRunFinished(
+      { reply: "```ts\nconst onlyCode = true\n```\n$$x^2$$", toolResults: [] },
+      "$E=mc^2$",
+      deps,
+    )
+
+    expect(matchSticker).not.toHaveBeenCalled()
+    expect(effects).toEqual({ sticker: null })
   })
 
   it("schedules one social extraction instead of legacy memory for an enabled Chat result", async () => {
@@ -742,7 +769,6 @@ describe("build-options", () => {
       broadcastRuntimeStateChanged: () => {},
       observeRuntimeState,
       recordRelationshipTurn: async () => {},
-      getChatWindow: () => null,
     }
     const retrievedAtoms: SocialAtom[] = []
 

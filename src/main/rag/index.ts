@@ -1,11 +1,13 @@
 import * as path from "path";
 import * as fs from "fs";
 import { app } from "electron";
-import { getEmbeddingProvider, resetEmbeddingProvider, EmbeddingProvider, switchEmbeddingModel as switchModel, getCurrentModelDims } from "./embedding";
+import { getEmbeddingProvider, resetEmbeddingProvider, EmbeddingProvider, switchEmbeddingModel as switchModel, getCurrentModelDims, EmbeddingDimensionMismatchError } from "./embedding";
+import type { EmbeddingIndexMetadata } from "./vectorstore";
 import { JsonVectorStore } from "./vectorstore";
 import type { MemoryEntry } from "./vectorstore";
 import { HybridRetriever } from "./retriever";
 import { WorldbookManager } from "./worldbook";
+import { logger, LogTag } from "../logger";
 export { INJECTION_HEADER, INJECTION_PREAMBLE } from "./worldbook-constants";
 import { chunkText } from "./chunk";
 import { feedEntityNamesToJieba } from "../memory/entity-graph";
@@ -22,6 +24,8 @@ let documentStore: JsonVectorStore | null = null;
 let documentRetriever: HybridRetriever | null = null;
 let worldbook: WorldbookManager | null = null;
 let provider: EmbeddingProvider | null = null;
+// 每轮对话递增，用于 DMAE repeatWindow 统计（worldbook 状态不持久化，重启回 0 可接受）
+let worldbookTurnCounter = 0;
 
 function getDataDir(): string {
   return requireActiveCharacterState().ragRoot;
@@ -80,10 +84,11 @@ export async function initRAG(
   ragMode: "auto" | "local" | "cloud" = "auto",
   cloudBaseUrl?: string,
   cloudApiKey?: string,
-  embeddingModel?: string
+  embeddingModel?: string,
+  cloudDimensions?: number,
 ): Promise<void> {
   const dataDir = getDataDir();
-  provider = getEmbeddingProvider(ragMode, cloudBaseUrl, cloudApiKey, embeddingModel);
+  provider = getEmbeddingProvider(ragMode, cloudBaseUrl, cloudApiKey, embeddingModel, cloudDimensions);
   store = new JsonVectorStore(dataDir);
   migrateGlobalDocumentEntries();
   documentStore = new JsonVectorStore(getGlobalDocumentDataDir());
@@ -93,17 +98,21 @@ export async function initRAG(
     documentRetriever = new HybridRetriever(documentStore, provider);
   }
   const activeText = getActiveCharacterText();
-  worldbook = new WorldbookManager(activeText.worldbookDirectoryPath, {
-    stateFile: requireActiveCharacterState().worldbookStateFile,
-  });
-  await worldbook.loadFromDirectory();
+  worldbook = null;
+  if (activeText.worldbookDirectoryPath) {
+    worldbook = new WorldbookManager(activeText.worldbookDirectoryPath, {
+      stateFile: requireActiveCharacterState().worldbookStateFile,
+    });
+    await worldbook.loadFromDirectory();
+  }
 
   // 把实体图谱中的已有实体名灌入 jieba 自定义词典
-  // 防止角色名、昵称等 AI 伴侣核心名词被错误切分
+  // 防止角色名、用户关系实体等核心名词被错误切分
   await feedEntityNamesToJieba();
 
-  console.log(
-    "[RAG] initialized. Mode:", ragMode,
+  logger.info(
+    LogTag.RAG,
+    "initialized. Mode:", ragMode,
     "Provider:", provider?.name ?? "none",
     "Dims:", provider?.dims ?? "N/A",
     "Memories:", store.stats.total,
@@ -125,8 +134,6 @@ export async function switchEmbeddingModel(modelKey: string): Promise<{ ok: bool
         const { getModelInstallStatusDetail } = require("./model-status") as typeof import("./model-status");
         const detail = getModelInstallStatusDetail("embedding", modelKey);
         if (detail.existingProjectDir) {
-          // Project-side directory exists but is incomplete — explicit warning,
-          // do NOT silently fall back to HuggingFace cache.
           console.error(
             `[Cyrene] embedding model "${modelKey}" project directory exists but is incomplete.\n` +
             `  existingProjectDir: ${detail.existingProjectDir}\n` +
@@ -148,7 +155,7 @@ export async function switchEmbeddingModel(modelKey: string): Promise<{ ok: bool
       }
       return { ok: false, clearedEntries: 0, error: "Local embedding model not found. Cannot switch." };
     }
-    
+
     const newDims = newProvider.dims;
 
     // Character memory and Global Document Library share the runtime, but own separate indexes.
@@ -158,10 +165,12 @@ export async function switchEmbeddingModel(modelKey: string): Promise<{ ok: bool
       const entries = (current as any).entries as Array<{ embedding: number[] }> | undefined;
       if (!entries?.length || entries[0].embedding.length === newDims) return current;
       const storePath = path.join(dataDir, "memory-store.json");
+      const metaPath = path.join(dataDir, "memory-store-meta.json");
       if (fs.existsSync(storePath)) {
         clearedEntries += entries.length;
         fs.writeFileSync(storePath, "[]", "utf8");
       }
+      if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
       return new JsonVectorStore(dataDir);
     };
     store = resetIfDimensionsChanged(store, getDataDir());
@@ -183,6 +192,14 @@ export async function switchEmbeddingModel(modelKey: string): Promise<{ ok: bool
     console.error("[RAG] switch embedding model failed:", message);
     return { ok: false, clearedEntries: 0, error: message };
   }
+}
+
+/**
+ * 获取当前向量索引的元数据（只读）。
+ * 用于设置 UI 展示或诊断。
+ */
+export function getIndexMetadata(): Readonly<EmbeddingIndexMetadata> | null {
+  return store?.getIndexMeta() ?? null;
 }
 
 // ── Memory write ──
@@ -224,7 +241,8 @@ export async function searchMemoryEntries(
   topK = 5,
   options?: { recordRecall?: boolean }
 ): Promise<Array<{ id: string; text: string; createdAt: number; score: number; metadata?: Record<string, unknown> }>> {
-  if (!retriever) return [];
+  const selectedRetriever = source === "imported_doc" ? documentRetriever : retriever;
+  if (!selectedRetriever) return [];
   let allowedEntryIds: string[] | undefined;
   if (source === "user_memory") {
     try {
@@ -245,8 +263,6 @@ export async function searchMemoryEntries(
       return [];
     }
   }
-  const selectedRetriever = source === "imported_doc" ? documentRetriever : retriever;
-  if (!selectedRetriever) return [];
   const results = await selectedRetriever.retrieve(query, source, topK, { allowedEntryIds });
   if (options?.recordRecall !== false) {
     await recordUserMemoryRecalls(results);
@@ -294,9 +310,10 @@ export async function searchHistoryEntries(
 }
 
 // ── Worldbook DMAE：每轮打分（本轮用户输入 + 上轮模型回复）──
-export function updateWorldbookActivation(userText: string, modelText: string): void {
+export function updateWorldbookActivation(userText: string, modelText: string, turn?: number): void {
   if (!worldbook) return;
-  worldbook.updateActivation(userText, modelText);
+  const t = turn ?? ++worldbookTurnCounter;
+  worldbook.updateActivation(userText, modelText, t);
 }
 
 // ── Worldbook DMAE：取 Active 条目内容（阈值门控 + 注入）──
@@ -471,7 +488,7 @@ export function isUserMemoryVectorStoreReady(): boolean {
 }
 
 /**
- * 获取指定 source 的所有向量条目（含 embedding），用于记忆压缩 / 聚类。
+ * 获取指定 source 的所有向量条目（含 embedding），用于片段压缩 / 聚类。
  * 返回浅拷贝，调用方不应修改返回的 embedding。
  */
 export function getEntriesBySource(source: string): Array<{ id: string; text: string; embedding: number[]; createdAt: number; weight: number; metadata?: Record<string, unknown> }> {

@@ -16,6 +16,10 @@ vi.mock("electron", () => ({
   },
 }));
 
+function activeChatsRoot(): string {
+  return path.join(electronMock.userDataDir, "characters", "test", "chats");
+}
+
 describe("chats store", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -38,6 +42,214 @@ describe("chats store", () => {
 
     expect(page?.messages).toHaveLength(2);
     expect(page?.session.messageCount).toBe(3);
+  });
+
+  it("includes the immutable session mode in every list item", async () => {
+    const { createSession, initialize, listSessions } = await import("./chats-store");
+    initialize({ rootDir: activeChatsRoot() });
+
+    createSession({ mode: "chat" });
+    createSession({ mode: "work" });
+    createSession({ mode: "code" });
+    createSession({ mode: "learn" });
+    createSession({ mode: "daily" });
+
+    expect(listSessions().map((session) => session.mode).sort()).toEqual([
+      "chat", "code", "daily", "learn", "work",
+    ]);
+  });
+
+  it("filters session metadata by mode without changing the unfiltered result", async () => {
+    const { createSession, initialize, listSessions } = await import("./chats-store");
+    initialize({ rootDir: activeChatsRoot() });
+
+    const chat = createSession({ mode: "chat" });
+    const work = createSession({ mode: "work" });
+    const code = createSession({ mode: "code" });
+    const daily = createSession({ mode: "daily" });
+
+    expect(listSessions({ mode: "code" })).toEqual([
+      expect.objectContaining({ id: code.id, mode: "code" }),
+    ]);
+    expect(new Set(listSessions().map((session) => session.id))).toEqual(
+      new Set([chat.id, work.id, code.id, daily.id]),
+    );
+    expect(listSessions({ mode: "daily" })).toEqual([
+      expect.objectContaining({ id: daily.id, mode: "daily" }),
+    ]);
+  });
+
+  it("moves unclassified legacy sessions into the Daily migration project", async () => {
+    const root = activeChatsRoot();
+    const sessionsDir = path.join(root, "sessions");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const baseMeta = {
+      title: "旧对话",
+      identityId: null,
+      createdAt: 1,
+      updatedAt: 1,
+      messageCount: 0,
+    };
+    fs.writeFileSync(path.join(root, "index.json"), JSON.stringify([
+      { ...baseMeta, id: "legacy-work" },
+      { ...baseMeta, id: "legacy-proactive", purpose: "proactive-chat" },
+      { ...baseMeta, id: "existing-code" },
+      { ...baseMeta, id: "invalid-mode" },
+    ]));
+    const baseSession = {
+      title: "旧对话",
+      identityId: null,
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+      schemaVersion: 1,
+    };
+    fs.writeFileSync(path.join(sessionsDir, "legacy-work.json"), JSON.stringify({
+      ...baseSession,
+      id: "legacy-work",
+    }));
+    fs.writeFileSync(path.join(sessionsDir, "legacy-proactive.json"), JSON.stringify({
+      ...baseSession,
+      id: "legacy-proactive",
+      purpose: "proactive-chat",
+    }));
+    fs.writeFileSync(path.join(sessionsDir, "existing-code.json"), JSON.stringify({
+      ...baseSession,
+      id: "existing-code",
+      mode: "code",
+      codeSession: { clineMode: "act", tasks: [] },
+    }));
+    fs.writeFileSync(path.join(sessionsDir, "invalid-mode.json"), JSON.stringify({
+      ...baseSession,
+      id: "invalid-mode",
+      mode: "invalid",
+    }));
+    fs.writeFileSync(path.join(sessionsDir, "backfilled-work.json"), JSON.stringify({
+      ...baseSession,
+      id: "backfilled-work",
+      mode: "work",
+    }));
+    const index = JSON.parse(fs.readFileSync(path.join(root, "index.json"), "utf8"));
+    index.push({ ...baseMeta, id: "backfilled-work", mode: "work" });
+    fs.writeFileSync(path.join(root, "index.json"), JSON.stringify(index));
+
+    const { initialize, listSessions } = await import("./chats-store");
+    initialize({ rootDir: activeChatsRoot() });
+
+    expect(listSessions().map(({ id, mode }) => ({ id, mode }))).toEqual([
+      { id: "legacy-work", mode: "daily" },
+      { id: "legacy-proactive", mode: "chat" },
+      { id: "existing-code", mode: "code" },
+      { id: "invalid-mode", mode: "daily" },
+      { id: "backfilled-work", mode: "daily" },
+    ]);
+    const migrationRoot = path.join(electronMock.userDataDir, "迁移文件夹");
+    expect(fs.existsSync(migrationRoot)).toBe(true);
+    expect(fs.readdirSync(migrationRoot)).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(path.join(sessionsDir, "legacy-work.json"), "utf8"))).toEqual(
+      expect.objectContaining({
+        mode: "daily",
+        workspaceBinding: expect.objectContaining({
+          workspaceRoot: migrationRoot,
+          displayName: "迁移文件夹",
+        }),
+      }),
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(root, "index.json"), "utf8"))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "legacy-work", mode: "daily", workspaceDisplayName: "迁移文件夹" }),
+        expect.objectContaining({ id: "legacy-proactive", mode: "chat" }),
+        expect.objectContaining({ id: "existing-code", mode: "code" }),
+        expect.objectContaining({ id: "invalid-mode", mode: "daily", workspaceDisplayName: "迁移文件夹" }),
+      ]),
+    );
+  });
+
+  it("persists Code session runtime metadata without changing its conversation mode", async () => {
+    const store = await import("./chats-store");
+    store.initialize({ rootDir: activeChatsRoot() });
+    const session = store.createSession({ mode: "code" });
+
+    const updated = store.updateCodeSession(session.id, {
+      clineMode: "plan",
+      activeClineSessionId: "cline-1",
+      tasks: [{ clineSessionId: "cline-1", createdAt: 123 }],
+    });
+
+    expect(updated?.mode).toBe("code");
+    expect(store.getSession(session.id)?.codeSession).toEqual(expect.objectContaining({
+      clineMode: "plan",
+      activeClineSessionId: "cline-1",
+      tasks: [{ clineSessionId: "cline-1", createdAt: 123 }],
+    }));
+  });
+
+  it("keeps the legacy migration idempotent on restart", async () => {
+    const root = activeChatsRoot();
+    const sessionsDir = path.join(root, "sessions");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const session = {
+      id: "legacy",
+      title: "旧对话",
+      identityId: null,
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+      schemaVersion: 1,
+    };
+    fs.writeFileSync(path.join(root, "index.json"), JSON.stringify([{
+      id: "legacy", title: "旧对话", identityId: null, createdAt: 1, updatedAt: 1, messageCount: 0,
+    }]));
+    fs.writeFileSync(path.join(sessionsDir, "legacy.json"), JSON.stringify(session));
+
+    let store = await import("./chats-store");
+    store.initialize({ rootDir: activeChatsRoot() });
+    const first = store.getSession("legacy");
+    vi.resetModules();
+    store = await import("./chats-store");
+    store.initialize({ rootDir: activeChatsRoot() });
+    const second = store.getSession("legacy");
+
+    expect(second?.mode).toBe("daily");
+    expect(second?.workspaceBinding).toEqual(first?.workspaceBinding);
+  });
+
+  it("indexes workspace metadata for grouped conversation lists", async () => {
+    const store = await import("./chats-store");
+    store.initialize({ rootDir: activeChatsRoot() });
+    const session = store.createSession({ mode: "work" });
+    const workspaceRoot = path.join(electronMock.userDataDir, "project-a");
+    fs.mkdirSync(workspaceRoot);
+
+    store.setWorkspaceBinding(session.id, {
+      workspaceRoot,
+      displayName: "project-a",
+      boundAt: 10,
+    });
+
+    expect(store.listSessions({ mode: "work" })).toContainEqual(expect.objectContaining({
+      id: session.id,
+      workspaceRoot,
+      workspaceDisplayName: "project-a",
+    }));
+  });
+
+  it("imports renderer legacy history into the Daily migration project", async () => {
+    const store = await import("./chats-store");
+    store.initialize({ rootDir: activeChatsRoot() });
+
+    const session = store.migrateLegacyMessages([
+      { id: "old-1", role: "user", content: "以前的消息", at: 1 },
+    ]);
+
+    expect(session).toEqual(expect.objectContaining({
+      mode: "daily",
+      workspaceBinding: expect.objectContaining({ displayName: "迁移文件夹" }),
+    }));
+    expect(store.listSessions({ mode: "daily" })).toContainEqual(expect.objectContaining({
+      id: session?.id,
+      workspaceDisplayName: "迁移文件夹",
+    }));
   });
 
   it("persists and indexes a session purpose", async () => {
@@ -75,6 +287,26 @@ describe("chats store", () => {
 
     store.appendMessage(sessions[0].id, { id: "p1", role: "model", content: "主动问候", at: 1 });
     expect(store.getSession(sessions[0].id)?.title).toBe("昔涟的主动消息");
+  });
+
+  it("persists a valid TTS cache key only on model messages without changing updatedAt", async () => {
+    const store = await import("./chats-store");
+    store.initialize({ rootDir: activeChatsRoot() });
+    const session = store.createSession({
+      initialMessages: [
+        { id: "user-1", role: "user", content: "你好", at: 1 },
+        { id: "model-1", role: "model", content: "你好呀", at: 2 },
+      ],
+    });
+    const cacheKey = `minimax-${"a".repeat(64)}`;
+    const converterVersion = "markdown-v1";
+
+    expect(store.setMessageTtsCacheKey(session.id, "model-1", cacheKey, converterVersion)?.updatedAt).toBe(session.updatedAt);
+    expect(store.getSession(session.id)?.messages[1].ttsCacheKey).toBe(cacheKey);
+    expect(store.getSession(session.id)?.messages[1].ttsCacheVersion).toBe(converterVersion);
+    expect(store.setMessageTtsCacheKey(session.id, "user-1", cacheKey, converterVersion)).toBeNull();
+    expect(store.setMessageTtsCacheKey(session.id, "model-1", "invalid-key", converterVersion)).toBeNull();
+    expect(store.setMessageTtsCacheKey(session.id, "model-1", cacheKey, "invalid version!")).toBeNull();
   });
 
   it("recreates the proactive singleton after it is deleted", async () => {

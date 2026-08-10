@@ -59,16 +59,28 @@ describe("AnthropicAdapter", () => {
     expect(JSON.parse(req.body).tool_choice).toEqual({ type: "auto" });
   });
 
-  test("maps a must-call intent to named Anthropic tool_choice when supported", () => {
-    const adapter = new AnthropicAdapter("test-anthropic", anthropicCap);
+  test("maps a must-call intent to named Anthropic tool_choice when reasoning is off", () => {
+    const adapter = new AnthropicAdapter("claude", { ...anthropicCap, id: "claude" });
     const req = adapter.buildRequest({
-      model: "m",
+      model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "搜歌" }],
       tools: [{ name: "music_search", description: "搜索", parameters: { type: "object" } }],
       toolChoiceIntent: { mode: "must_call", toolName: "music_search" },
-    }, { provider: "p", baseUrl: "https://e.test/v1", model: "m", apiKey: "sk-test" });
+    }, { provider: "Claude（Anthropic）", baseUrl: "https://api.anthropic.com/v1", model: "claude-sonnet-4-6", apiKey: "sk-test", reasoning: { mode: "off" } });
 
     expect(JSON.parse(req.body).tool_choice).toEqual({ type: "tool", name: "music_search" });
+  });
+
+  test("downgrades must-call to auto when reasoning=auto (server may default thinking on)", () => {
+    const adapter = new AnthropicAdapter("claude", { ...anthropicCap, id: "claude" });
+    const req = adapter.buildRequest({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "搜歌" }],
+      tools: [{ name: "music_search", description: "搜索", parameters: { type: "object" } }],
+      toolChoiceIntent: { mode: "must_call", toolName: "music_search" },
+    }, { provider: "Claude（Anthropic）", baseUrl: "https://api.anthropic.com/v1", model: "claude-sonnet-4-6", apiKey: "sk-test" });
+
+    expect(JSON.parse(req.body).tool_choice).toEqual({ type: "auto" });
   });
 
   test("uses auto for must-call intent while extended thinking is enabled", () => {
@@ -148,6 +160,30 @@ describe("AnthropicAdapter", () => {
     });
     expect(chunk?.deltaText).toBe("你好");
     expect(chunk?.deltaThinking).toBeUndefined();
+  });
+
+  test("parseStreamEvent: data-only compatible event uses JSON type and merges usage", () => {
+    const adapter = new AnthropicAdapter("test-anthropic", anthropicCap);
+    expect(adapter.parseStreamEvent({
+      eventType: "data",
+      data: JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "兼容流" } }),
+    })?.deltaText).toBe("兼容流");
+    expect(adapter.parseStreamEvent({
+      eventType: "message_start",
+      data: JSON.stringify({ message: { usage: { input_tokens: 11, output_tokens: 0 } } }),
+    })?.usage).toEqual({ input: 11, output: 0 });
+    expect(adapter.parseStreamEvent({
+      eventType: "message_delta",
+      data: JSON.stringify({ delta: { stop_reason: "end_turn" }, usage: { output_tokens: 8 } }),
+    })).toMatchObject({ finishReason: "end_turn", usage: { input: 0, output: 8 } });
+  });
+
+  test("parseStreamEvent: protocol error is surfaced", () => {
+    const adapter = new AnthropicAdapter("test-anthropic", anthropicCap);
+    expect(adapter.parseStreamEvent({
+      eventType: "error",
+      data: JSON.stringify({ type: "error", error: { message: "overloaded" } }),
+    })?.error).toBe("overloaded");
   });
 
   test("parseResponse: thinking block + text block + tool_use block 完整解析", () => {

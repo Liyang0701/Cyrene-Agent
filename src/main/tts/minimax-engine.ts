@@ -12,6 +12,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { WebSocket } from "ws";
 import { trackCharacterBoundActivity } from "../character/character-bound-activity";
+import { resolveTimeoutPolicy } from "../runtime-policy";
+import { enhanceMiniMaxText, type MiniMaxVocalEnhanceOptions } from "./minimax-vocal-enhancer";
 
 const BASE_URL = "https://api.minimaxi.com";
 const WS_URL = "wss://api.minimaxi.com/ws/v1/t2a_v2";
@@ -163,6 +165,10 @@ export interface SynthesizeOptions {
   debugLog?: (entry: Record<string, unknown>) => void; // 本地诊断日志（不上传）
   /** 流式回调：每收到一段 audio chunk 就调一次（传 base64）。不传 = 完整合成模式。 */
   onChunk?: (chunkBase64: string) => void;
+  /** 语音增强：自动插入 (laughs)、(breath) 等 MiniMax 语气词标签 */
+  vocalEnhance?: MiniMaxVocalEnhanceOptions;
+  /** 所属 TTS 会话被替换时关闭当前 WebSocket。 */
+  signal?: AbortSignal;
 }
 
 /**
@@ -172,6 +178,8 @@ export interface SynthesizeOptions {
  */
 async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
   return new Promise((resolve, reject) => {
+    const enhancedText = enhanceMiniMaxText(opts.text, opts.vocalEnhance);
+
     const audioChunks: Buffer[] = [];
     const requestId = `tts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const startedAt = Date.now();
@@ -186,8 +194,9 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
     log({
       phase: "request.begin",
       endpoint: WS_URL,
-      textChars: Array.from(opts.text).length,
-      textUtf8Bytes: Buffer.byteLength(opts.text, "utf8"),
+      textChars: Array.from(enhancedText).length,
+      textUtf8Bytes: Buffer.byteLength(enhancedText, "utf8"),
+      vocalEnhance: opts.vocalEnhance ?? null,
       request: {
         task_start: {
           event: "task_start",
@@ -208,7 +217,7 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
         },
         task_continue: {
           event: "task_continue",
-          text: opts.text,
+          text: enhancedText,
         },
       },
     });
@@ -216,15 +225,32 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        removeAbortListener();
         try { ws.close(); } catch { /* ignore */ }
         log({ phase: "error", error: "语音合成超时（30秒）", durationMs: Date.now() - startedAt });
         reject(new Error("语音合成超时（30秒）"));
       }
-    }, 30000);
+    }, resolveTimeoutPolicy({ stage: "tts-minimax" }).totalMs);
 
     const ws = new WebSocket(WS_URL, {
       headers: { Authorization: `Bearer ${opts.apiKey}` },
     });
+    const removeAbortListener = () => opts.signal?.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeout);
+      removeAbortListener();
+      try { ws.close(); } catch { /* ignore */ }
+      const error = new Error("语音合成已取消");
+      error.name = "AbortError";
+      reject(error);
+    };
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     ws.on("open", () => {
       log({ phase: "ws.open" });
@@ -268,8 +294,8 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
         // task 启动成功 → 发 task_continue(发文本)
         if (msg.event === "task_started") {
           log({ phase: "response.event", event: msg.event, base_resp: msg.base_resp ?? null });
-          ws.send(JSON.stringify({ event: "task_continue", text: opts.text }));
-          log({ phase: "request.sent", event: "task_continue", textChars: Array.from(opts.text).length });
+          ws.send(JSON.stringify({ event: "task_continue", text: enhancedText }));
+          log({ phase: "request.sent", event: "task_continue", textChars: Array.from(enhancedText).length });
           return;
         }
 
@@ -291,6 +317,7 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
           if (!resolved) {
             resolved = true;
             clearTimeout(timeout);
+            removeAbortListener();
             try { ws.send(JSON.stringify({ event: "task_finish" })); } catch { /* ignore */ }
             const audioBuffer = Buffer.concat(audioChunks);
             log({
@@ -312,6 +339,7 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
           if (!resolved) {
             resolved = true;
             clearTimeout(timeout);
+            removeAbortListener();
             ws.close();
             log({ phase: "error", base_resp: msg.base_resp, durationMs: Date.now() - startedAt });
             reject(new Error(`合成失败: ${msg.base_resp.status_msg} (code: ${msg.base_resp.status_code})`));
@@ -327,6 +355,7 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        removeAbortListener();
         log({ phase: "error", error: `WebSocket 连接失败: ${err.message}`, durationMs: Date.now() - startedAt });
         reject(new Error(`WebSocket 连接失败: ${err.message}`));
       }
@@ -337,6 +366,7 @@ async function synthesizeUntracked(opts: SynthesizeOptions): Promise<Buffer> {
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        removeAbortListener();
         // 连接关闭时如果已有音频块，返回；否则报错
         if (audioChunks.length > 0) {
           const audioBuffer = Buffer.concat(audioChunks);

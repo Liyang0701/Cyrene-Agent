@@ -2,15 +2,15 @@
 
 # Build outputs (Electron + Vite + tsc)
 dist/main/
+dist/cli/
 dist/preload/
 dist/renderer/assets
+dist/renderer/feeling/
+dist/renderer/status/
 dist/renderer/call/index.html
 dist/renderer/chat/index.html
-dist/renderer/feeling/
-dist/renderer/screenshot/
 dist/renderer/settings/index.html
 dist/renderer/sidebar/index.html
-dist/renderer/status/
 dist/renderer/sticker-manager/index.html
 dist/renderer/tasks/index.html
 dist/renderer/index.html
@@ -18,8 +18,15 @@ dist/renderer/live2dcubismcore.min.js
 dist/renderer/icons/
 dist/sim/
 dist/skills/
+release/
 *.js.map
 *.tsbuildinfo
+
+# Native screenshot helper is built locally and staged for electron-builder.
+resources/bin/*.exe
+
+# OpenCode 二进制 distribution（按需本地下载，不进 git）
+resources/opencode/
 
 # NOTE: dist/renderer/audio, dist/renderer/avatars, dist/renderer/models,
 # dist/renderer/stickers are intentionally NOT ignored (product assets).
@@ -43,19 +50,19 @@ scripts/test-cita-minimax.mjs
 # Raw/licensed Character Corpus evidence must stay local and outside Git.
 character-corpus-private/
 
-# Debug previews / scratch files generated during UI work
-cyrene-*-preview.html
-tmp_*.txt
-tmp/
-tmpr-build.log
-tmprenderer-build.log
-
 # Mobile voice call local/generated deployment artifacts
 /app.json
 /cloudbaserc.json
 /cloudbase/**/dist/
 /cloudflare/**/dist/
 /mobile/src/e2ee-key-material.js
+
+# Debug previews / scratch files generated during UI work
+cyrene-*-preview.html
+tmp_*.txt
+tmp/
+tmpr-build.log
+tmprenderer-build.log
 
 # Playwright CLI scratch
 .playwright-cli/
@@ -65,6 +72,17 @@ sim-result/
 
 # Brainstorming visual companion mockups (local-only artifacts)
 .superpowers/
+
+# Codebuddy IDE scratch（plan 草稿等，会话级缓存）
+.codebuddy/
+
+# Agent / CLI 一次性验证目录（regenerated，每次 worktree 都不一样名字）
+.tmp-*/
+.tmp-builtin-cli-*
+.tmp-opencode-sdk/
+
+# OpenCode CLI 运行留痕
+.opencode*/
 
 # Windows quirk: 'nul' is a reserved device name, ignore if created by accident
 nul

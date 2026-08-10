@@ -1,7 +1,7 @@
 # 主仓更新与私仓保护性同步研究
 
-> 研究日期：2026-07-26  
-> 主仓：`Playa-0v0/Cyrene-Agent`  
+> 研究日期：2026-07-26
+> 主仓：`Playa-0v0/Cyrene-Agent`
 > 私仓：`KanoTime/Cyrene-Agent`
 > 固定比较点：私仓 `origin/master@27b1807e567b1fab4ecfa14007c1ebee33e34832`，主仓 `upstream/master@87f74b106d7fdaab9ab20889735ac47f5b6b2eee`
 

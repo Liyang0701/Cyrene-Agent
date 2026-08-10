@@ -17,8 +17,7 @@ export interface VendorConfig {
   model: string;
   apiKey: string;
   /**
-   * 用户在 settings UI 显式指定的 transport；"auto" 走 baseUrl 启发式 + capabilities fallback。
-   * resolveTransport(cfg) 负责把 auto 解析为具体 transport。
+   * 用户在 settings UI 显式选择的协议。"auto" 仅作为旧配置兼容输入，运行时不按 URL 推断。
    */
   explicitTransport?: Transport | "auto";
   /**
@@ -76,10 +75,16 @@ export type StructuredOutputRequest =
     }
   | {
       mode: "json_object";
+      /** LangChain responseFormat schema; legacy wire adapters ignore it. */
+      name?: string;
+      schema?: object;
     }
   | {
       mode: "prompt_json";
       sendJsonObjectHint: boolean;
+      /** LangChain responseFormat schema; legacy wire adapters ignore it. */
+      name?: string;
+      schema?: object;
     };
 
 /**
@@ -146,6 +151,10 @@ export interface StreamEvent {
 export interface StreamChunk {
   deltaText?: string;
   deltaThinking?: string;
+  /** Provider-side terminal reason. Usage may still arrive in a later SSE event. */
+  finishReason?: string;
+  /** A protocol-level error delivered inside an otherwise successful SSE response. */
+  error?: string;
   deltaToolCalls?: ToolCall[];
   done?: boolean;
   usage?: { input: number; output: number; cachedInput?: number };
@@ -162,6 +171,8 @@ export interface ChatResponse {
   toolCalls: ToolCall[];
   finishReason: string;
   raw: unknown;
+  /** LangChain responseFormat result; absent on the legacy adapter path. */
+  structuredValue?: unknown;
   /** API 返回的 token 用量（OpenAI: prompt_tokens/completion_tokens；Anthropic: input_tokens/output_tokens）。
    *  未上报时为 undefined，由调用方兜底。 */
   usage?: { input: number; output: number; cachedInput?: number };
@@ -196,6 +207,8 @@ export interface ProviderCapability {
   transport: Transport;
   baseUrl: string;
   authStyle: AuthStyle;
+  /** Anthropic-compatible endpoints sometimes require a different auth header. */
+  anthropicAuthStyle?: AuthStyle;
   defaultModel: string;
   supportsTools: boolean;
   supportsThinking: boolean;

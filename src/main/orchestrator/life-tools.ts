@@ -12,7 +12,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
 import { toolRegistry } from "./tool-registry";
-import { currentUserTimezone } from "../user-timezone";
+import { currentUserTimezone } from "./built-in-tools";
+import { resolveTimeoutPolicy } from "../runtime-policy";
+import { getDateLocale } from "../locale-context";
+import { logger, LogTag } from "../logger";
 
 const LOG_PREFIX = "[LifeTools]";
 
@@ -58,6 +61,7 @@ function registerExpenseTools(): void {
       "参数：amount（金额，数字），category（分类：餐饮/交通/购物/娱乐/生活/其他），note（备注）。",
     enabled: true,
     risk: "safe",
+    effectKind: "external_side_effect" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -99,6 +103,8 @@ function registerExpenseTools(): void {
       "参数：days（最近 N 天，默认 30），category（可选，按分类过滤），summary（可选，true 只返回汇总）。",
     enabled: true,
     risk: "safe",
+    effectKind: "read" as const,
+    verificationPolicy: "none" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -126,7 +132,7 @@ function registerExpenseTools(): void {
         return `[query_expense] 最近 ${days} 天共 ${records.length} 笔，合计 ${total.toFixed(2)} 元\n分类：${JSON.stringify(byCat)}`;
       }
       const lines = records.map(r => {
-        const d = new Date(r.ts).toLocaleDateString("zh-CN", { timeZone: currentUserTimezone() });
+        const d = new Date(r.ts).toLocaleDateString(getDateLocale(), { timeZone: currentUserTimezone() });
         return `${d} ${r.amount}元 ${r.category} ${r.note}`;
       });
       return `[query_expense] 最近 ${days} 天 ${records.length} 笔：\n${lines.join("\n")}`;
@@ -153,6 +159,8 @@ function registerExchangeRateTool(): void {
       "参数：from（源货币代码，如 USD/EUR/JPY/CNY），to（目标货币），amount（金额，默认 1）。",
     enabled: true,
     risk: "network",
+    effectKind: "read" as const,
+    verificationPolicy: "none" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -181,7 +189,7 @@ function registerExchangeRateTool(): void {
         return `[exchange_rate] 查不到 ${from} → ${to}，可能是不支持的币种`;
       }
       const result = (amount * rate).toFixed(2);
-      return `[exchange_rate] ${amount} ${from} = ${result} ${to}（汇率 ${rate}，更新于 ${new Date().toLocaleDateString("zh-CN", { timeZone: currentUserTimezone() })}）`;
+      return `[exchange_rate] ${amount} ${from} = ${result} ${to}（汇率 ${rate}，更新于 ${new Date().toLocaleDateString(getDateLocale(), { timeZone: currentUserTimezone() })}）`;
     },
   });
 }
@@ -213,6 +221,8 @@ function registerTranslateTool(): void {
       "参数：text（要翻译的文本），to（目标语言，如「英文」「中文」「日文」），from（可选，源语言，默认自动检测）。",
     enabled: true,
     risk: "network",
+    effectKind: "read" as const,
+    verificationPolicy: "none" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -237,7 +247,7 @@ function registerTranslateTool(): void {
       const fromHint = args.from ? `（源语言：${args.from}）` : "（自动检测源语言）";
       const sysPrompt = `你是翻译器${fromHint}。把以下文本翻译成${to}，只输出译文，不要任何解释或额外文字。`;
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 30000);
+      const timer = setTimeout(() => ctrl.abort(), resolveTimeoutPolicy({ stage: "external-http" }).totalMs);
       try {
         const resp = await fetch(buildVendorUrlByProvider(settings.provider, settings.baseUrl), {
           method: "POST",
@@ -274,6 +284,95 @@ function registerTranslateTool(): void {
 // 代码补丁
 // ══════════════════════════════════════════════════════════
 
+interface MatchPosition {
+  line: number;       // 1-based 行号
+  context: string;    // 匹配位置前后各 2 行上下文
+}
+
+/** 计算两个字符串的相似度（0-1） */
+function similarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a || !b) return 0;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+
+  // 简单的字符集相似度
+  const setA = new Set(a);
+  const setB = new Set(b);
+  let intersection = 0;
+  for (const c of setA) {
+    if (setB.has(c)) intersection++;
+  }
+  return intersection / Math.max(setA.size, setB.size);
+}
+
+/** 在文件行中查找最接近 old_string 的位置 */
+function findNearestMatch(
+  lines: string[],
+  oldStr: string,
+): { line: number; similarity: number; context: string } | null {
+  const oldLines = oldStr.split("\n");
+  const firstLine = oldLines[0]?.trim() || "";
+  if (!firstLine) return null;
+
+  let bestMatch: { line: number; sim: number } | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const sim = similarity(firstLine, line.trim());
+    if (sim > 0.5 && (!bestMatch || sim > bestMatch.sim)) {
+      bestMatch = { line: i + 1, sim };
+    }
+  }
+
+  if (!bestMatch) return null;
+
+  // 收集上下文（前后各 2 行）
+  const contextStart = Math.max(0, bestMatch.line - 3);
+  const contextEnd = Math.min(lines.length, bestMatch.line + 2);
+  const contextLines = lines.slice(contextStart, contextEnd).map((l, idx) => {
+    const ln = contextStart + idx + 1;
+    const marker = ln === bestMatch!.line ? ">" : " ";
+    return `${marker} ${String(ln).padStart(4)} | ${l}`;
+  });
+
+  return {
+    line: bestMatch.line,
+    similarity: bestMatch.sim,
+    context: contextLines.join("\n"),
+  };
+}
+
+/** 查找所有匹配位置和上下文 */
+function findAllMatchPositions(lines: string[], oldStr: string): MatchPosition[] {
+  const positions: MatchPosition[] = [];
+  const oldLines = oldStr.split("\n");
+  const firstLine = oldLines[0] || "";
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes(firstLine)) {
+      // 检查完整匹配
+      const candidate = lines.slice(i, i + oldLines.length).join("\n");
+      if (candidate === oldStr) {
+        const contextStart = Math.max(0, i - 2);
+        const contextEnd = Math.min(lines.length, i + oldLines.length + 2);
+        const contextLines = lines.slice(contextStart, contextEnd).map((l, idx) => {
+          const ln = contextStart + idx + 1;
+          const marker = (ln >= i + 1 && ln <= i + oldLines.length) ? ">" : " ";
+          return `${marker} ${String(ln).padStart(4)} | ${l}`;
+        });
+
+        positions.push({
+          line: i + 1,
+          context: contextLines.join("\n"),
+        });
+      }
+    }
+  }
+
+  return positions;
+}
+
 function registerApplyPatchTool(): void {
   toolRegistry.register({
     id: "apply_patch",
@@ -290,6 +389,8 @@ function registerApplyPatchTool(): void {
       "old_string 必须在文件中唯一；匹配多处会报错，需要更长的上下文使其唯一。",
     enabled: true,
     risk: "fs-write",
+    effectKind: "mutation" as const,
+    verificationPolicy: "code" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -301,26 +402,77 @@ function registerApplyPatchTool(): void {
     },
     execute: async (args) => {
       const filePath = String(args.file_path || "");
-      if (!filePath) return "[错误] file_path 不能为空";
-      if (!fs.existsSync(filePath)) return `[错误] 文件不存在：${filePath}`;
-
-      const content = fs.readFileSync(filePath, "utf8");
       const oldStr = String(args.old_string ?? "");
       const newStr = String(args.new_string ?? "");
-      if (!oldStr) return "[错误] old_string 不能为空";
-
-      const count = content.split(oldStr).length - 1;
-      if (count === 0) {
-        return "[错误] old_string 在文件中未找到。请确认内容（包括缩进、换行）是否精确匹配。";
+      console.log(LOG_PREFIX, "apply_patch:", filePath, "old_len=" + oldStr.length, "new_len=" + newStr.length);
+      if (!filePath) return JSON.stringify({ success: false, errorCode: "INVALID_PATH", error: "file_path 不能为空", retryable: false });
+      if (!fs.existsSync(filePath)) {
+        return JSON.stringify({
+          success: false,
+          errorCode: "FILE_NOT_FOUND",
+          error: `文件不存在：${filePath}。不要重复相同路径，请先用 read_file 或 search_code 确认文件存在。`,
+          retryable: true,
+        });
       }
+
+      const content = fs.readFileSync(filePath, "utf8");
+      if (!oldStr) return JSON.stringify({ success: false, errorCode: "INVALID_INPUT", error: "old_string 不能为空", retryable: false });
+
+      const lines = content.split("\n");
+      const count = content.split(oldStr).length - 1;
+
+      if (count === 0) {
+        // old_string 未找到：提供最近似候选和上下文
+        const nearest = findNearestMatch(lines, oldStr);
+        return JSON.stringify({
+          success: false,
+          errorCode: "OLD_STRING_NOT_FOUND",
+          error: "old_string 在文件中未找到。请确认内容（包括缩进、换行）是否精确匹配。",
+          retryable: false,
+          diagnostic: {
+            kind: "not_found",
+            filePath,
+            oldStringLength: oldStr.length,
+            nearestMatch: nearest ? {
+              line: nearest.line,
+              similarity: nearest.similarity,
+              context: nearest.context,
+            } : null,
+          },
+        });
+      }
+
       if (count > 1) {
-        return `[错误] old_string 在文件中匹配 ${count} 处，需要更长的上下文使其唯一。`;
+        // 多处匹配：提供所有匹配位置和上下文
+        const positions = findAllMatchPositions(lines, oldStr);
+        return JSON.stringify({
+          success: false,
+          errorCode: "MULTIPLE_MATCHES",
+          error: `old_string 在文件中匹配 ${count} 处，需要更长的上下文使其唯一。`,
+          retryable: false,
+          diagnostic: {
+            kind: "multiple_matches",
+            filePath,
+            matchCount: count,
+            positions: positions.slice(0, 5).map(pos => ({
+              line: pos.line,
+              context: pos.context,
+            })),
+          },
+        });
       }
 
       const newContent = content.replace(oldStr, newStr);
       fs.writeFileSync(filePath, newContent, "utf8");
-      console.log(LOG_PREFIX, "apply_patch:", filePath);
-      return `[apply_patch] 已更新 ${filePath}`;
+      const size = fs.statSync(filePath).size;
+      console.log(LOG_PREFIX, "apply_patch:", filePath, "size=" + size);
+      return JSON.stringify({
+        tool: "apply_patch",
+        filePath,
+        action: "modified",
+        sizeBytes: size,
+        success: true,
+      });
     },
   });
 }
@@ -331,5 +483,5 @@ export function registerLifeTools(): void {
   registerExchangeRateTool();
   registerTranslateTool();
   registerApplyPatchTool();
-  console.log(LOG_PREFIX, "已注册：record_expense / query_expense / exchange_rate / translate / apply_patch");
+  logger.info(LogTag.LifeTools, "registered: record_expense / query_expense / exchange_rate / translate / apply_patch");
 }

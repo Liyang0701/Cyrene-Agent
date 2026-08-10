@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC } from "../shared/ipc-channels";
+import type { StartTtsRequest, TtsSessionEvent, TtsStartResult } from "../shared/tts-session";
+import type { ScreenshotInsertPayload } from "../shared/ipc-channels";
 import type { UiTheme } from "../shared/ui-theme";
 import type { UiFont } from "../shared/ui-font";
 import type { ReasoningPreference } from "../shared/reasoning";
@@ -14,6 +16,7 @@ import type {
 } from "../shared/device-pairing";
 import { getLive2DIpcListenerCounts } from "./live2d-listener-diagnostics";
 import { exposeMusicApi } from "./music";
+import { normalizeChatAppearance, type ChatAppearanceSettings } from "../shared/chat-appearance";
 
 const cyreneApi = {
   minimize: () => ipcRenderer.send(IPC.WINDOW_MINIMIZE),
@@ -69,7 +72,10 @@ const chatApi = {
   },
   cancelDocumentIndex: (jobId: string) =>
     ipcRenderer.invoke(IPC.CHAT_CANCEL_DOCUMENT_INDEX, { jobId }) as Promise<boolean>,
-  captionImage: (filePath: string) => ipcRenderer.invoke(IPC.CHAT_CAPTION_IMAGE, { filePath }),
+  captionImage: (filePath: string, hasAnnotations = false) =>
+    ipcRenderer.invoke(IPC.CHAT_CAPTION_IMAGE, { filePath, hasAnnotations }),
+  getImagePreview: (filePath: string) =>
+    ipcRenderer.invoke(IPC.CHAT_GET_IMAGE_PREVIEW, { filePath }),
   getImageSendStrategy: () => ipcRenderer.invoke(IPC.CHAT_GET_IMAGE_SEND_STRATEGY),
   getGeneralSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET_GENERAL),
   getReasoningState: () => ipcRenderer.invoke(IPC.CHAT_GET_REASONING_STATE),
@@ -77,11 +83,11 @@ const chatApi = {
   // 截图
   startScreenshot: () => ipcRenderer.invoke(IPC.SCREENSHOT_START),
   onScreenshotInsert: (
-    callback: (data: { base64: string; mime: string; width: number; height: number; filePath: string }) => void,
+    callback: (data: ScreenshotInsertPayload) => void,
   ) => {
     const listener = (
       _e: unknown,
-      data: { base64: string; mime: string; width: number; height: number; filePath: string },
+      data: ScreenshotInsertPayload,
     ) => callback(data);
     ipcRenderer.on(IPC.SCREENSHOT_INSERT, listener);
     return () => ipcRenderer.removeListener(IPC.SCREENSHOT_INSERT, listener);
@@ -102,7 +108,7 @@ const aguiApi = {
     assistantTurnId?: string;
     style?: string;
     styleId?: string;
-    executionMode?: "work" | "chat";
+    executionMode?: "work" | "chat" | "code";
     sessionId?: string;
     attachments?: { name: string; text: string }[];
     imageAttachments?: { name: string; filePath: string; mime?: string }[];
@@ -119,7 +125,7 @@ const aguiApi = {
     ipcRenderer.on(IPC.AGUI_EVENT, listener);
     return () => ipcRenderer.off(IPC.AGUI_EVENT, listener);
   },
-  cancel: () => ipcRenderer.invoke(IPC.AGUI_CANCEL),
+  cancel: (runId?: string) => ipcRenderer.invoke(IPC.AGUI_CANCEL, runId),
 };
 
 contextBridge.exposeInMainWorld("agui", aguiApi);
@@ -156,8 +162,11 @@ contextBridge.exposeInMainWorld("schedulerEvents", schedulerEventsApi);
 // 用户选择卡片（歧义消解器）：渲染端回传用户选择给主进程
 // 卡片展示走 AGUI_EVENT 的 CUSTOM 事件（与天气卡片同通道），resolve 走独立 IPC
 const choiceApi = {
-  resolve: (id: string, value: string) =>
-    ipcRenderer.invoke(IPC.CHOICE_RESOLVE, { id, value }),
+  resolve: (id: string, value: unknown) =>
+    ipcRenderer.invoke(
+      IPC.CHOICE_RESOLVE,
+      typeof value === "string" ? { id, value } : { id, answer: value },
+    ),
 };
 contextBridge.exposeInMainWorld("choice", choiceApi);
 
@@ -220,9 +229,27 @@ const cyreneThemeApi = {
     ipcRenderer.on(IPC.UI_THEME_CHANGED, listener);
     return () => ipcRenderer.off(IPC.UI_THEME_CHANGED, listener);
   },
+  getRadius: () => ipcRenderer.invoke(IPC.UI_THEME_RADIUS_GET) as Promise<boolean>,
+  onRadiusChanged: (callback: (theme: boolean) => void) => {
+    const listener = (_e: unknown, theme: boolean) => callback(theme);
+    ipcRenderer.on(IPC.UI_THEME_RADIUS_CHANGED, listener);
+    return () => ipcRenderer.off(IPC.UI_THEME_RADIUS_CHANGED, listener);
+  },
 };
 
 contextBridge.exposeInMainWorld("cyreneTheme", cyreneThemeApi);
+
+const cyreneWindowAppearanceApi = {
+  getCornerRadius: () =>
+    ipcRenderer.invoke(IPC.UI_WINDOW_CORNER_RADIUS_GET) as Promise<number>,
+  onCornerRadiusChanged: (callback: (radius: number) => void) => {
+    const listener = (_e: unknown, radius: number) => callback(radius);
+    ipcRenderer.on(IPC.UI_WINDOW_CORNER_RADIUS_CHANGED, listener);
+    return () => ipcRenderer.off(IPC.UI_WINDOW_CORNER_RADIUS_CHANGED, listener);
+  },
+};
+
+contextBridge.exposeInMainWorld("cyreneWindowAppearance", cyreneWindowAppearanceApi);
 
 const cyreneFontApi = {
   get: () => ipcRenderer.invoke(IPC.UI_FONT_GET) as Promise<UiFont>,
@@ -235,12 +262,30 @@ const cyreneFontApi = {
 
 contextBridge.exposeInMainWorld("cyreneFont", cyreneFontApi);
 
+const cyreneAppearanceApi = {
+  get: async () => {
+    const settings = await ipcRenderer.invoke(IPC.SETTINGS_GET_GENERAL);
+    return normalizeChatAppearance(settings);
+  },
+  onChanged: (callback: (settings: ChatAppearanceSettings) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      callback(normalizeChatAppearance(payload));
+    };
+    ipcRenderer.on(IPC.CHAT_TYPOGRAPHY_CHANGED, listener);
+    return () => {
+      ipcRenderer.off(IPC.CHAT_TYPOGRAPHY_CHANGED, listener);
+    };
+  },
+};
+
+contextBridge.exposeInMainWorld("cyreneAppearance", cyreneAppearanceApi);
+
 const settingsApi = {
   minimize: () => ipcRenderer.send(IPC.SETTINGS_MINIMIZE),
   close: () => ipcRenderer.send(IPC.SETTINGS_CLOSE),
   getConfig: () => ipcRenderer.invoke(IPC.SETTINGS_GET_CONFIG),
   saveConfig: (config: unknown) => ipcRenderer.invoke(IPC.SETTINGS_SAVE_CONFIG, config),
-  testConnection: (config: { provider: string; baseUrl: string; model: string; apiKey: string; explicitTransport?: "openai" | "anthropic" | "auto"; reasoning?: ReasoningPreference }) => ipcRenderer.invoke(IPC.SETTINGS_TEST_CONNECTION, config),
+  testConnection: (config: { provider: string; baseUrl: string; model: string; apiKey: string; explicitTransport?: "openai" | "anthropic"; reasoning?: ReasoningPreference }) => ipcRenderer.invoke(IPC.SETTINGS_TEST_CONNECTION, config),
   testVision: (config: { baseUrl: string; apiKey: string; model: string }) => ipcRenderer.invoke(IPC.SETTINGS_TEST_VISION, config),
   // main → settings：要求切到指定标签（窗口已打开时由 main 发这个事件）
   onSwitchSection: (callback: (section: string) => void) => {
@@ -303,6 +348,8 @@ const settingsApi = {
   deleteArchivedCharacterState: (characterId: string, confirmationCharacterId: string) => (
     ipcRenderer.invoke(IPC.CHARACTER_ARCHIVE_DELETE, characterId, confirmationCharacterId)
   ),
+  getTimeoutSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET_TIMEOUT_SETTINGS),
+  saveTimeoutSettings: (config: unknown) => ipcRenderer.invoke(IPC.SETTINGS_SAVE_TIMEOUT_SETTINGS, config),
   pickUiFont: () => ipcRenderer.invoke(IPC.SETTINGS_PICK_UI_FONT) as Promise<string | null>,
   importUiFont: (sourcePath: string) => ipcRenderer.invoke(IPC.SETTINGS_IMPORT_UI_FONT, sourcePath) as Promise<UiFont>,
   resetUiFont: () => ipcRenderer.invoke(IPC.SETTINGS_RESET_UI_FONT) as Promise<UiFont>,
@@ -310,6 +357,7 @@ const settingsApi = {
   closeSidebar: () => ipcRenderer.send(IPC.SETTINGS_CLOSE_SIDEBAR),
   openTasks: () => ipcRenderer.send(IPC.SETTINGS_OPEN_TASKS),
   closeTasks: () => ipcRenderer.send(IPC.SETTINGS_CLOSE_TASKS),
+  openChromeGpu: () => ipcRenderer.send(IPC.SETTINGS_OPEN_CHROME_GPU),
   setPetAlwaysOnTop: (value: boolean) => ipcRenderer.send(IPC.SETTINGS_SET_PET_ALWAYS_ON_TOP, value),
   setPetVisible: (value: boolean) => ipcRenderer.send(IPC.SETTINGS_SET_PET_VISIBLE, value),
   setPetZoom: (value: number) => ipcRenderer.send(IPC.SETTINGS_SET_PET_ZOOM, value),
@@ -461,6 +509,11 @@ const runtimeStateApi = {
 const userApi = {
   getProfile: () => ipcRenderer.invoke(IPC.USER_GET_PROFILE),
   saveProfile: (profile: unknown) => ipcRenderer.invoke(IPC.USER_SAVE_PROFILE, profile),
+  onProfileChanged: (callback: (profile: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, profile: unknown) => callback(profile);
+    ipcRenderer.on(IPC.USER_PROFILE_CHANGED, listener);
+    return () => ipcRenderer.off(IPC.USER_PROFILE_CHANGED, listener);
+  },
   uploadAvatar: () => ipcRenderer.invoke(IPC.USER_UPLOAD_AVATAR),
   getAvatar: () => ipcRenderer.invoke(IPC.USER_GET_AVATAR),
   onAvatarChanged: (callback: () => void) => {
@@ -475,6 +528,12 @@ const memoryPanelApi = {
   deleteImportedDoc: (importId: string, fileName?: string) => ipcRenderer.invoke(IPC.MEMORY_PANEL_DELETE_IMPORTED_DOC, { importId, fileName }),
   saveL0: (patch: Record<string, unknown>) => ipcRenderer.invoke(IPC.MEMORY_PANEL_SAVE_L0, patch),
   saveL1: (patch: Record<string, unknown>) => ipcRenderer.invoke(IPC.MEMORY_PANEL_SAVE_L1, patch),
+  exportToObsidianVault: () => ipcRenderer.invoke(IPC.MEMORY_EXPORT_OBSIDIAN_VAULT),
+  bindVault: () => ipcRenderer.invoke(IPC.OBSIDIAN_VAULT_BIND),
+  unbindVault: () => ipcRenderer.invoke(IPC.OBSIDIAN_VAULT_UNBIND),
+  getVaultConfig: () => ipcRenderer.invoke(IPC.OBSIDIAN_VAULT_GET_CONFIG),
+  setAutoSync: (autoSync: boolean) => ipcRenderer.invoke(IPC.OBSIDIAN_VAULT_SET_AUTO_SYNC, autoSync),
+  syncNow: () => ipcRenderer.invoke(IPC.OBSIDIAN_VAULT_SYNC_NOW),
 };
 
 contextBridge.exposeInMainWorld("user", userApi);
@@ -520,14 +579,16 @@ contextBridge.exposeInMainWorld("live2dDiagnostics", live2dDiagnosticsApi);
 
 // 聊天会话存储（多对话历史）
 const chatStoreApi = {
-  list: () => ipcRenderer.invoke(IPC.CHATS_LIST),
+  list: (options?: { mode?: "chat" | "work" | "code" | "learn" | "daily" }) => ipcRenderer.invoke(IPC.CHATS_LIST, options),
   get: (id: string) => ipcRenderer.invoke(IPC.CHATS_GET, id),
   getPage: (id: string, before: number | null, limit: number) =>
     ipcRenderer.invoke(IPC.CHATS_GET_PAGE, { id, before, limit }),
-  create: (payload?: { title?: string; identityId?: string | null }) =>
+  create: (payload?: { title?: string; identityId?: string | null; mode?: "chat" | "work" | "code" | "learn" | "daily" }) =>
     ipcRenderer.invoke(IPC.CHATS_CREATE, payload ?? {}),
   append: (id: string, message: unknown) =>
     ipcRenderer.invoke(IPC.CHATS_APPEND, { id, message }),
+  setMessageTtsCacheKey: (id: string, messageId: string, cacheKey: string, converterVersion: string) =>
+    ipcRenderer.invoke(IPC.CHATS_SET_MESSAGE_TTS_CACHE, { id, messageId, cacheKey, converterVersion }),
   replaceMessages: (id: string, messages: unknown[]) =>
     ipcRenderer.invoke(IPC.CHATS_REPLACE_MESSAGES, { id, messages }),
   replaceTail: (id: string, startIndex: number, messages: unknown[]) =>
@@ -535,11 +596,13 @@ const chatStoreApi = {
   rename: (id: string, title: string) =>
     ipcRenderer.invoke(IPC.CHATS_RENAME, { id, title }),
   delete: (id: string) => ipcRenderer.invoke(IPC.CHATS_DELETE, id),
+  setPinned: (id: string, pinned: boolean) =>
+    ipcRenderer.invoke(IPC.CHATS_SET_PINNED, { id, pinned }),
   openFolder: () => ipcRenderer.invoke(IPC.CHATS_OPEN_FOLDER),
+  openWorkspace: (workspaceRoot: string) =>
+    ipcRenderer.invoke(IPC.CHATS_OPEN_WORKSPACE, workspaceRoot),
   migrateLegacy: (messages: unknown[]) =>
     ipcRenderer.invoke(IPC.CHATS_MIGRATE_LEGACY, messages),
-  openInChatWindow: (sessionId: string) =>
-    ipcRenderer.invoke(IPC.CHATS_OPEN_IN_CHAT_WINDOW, sessionId),
   // 聊天窗口加载 / 切换 session 时上报；其他窗口可查询/订阅
   setActiveSession: (sessionId: string | null) =>
     ipcRenderer.invoke(IPC.CHATS_SET_ACTIVE_SESSION, sessionId),
@@ -555,15 +618,67 @@ const chatStoreApi = {
     ipcRenderer.on(IPC.CHATS_CHANGED, listener);
     return () => ipcRenderer.removeListener(IPC.CHATS_CHANGED, listener);
   },
-  // main → 聊天窗口：要求切到指定 sessionId（窗口已打开时用）
-  onSwitchSession: (callback: (sessionId: string) => void) => {
-    const listener = (_e: Electron.IpcRendererEvent, sessionId: string) => callback(sessionId);
-    ipcRenderer.on(IPC.CHATS_SWITCH_SESSION, listener);
-    return () => ipcRenderer.removeListener(IPC.CHATS_SWITCH_SESSION, listener);
+  // ── 对话工作区绑定 ──────────────────────────────────────
+  setWorkspace: (sessionId: string, workspaceRoot: string) =>
+    ipcRenderer.invoke(IPC.CHATS_SET_WORKSPACE, { sessionId, workspaceRoot }),
+  getWorkspace: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.CHATS_GET_WORKSPACE, sessionId),
+  clearWorkspace: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.CHATS_CLEAR_WORKSPACE, sessionId),
+  pickWorkspaceFolder: () =>
+    ipcRenderer.invoke(IPC.CHATS_PICK_WORKSPACE_FOLDER),
+  initLearnWorkspace: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.CHATS_INIT_LEARN_WORKSPACE, sessionId),
+  onWorkspaceChanged: (callback: (payload: { sessionId: string; binding: unknown }) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, payload: { sessionId: string; binding: unknown }) =>
+      callback(payload);
+    ipcRenderer.on(IPC.CHATS_WORKSPACE_CHANGED, listener);
+    return () => ipcRenderer.removeListener(IPC.CHATS_WORKSPACE_CHANGED, listener);
   },
+  setCodeMode: (sessionId: string, clineMode: "plan" | "act") =>
+    ipcRenderer.invoke(IPC.CHATS_SET_CODE_MODE, { sessionId, clineMode }),
+  // 状态栏专用入口：要求 main 打开/复用 reactChatWindow 并加载指定 sessionId
+  openInReactChatWindow: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.CHATS_OPEN_IN_REACT_WINDOW, sessionId),
+  // main → reactChatWindow：通知 ChatPage 切换到指定 sessionId
+  onReactSwitchSession: (callback: (sessionId: string) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, sessionId: string) => callback(sessionId);
+    ipcRenderer.on(IPC.CHATS_REACT_SWITCH_SESSION, listener);
+    return () => ipcRenderer.removeListener(IPC.CHATS_REACT_SWITCH_SESSION, listener);
+  },
+  // reactChatWindow → main：ChatPage 已挂好 IPC 监听，允许 flush pending sessionId
+  notifyReactReady: () => ipcRenderer.send(IPC.CHATS_REACT_READY),
+  // 获取当前各模式 TODO 状态，用于窗口初始加载和常驻显示
+  getCurrentTodos: () => ipcRenderer.invoke(IPC.TODOS_GET_CURRENT),
 };
 
 contextBridge.exposeInMainWorld("chatStore", chatStoreApi);
+
+// Code run 状态查询 + 验证审批
+const codeRunApi = {
+  getRun: (runId: string) =>
+    ipcRenderer.invoke(IPC.CODE_RUN_GET, runId),
+  getActiveRun: (params: { chatSessionId?: string; clineSessionId?: string }) =>
+    ipcRenderer.invoke(IPC.CODE_RUN_GET_ACTIVE, params),
+  listRuns: (chatSessionId?: string) =>
+    ipcRenderer.invoke(IPC.CODE_RUN_LIST, chatSessionId),
+  getPendingApprovals: (params: { chatSessionId?: string; runId?: string }) =>
+    ipcRenderer.invoke(IPC.CODE_VERIFICATION_GET_PENDING, params),
+  approveVerification: (approvalId: string) =>
+    ipcRenderer.invoke(IPC.CODE_VERIFICATION_APPROVE, approvalId),
+    rejectVerification: (approvalId: string) =>
+      ipcRenderer.invoke(IPC.CODE_VERIFICATION_REJECT, approvalId),
+    getPendingAsks: (chatSessionId?: string) =>
+      ipcRenderer.invoke(IPC.CODE_ASK_GET_PENDING, chatSessionId),
+    respondAsk: (promptId: string, answer: string) =>
+      ipcRenderer.invoke(IPC.CODE_ASK_RESPOND, { promptId, answer }),
+    cancelAsk: (promptId: string) =>
+      ipcRenderer.invoke(IPC.CODE_ASK_CANCEL, promptId),
+    createNewTask: (chatSessionId: string) =>
+      ipcRenderer.invoke(IPC.CODE_SESSION_NEW_TASK, chatSessionId),
+  };
+
+contextBridge.exposeInMainWorld("codeRun", codeRunApi);
 
 // Token 用量查询（设置中心 Token 面板用）
 const tokenUsageApi = {
@@ -573,6 +688,15 @@ contextBridge.exposeInMainWorld("tokenUsage", tokenUsageApi);
 
 // TTS 语音合成（设置中心 TTS 面板 + 聊天窗口朗读用）
 const ttsApi = {
+  startSession: (payload: StartTtsRequest): Promise<TtsStartResult> =>
+    ipcRenderer.invoke(IPC.TTS_SESSION_START, payload),
+  cancelSession: (requestId: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.TTS_SESSION_CANCEL, requestId),
+  onSessionEvent: (callback: (event: TtsSessionEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: TtsSessionEvent) => callback(payload);
+    ipcRenderer.on(IPC.TTS_SESSION_EVENT, listener);
+    return () => ipcRenderer.removeListener(IPC.TTS_SESSION_EVENT, listener);
+  },
   upload: (apiKey: string, filePath: string, purpose: "voice_clone" | "prompt_audio") =>
     ipcRenderer.invoke(IPC.TTS_UPLOAD, { apiKey, filePath, purpose }),
   pickAudio: () => ipcRenderer.invoke(IPC.TTS_PICK_AUDIO),
@@ -585,6 +709,7 @@ const ttsApi = {
     apiKey: string; voiceId: string; text: string;
     speed?: number; volume?: number; pitch?: number;
     model?: string; format?: "mp3" | "wav" | "pcm";
+    vocalEnhance?: { enabled: boolean };
   }) => ipcRenderer.invoke(IPC.TTS_SYNTHESIZE, payload),
   synthesizeCached: (payload: {
     apiKey: string; voiceId: string; text: string;
@@ -689,4 +814,5 @@ const gameBotApi = {
   },
 };
 contextBridge.exposeInMainWorld("gameBot", gameBotApi);
+
 exposeMusicApi();

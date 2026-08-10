@@ -97,7 +97,7 @@ describe("CharacterRuntime", () => {
         readOnly: true,
         distributionStatus: "redistributable",
         content: {
-          identityPath: path.join(appRoot, "prompts", "identity.md"),
+          identityPath: path.join(appRoot, "prompts", "chat_identity.md"),
           soulPath: path.join(appRoot, "prompts", "soul.md"),
           avatarPath: path.join(appRoot, "assets", "icon-presets", "cyrene-sun.png"),
         },

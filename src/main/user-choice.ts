@@ -12,9 +12,21 @@
 
 import { ipcMain } from "electron";
 import { IPC } from "../shared/ipc-channels";
+import type {
+  AskCardPayload,
+  AskCardSubmission,
+  AskClarificationCard,
+  AskUserAnswer,
+} from "../shared/ask-clarification";
+import {
+  publishAskCard,
+  resolveAskCardSubmission,
+  validateAskUserAnswer,
+} from "./orchestrator/ask-card";
+import { getTimeoutSettings } from "./timeout-manager";
 
 const LOG_PREFIX = "[UserChoice]";
-const CHOICE_TIMEOUT_MS = 120_000; // 2 分钟超时，给用户足够思考时间
+const DEFAULT_CHOICE_TIMEOUT_MS = 120_000; // 2 分钟超时，给用户足够思考时间
 
 /** 选项结构。 */
 export interface ChoiceOption {
@@ -24,16 +36,28 @@ export interface ChoiceOption {
 }
 
 /** 发给渲染端的卡片数据。 */
-export interface ChoiceCardData {
+export interface LegacyChoiceCardData {
   id: string;
   question: string;
   options: ChoiceOption[];
   default?: string;
 }
 
+export type ChoiceCardData = LegacyChoiceCardData | AskCardPayload;
+
+export type ChoiceSettlementReason = "answered" | "timeout" | "unavailable";
+
+export interface ChoiceSettlement {
+  id: string;
+  runId: string;
+  revision: number;
+  reason: ChoiceSettlementReason;
+}
+
 interface PendingChoice {
-  resolve: (value: string) => void;
+  resolve: (value: unknown) => boolean;
   timer: NodeJS.Timeout;
+  status: "open" | "resolving";
 }
 
 const pendingChoices = new Map<string, PendingChoice>();
@@ -58,14 +82,22 @@ export function requestUserChoice(
 ): Promise<string> {
   return new Promise<string>((resolve) => {
     const id = "choice-" + (++choiceCounter) + "-" + Date.now();
+    const choiceTimeout = getTimeoutSettings().userChoiceTimeout;
 
     const timer = setTimeout(() => {
       pendingChoices.delete(id);
-      console.warn(LOG_PREFIX, "选择超时（" + CHOICE_TIMEOUT_MS + "ms），使用默认值:", defaultValue ?? "(空)");
+      console.warn(LOG_PREFIX, "选择超时（" + choiceTimeout + "ms），使用默认值:", defaultValue ?? "(空)");
       resolve(defaultValue ?? "");
-    }, CHOICE_TIMEOUT_MS);
+    }, choiceTimeout);
 
-    pendingChoices.set(id, { resolve, timer });
+    pendingChoices.set(id, {
+      resolve: (value) => {
+        resolve(typeof value === "string" ? value : defaultValue ?? "");
+        return true;
+      },
+      timer,
+      status: "open",
+    });
 
     const payload: ChoiceCardData = { id, question, options, default: defaultValue };
     console.log(LOG_PREFIX, "发送选择请求:", id, question);
@@ -82,18 +114,79 @@ export function requestUserChoice(
   });
 }
 
+export function requestUserClarification(
+  card: AskClarificationCard,
+  sender?: (card: ChoiceCardData) => void,
+  onSettled?: (settlement: ChoiceSettlement) => void,
+  identity: { runId: string; revision: number } = { runId: "legacy", revision: 1 },
+): Promise<AskUserAnswer> {
+  return new Promise<AskUserAnswer>((resolve) => {
+    const id = "choice-" + (++choiceCounter) + "-" + Date.now();
+    const emptyAnswer: AskUserAnswer = { requestId: id, answers: [] };
+    const timeout = getTimeoutSettings().userChoiceTimeout;
+    const publication = publishAskCard(card, { interactionId: id, ...identity });
+    const timer = setTimeout(() => {
+      const pending = pendingChoices.get(id);
+      if (!pending || pending.status !== "open") return;
+      pendingChoices.delete(id);
+      console.warn(LOG_PREFIX, "澄清超时（" + timeout + "ms）");
+      onSettled?.({ id, ...identity, reason: "timeout" });
+      resolve(emptyAnswer);
+    }, timeout);
+    pendingChoices.set(id, {
+      resolve: (value) => {
+        try {
+          const submitted = value as Record<string, unknown> | null;
+          const answer = submitted && typeof submitted === "object" && "interactionId" in submitted
+            ? resolveAskCardSubmission(publication, value as AskCardSubmission)
+            : validateAskUserAnswer(card, id, value as AskUserAnswer);
+          resolve(answer);
+          onSettled?.({ id, ...identity, reason: "answered" });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      timer,
+      status: "open",
+    });
+    console.log(LOG_PREFIX, "发送结构化澄清:", id);
+    const cardSender = sender ?? choiceCardSender;
+    if (cardSender) {
+      cardSender(publication.payload);
+    } else {
+      clearTimeout(timer);
+      pendingChoices.delete(id);
+      console.warn(LOG_PREFIX, "未注入卡片回调，返回空澄清");
+      onSettled?.({ id, ...identity, reason: "unavailable" });
+      resolve(emptyAnswer);
+    }
+  });
+}
+
 /** 注册 CHOICE_RESOLVE handler（main 启动时调一次）。 */
 export function registerChoiceIpc(): void {
-  ipcMain.handle(IPC.CHOICE_RESOLVE, (_event, payload: { id: string; value: string }) => {
+  ipcMain.handle(IPC.CHOICE_RESOLVE, (
+    _event,
+    payload: { id: string; value?: string; answer?: AskUserAnswer | AskCardSubmission },
+  ) => {
     const pending = pendingChoices.get(payload?.id);
-    if (!pending) {
+    if (!pending || pending.status !== "open") {
       console.warn(LOG_PREFIX, "选择回传未匹配到 pending:", payload?.id);
+      return { ok: false };
+    }
+    pending.status = "resolving";
+    const resolved = payload.answer ?? payload.value ?? "";
+    console.log(LOG_PREFIX, "用户回答 payload:", JSON.stringify({ id: payload.id, hasAnswer: !!payload.answer, valueType: typeof payload.value, resolved: JSON.stringify(resolved).slice(0, 200) }));
+    const accepted = pending.resolve(resolved);
+    if (!accepted) {
+      pending.status = "open";
+      console.warn(LOG_PREFIX, "用户选择校验失败:", payload.id);
       return { ok: false };
     }
     clearTimeout(pending.timer);
     pendingChoices.delete(payload.id);
-    console.log(LOG_PREFIX, "用户选择:", payload.id, "→", payload.value);
-    pending.resolve(payload.value);
+    console.log(LOG_PREFIX, "用户选择:", payload.id);
     return { ok: true };
   });
 }

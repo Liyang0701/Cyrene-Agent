@@ -8,6 +8,7 @@ import { synthesize as customCloudSynthesize } from "./custom-cloud-engine";
 import { synthesize as mimoSynthesize } from "./mimo-engine";
 import { synthesize as mosslandSynthesize } from "./mossland-engine";
 import type { TtsEngine } from "../../shared/tts-types";
+import type { MiniMaxVocalEnhanceOptions } from "./minimax-vocal-enhancer";
 
 export interface SynthesizeByEnginePayload {
   text: string;
@@ -17,6 +18,7 @@ export interface SynthesizeByEnginePayload {
   apiKey?: string;
   voiceId?: string;
   model?: string;
+  vocalEnhance?: MiniMaxVocalEnhanceOptions;
   // gptsovits 专用
   baseUrl?: string;
   refAudioPath?: string;
@@ -24,9 +26,9 @@ export interface SynthesizeByEnginePayload {
   promptLang?: GptsovitsLanguage;
   textLang?: GptsovitsLanguage;
   format?: "wav" | "mp3";
+  timeoutMs?: number; // gptsovits / custom-cloud 共用
   // custom-cloud 专用
   endpointUrl?: string;
-  timeoutMs?: number;
   // mimo 专用
   voiceAudioPath?: string;
   stylePrompt?: string;
@@ -60,6 +62,7 @@ export async function synthesizeByEngine(
       volume: payload.volume,
       model: payload.model ?? "speech-2.8-turbo",
       format: payload.format ?? "mp3",
+      vocalEnhance: payload.vocalEnhance,
     });
     return { audio, format: payload.format ?? "mp3" };
   }
@@ -77,6 +80,7 @@ export async function synthesizeByEngine(
       text: payload.text,
       speed: payload.speed,
       format: payload.format ?? "wav",
+      timeoutMs: payload.timeoutMs,
     });
     return { audio: result.audio, format: result.format };
   }

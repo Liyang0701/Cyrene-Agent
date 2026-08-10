@@ -18,7 +18,7 @@ describe("Character State Root store integration", () => {
     }));
   });
 
-  it("routes chat, memory, relationship, entity and proactive stores into the active layout", async () => {
+  it("routes chat, memory, relationship and entity stores into the active layout", async () => {
     const stateModule = await import("./character-state");
     const migration = await stateModule.migrateLegacyCyreneState({ userDataRoot, characterId: "cyrene" });
     expect(migration.status).toBe("migrated");
@@ -60,14 +60,9 @@ describe("Character State Root store integration", () => {
     expect(fs.existsSync(layout.relationshipFile)).toBe(true);
 
     const { entityGraph } = await import("../memory/entity-graph");
-    entityGraph.ingest("我的朋友小鹿是很重要的人");
+    entityGraph.ingestEntities([{ name: "小鹿", type: "person" }]);
     expect(fs.existsSync(layout.entityGraphFile)).toBe(true);
 
-    const proactive = await import("../proactive/proactive-state-store");
-    const openerState = proactive.defaultProactiveState();
-    openerState.globalDesire = 12;
-    proactive.saveProactiveState(openerState);
-    expect(fs.readFileSync(layout.proactiveStateFile, "utf8")).toContain('"globalDesire": 12');
   });
 
   it("keeps model runtimes outside the per-character state layout", async () => {
@@ -170,7 +165,7 @@ describe("Character State Root store integration", () => {
     const cyreneGlobal = await configureFor("cyrene");
     fs.writeFileSync(cyreneGlobal.profileFile, JSON.stringify({ nickname: "Kano", timezone: "Asia/Shanghai" }), "utf8");
     const cyreneTodos = await import("../orchestrator/todo-store");
-    cyreneTodos.setTodos([{ id: "global-todo", content: "检查角色包", status: "pending" }]);
+    cyreneTodos.setTodos("work", [{ id: "global-todo", content: "检查角色包", status: "pending" }]);
     const cyreneScheduler = (await import("../scheduler/scheduler-store")).getSchedulerStore();
     cyreneScheduler.addTask({
       title: "全局提醒",
@@ -186,7 +181,7 @@ describe("Character State Root store integration", () => {
     expect(JSON.parse(fs.readFileSync(lumenGlobal.profileFile, "utf8"))).toMatchObject({ nickname: "Kano" });
     const lumenTodos = await import("../orchestrator/todo-store");
     lumenTodos.loadTodos();
-    expect(lumenTodos.getTodos().todos[0]?.id).toBe("global-todo");
+    expect(lumenTodos.getTodos("work").todos[0]?.id).toBe("global-todo");
     const lumenScheduler = (await import("../scheduler/scheduler-store")).getSchedulerStore();
     lumenScheduler.load();
     expect(lumenScheduler.getTasks()[0]?.title).toBe("全局提醒");

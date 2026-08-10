@@ -5,7 +5,7 @@ import { MouseFocusController } from "./live2d/focus";
 import { NeutralResetController } from "./live2d/neutral-reset";
 import { MouthSyncController } from "./live2d/mouth-sync";
 import { SpeakingMotionController } from "./live2d/speaking-motion";
-import { OpenerBubbleController } from "./live2d/opener-bubble";
+// OpenerBubbleController 已被移除（主动开口子系统整体删除）。
 import { ClickThroughController } from "./live2d/click-through";
 import { Live2DRendererLifecycleTracker } from "./live2d/lifecycle-diagnostics";
 import { applyCharacterPresentation } from "./live2d/presentation";
@@ -50,7 +50,6 @@ let expressionReset: NeutralResetController | null = null;
 let mouthSync: MouthSyncController | null = null;
 let speakingMotion: SpeakingMotionController | null = null;
 let clickThrough: ClickThroughController | null = null;
-let openerBubble: OpenerBubbleController | null = null;
 let petZoomOff: (() => void) | null = null;
 let petVisibilityOff: (() => void) | null = null;
 let petVisible = true;
@@ -132,13 +131,7 @@ async function initializeCharacterVisual(): Promise<void> {
       mouthSync = new MouthSyncController(model);
       // 角色未声明专用说话动作时只驱动口型，绝不借用另一模型的表达式名称。
       speakingMotion = null;
-      // Opener 主动开口气泡
       const speechOffs: Array<() => void> = [];
-      const openerBubbleEl = document.getElementById("opener-bubble");
-      if (openerBubbleEl) {
-        openerBubble = new OpenerBubbleController(openerBubbleEl);
-        speechOffs.push(trackSubscription("live2dSpeech:onShowBubble", openerBubble.attach()));
-      }
       speechOffs.push(
         trackSubscription("live2dSpeech:onPrepare", window.live2dSpeech?.onPrepare(() => {
           void expressionReset?.resetNow();
@@ -220,7 +213,6 @@ async function initializeCharacterVisual(): Promise<void> {
             mouthSync: mouthSync !== null,
             speakingMotion: speakingMotion !== null,
             clickThrough: clickThrough !== null,
-            openerBubble: openerBubble !== null,
           },
           petVisible,
           isDragging,
@@ -246,8 +238,6 @@ window.addEventListener("beforeunload", () => {
   expressionReset = null;
   for (const off of live2dSpeechOffs) off();
   live2dSpeechOffs = [];
-  openerBubble?.dispose();
-  openerBubble = null;
   mouthSync?.dispose();
   mouthSync = null;
   speakingMotion?.dispose();
@@ -267,21 +257,39 @@ window.addEventListener("beforeunload", () => {
   live2dLifecycle.disposeAll();
 });
 
+let dragOverlayUrl: string | null = null;
 function clearDragOverlay(): void {
   if (dragOverlay) {
     dragOverlay.remove();
     dragOverlay = null;
   }
+  if (dragOverlayUrl) {
+    URL.revokeObjectURL(dragOverlayUrl);
+    dragOverlayUrl = null;
+  }
   canvas.style.visibility = activeVisualKind === "static" ? "hidden" : "";
 }
 
+function captureCanvasBlob(): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    try {
+      // preserveDrawingBuffer is enabled, so the last rendered frame is
+      // readable even after the PIXI ticker has been paused.
+      canvas.toBlob((blob) => resolve(blob), "image/png");
+    } catch (err) {
+      console.warn("[Cyrene] canvas.toBlob failed", err);
+      resolve(null);
+    }
+  });
+}
 async function showDragOverlay(token: number): Promise<void> {
   if (activeVisualKind === "static") return;
-  const frame = await window.cyrene.captureFrame();
-  if (!frame || token !== dragToken || !isDragging) return;
+  const blob = await captureCanvasBlob();
+  if (!blob || token !== dragToken || !isDragging) return;
 
+  const url = URL.createObjectURL(blob);
   const img = document.createElement("img");
-  img.src = frame;
+  img.src = url;
   img.alt = "";
   img.draggable = false;
   img.style.position = "fixed";
@@ -293,10 +301,18 @@ async function showDragOverlay(token: number): Promise<void> {
   img.style.userSelect = "none";
   img.style.zIndex = "10";
 
-  dragOverlay?.remove();
-  dragOverlay = img;
-  document.body.appendChild(img);
-  canvas.style.visibility = "hidden";
+  img.onload = () => {
+    if (token !== dragToken || !isDragging) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    dragOverlay?.remove();
+    dragOverlay = img;
+    dragOverlayUrl = url;
+    document.body.appendChild(img);
+    canvas.style.visibility = "hidden";
+  };
+  img.onerror = () => URL.revokeObjectURL(url);
 }
 
 function scheduleMoveTo(screenX: number, screenY: number): void {

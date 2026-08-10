@@ -11,6 +11,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { loadChannelsSettings, saveChannelsSettings } from "./settings-store";
 import { channelManager } from "./manager";
 import type { ChannelId, IncomingMessage } from "./types";
+import { logger, LogTag } from "../logger";
 
 const LOG = "[InboundServer]";
 
@@ -199,7 +200,7 @@ export async function startInboundServer(): Promise<InboundServerHandle> {
       break;
     } catch (err) {
       lastErr = err;
-      console.warn(LOG, `端口 ${port === 0 ? "(random)" : port} 占用, 尝试下一个`);
+      logger.warn(LogTag.InboundServer, `port ${port === 0 ? "(random)" : port} in use, trying next`);
       continue;
     }
   }
@@ -230,7 +231,7 @@ export async function startInboundServer(): Promise<InboundServerHandle> {
         }
       }),
   };
-  console.log(LOG, `启动于 http://127.0.0.1:${port}`);
+  logger.info(LogTag.InboundServer, `listening on http://127.0.0.1:${port}`);
   return currentHandle;
 }
 

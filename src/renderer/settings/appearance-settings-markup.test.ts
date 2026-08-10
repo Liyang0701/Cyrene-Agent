@@ -23,9 +23,9 @@ describe("appearance settings markup", () => {
 	    expect(html).toContain('通用设置</button>');
 	  });
 
-	  it("contains the four appearance groups and disabled future options", () => {
+	  it("contains the white-theme appearance groups and disabled future options", () => {
     const panel = form("appearance-form");
-    for (const heading of ["布局", "外观主题", "个性化", "活动角色桌宠"]) {
+    for (const heading of ["布局", "个性化", "活动角色桌宠"]) {
       expect(panel).toContain(heading);
     }
     for (const label of ["单窗口", "聊天背景"]) {
@@ -41,10 +41,10 @@ describe("appearance settings markup", () => {
     expect(panel).not.toContain('data-icon="classic"');
   });
 
-  it("offers only default and pearl-white themes", () => {
+  it("does not expose unavailable theme choices", () => {
     const panel = form("appearance-form");
-    expect(panel).toContain('data-theme="classic"');
-    expect(panel).toContain('data-theme="pearl-white"');
+    expect(panel).not.toContain('data-theme="classic"');
+    expect(panel).not.toContain('data-theme="pearl-white"');
     expect(panel).not.toContain('data-theme="polished-pink"');
   });
 
@@ -52,6 +52,28 @@ describe("appearance settings markup", () => {
     const panel = form("preferences-form");
     expect(panel).toContain('id="custom-style-sampling-btn"');
     expect(panel).toContain('id="custom-style-prompt-btn"');
+  });
+
+  it("offers a shared window corner-radius slider", () => {
+    const panel = form("appearance-form");
+    expect(panel).toContain('id="window-corner-radius"');
+    expect(panel).toContain('type="range" min="0" max="40" step="1"');
+    expect(panel).not.toContain('id="disable-radius"');
+  });
+
+  it("offers one global switch for Cyrene reply bubbles", () => {
+    const panel = form("appearance-form");
+    expect(panel).toContain("角色回复气泡");
+    expect(panel).toMatch(
+      /class="switch"[\s\S]*?id="assistant-bubble-enabled"[\s\S]*?class="switch__track"[\s\S]*?class="switch__thumb"/,
+    );
+    expect(panel).toContain("用户消息气泡始终保留");
+  });
+
+  it("applies appearance changes without a save button", () => {
+    const panel = form("appearance-form");
+    expect(panel).toContain("修改后自动应用");
+    expect(panel).not.toContain("保存外观设置");
   });
 
   it("offers chat social context as an existing capsule switch", () => {

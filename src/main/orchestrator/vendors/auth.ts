@@ -9,13 +9,18 @@
 // 运行时若 cap.authStyle 不是合法值，直接抛出明确的配置错误。
 // 不静默省略鉴权 header——那只会让请求落到服务器得到一个模糊的 401，
 // 不便于定位是 capability 配错了还是 apiKey 错了。
-import type { ProviderCapability } from "./types";
+import type { ProviderCapability, Transport } from "./types";
 
 export function authHeaderFor(
   cap: ProviderCapability,
   apiKey: string,
+  transport: Transport = cap.transport,
 ): Record<string, string> {
-  switch (cap.authStyle) {
+  if (!apiKey) return {};
+  const authStyle = transport === "anthropic"
+    ? cap.anthropicAuthStyle ?? cap.authStyle
+    : cap.authStyle;
+  switch (authStyle) {
     case "x-api-key":
       return { "x-api-key": apiKey };
     case "bearer":
@@ -23,7 +28,7 @@ export function authHeaderFor(
     default:
       throw new Error(
         `[vendors/auth] Provider "${cap.displayName}" has invalid authStyle: ` +
-          `${JSON.stringify(cap.authStyle)} (expected "bearer" | "x-api-key")`,
+          `${JSON.stringify(authStyle)} (expected "bearer" | "x-api-key")`,
       );
   }
 }

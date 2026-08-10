@@ -50,7 +50,7 @@ describe("WorldbookManager state persistence", () => {
 
     const isolated = new WorldbookManager("unused", { stateFile: lumenState, debug: false });
     isolated.loadFromEntries([entry]);
-    expect(isolated.getState(entry.id)).toEqual({ activation: 0, userSilence: 0, modelSilence: 0 });
+    expect(isolated.getState(entry.id)).toEqual({ activation: 0, userSilence: 0, modelSilence: 0, recentUserHits: [] });
   });
 
   it("ignores corrupt, unknown, and invalid persisted state without poisoning runtime state", () => {
@@ -61,7 +61,7 @@ describe("WorldbookManager state persistence", () => {
     fs.writeFileSync(stateFile, "not-json", "utf8");
     const corrupt = new WorldbookManager("unused", { stateFile, debug: false });
     corrupt.loadFromEntries([entry]);
-    expect(corrupt.getState(entry.id)).toEqual({ activation: 0, userSilence: 0, modelSilence: 0 });
+    expect(corrupt.getState(entry.id)).toEqual({ activation: 0, userSilence: 0, modelSilence: 0, recentUserHits: [] });
 
     fs.writeFileSync(stateFile, JSON.stringify({
       schemaVersion: 1,
@@ -72,7 +72,7 @@ describe("WorldbookManager state persistence", () => {
     }), "utf8");
     const sanitized = new WorldbookManager("unused", { stateFile, debug: false });
     sanitized.loadFromEntries([entry]);
-    expect(sanitized.getState(entry.id)).toEqual({ activation: 100, userSilence: 0, modelSilence: 2 });
+    expect(sanitized.getState(entry.id)).toEqual({ activation: 100, userSilence: 0, modelSilence: 2, recentUserHits: [] });
     expect(sanitized.getState("unknown")).toBeUndefined();
   });
 });

@@ -8,13 +8,10 @@ import {
 import { authHeaderFor } from "./auth";
 import { resolveReasoningCapability } from "../../../shared/reasoning";
 import { applyReasoningPreference } from "./reasoning";
+import { getTimeoutSettings } from "../../timeout-manager";
 import { resolveAutomaticToolChoicePolicy, resolveToolChoicePolicy } from "./tool-choice-policy";
-
-function buildUrl(baseUrl: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
-  if (trimmed.endsWith("/chat/completions")) return trimmed;
-  return `${trimmed}/chat/completions`;
-}
+import { getVendorRuntimeSettings } from "./runtime-settings";
+import { resolveApiEndpoint } from "../../../shared/api-endpoint";
 
 /** 把统一消息翻译成 OpenAI wire messages。 */
 function toWireMessages(messages: ChatMessage[]): unknown[] {
@@ -84,6 +81,7 @@ export class OpenAICompatAdapter implements ChatVendorAdapter {
     if (req.repetitionPenalty !== undefined) body.repetition_penalty = req.repetitionPenalty;
     // maxTokens：调用方显式传时才塞（流式场景下通常不传）
     if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
+    if (getVendorRuntimeSettings().disableMaxToken) body.max_tokens = undefined;
     const tools = toWireTools(req.tools);
     if (tools) {
       body.tools = tools;
@@ -158,11 +156,11 @@ export class OpenAICompatAdapter implements ChatVendorAdapter {
       },
     );
     return {
-      url: buildUrl(cfg.baseUrl),
+      url: resolveApiEndpoint(cfg.baseUrl, "openai").url,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...authHeaderFor(this.capability, cfg.apiKey),
+        ...authHeaderFor(this.capability, cfg.apiKey, "openai"),
       },
       body: JSON.stringify(finalBody),
     };
@@ -178,32 +176,36 @@ export class OpenAICompatAdapter implements ChatVendorAdapter {
     const jsonStr = event.data.trim();
     if (!jsonStr) return null;
     if (jsonStr === "[DONE]") return { done: true };
-    let parsed: { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; tool_calls?: unknown } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    let parsed: {
+      choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown; thinking?: unknown; reasoning?: unknown; tool_calls?: unknown }; finish_reason?: unknown }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      error?: { message?: unknown };
+    };
     try {
       parsed = JSON.parse(jsonStr);
     } catch {
       return null;
     }
-    const delta = parsed?.choices?.[0]?.delta;
-    if (!delta) {
-      // 流末尾的 usage 块（choices 为空但带 usage）
-      if (parsed?.usage) {
-        return {
-          usage: {
-            input: parsed.usage.prompt_tokens ?? 0,
-            output: parsed.usage.completion_tokens ?? 0,
-          },
-        };
-      }
-      return null;
+    if (parsed.error) {
+      return { error: typeof parsed.error.message === "string" ? parsed.error.message : "模型流式响应返回错误" };
     }
+    const choice = parsed?.choices?.[0];
+    const delta = choice?.delta;
     const chunk: StreamChunk = {};
-    if (typeof delta.content === "string") chunk.deltaText = delta.content;
-    if (typeof delta.reasoning_content === "string") chunk.deltaThinking = delta.reasoning_content;
+    if (typeof delta?.content === "string") chunk.deltaText = delta.content;
+    const thinking = delta?.reasoning_content ?? delta?.thinking ?? delta?.reasoning;
+    if (typeof thinking === "string") chunk.deltaThinking = thinking;
+    if (typeof choice?.finish_reason === "string") chunk.finishReason = choice.finish_reason;
+    if (parsed.usage) {
+      chunk.usage = {
+        input: parsed.usage.prompt_tokens ?? 0,
+        output: parsed.usage.completion_tokens ?? 0,
+      };
+    }
     // 暂不实现：if (Array.isArray(delta.tool_calls)) chunk.deltaToolCalls = ...
     // 当前三个调用点（MemoryJudge / memory-compressor / 心情观察器）都不带 tools，
     // 未来若需要流式 tool_call 增量，单独实现 + 加测试即可。
-    return chunk;
+    return Object.keys(chunk).length > 0 ? chunk : null;
   }
 
   parseResponse(raw: unknown): ChatResponse {
@@ -294,7 +296,7 @@ export class OpenAICompatAdapter implements ChatVendorAdapter {
   async testConnection(cfg: VendorConfig): Promise<TestConnectionResult> {
     const start = Date.now();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), getTimeoutSettings().testTimeout);
     try {
       const req: ChatRequest = {
         model: cfg.model,

@@ -70,7 +70,8 @@ describe("call manager ASR sequencing", () => {
       () => ({ provider: "openai", baseUrl: "http://127.0.0.1:8080/v1", model: "qwen3.5-9b", apiKey: "local" }),
       () => ({
         ttsEngine: "gptsovits", ttsMinimaxKey: "", ttsMinimaxVoiceId: "", ttsMinimaxModel: "speech-2.8-hd",
-        ttsSpeed: 1, ttsVolume: 1, ttsGptsovitsBaseUrl: "http://127.0.0.1:9880",
+        ttsSpeed: 1, ttsVolume: 1, ttsMinimaxVocalEnhance: false,
+        ttsGptsovitsBaseUrl: "http://127.0.0.1:9880", ttsGptsovitsTimeoutMs: 30_000,
         ttsGptsovitsRefAudioPath: "/tmp/ref.wav", ttsGptsovitsPromptText: "ref", ttsGptsovitsFormat: "wav",
         ttsGptsovitsPromptLang: "ja", ttsGptsovitsTextLang: "zh",
         ttsCustomCloudEndpointUrl: "", ttsCustomCloudApiKey: "", ttsCustomCloudVoiceId: "",

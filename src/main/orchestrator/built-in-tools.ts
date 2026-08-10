@@ -3,14 +3,37 @@
 
 import { spawn } from "child_process";
 import { toolRegistry } from "./tool-registry";
+import { getDateLocale, getWeatherLanguage } from "../locale-context";
 import { addMcpServer } from "./mcp-manager";
-import { sendToLive2DWindow } from "../index";
 import { createPlayLive2DActionTool } from "./tools/play-live2d-action";
 import { getActiveCharacterVisual } from "../character/active-character";
-export { currentUserTimezone, setUserTimezoneConfig } from "../user-timezone";
-import { currentUserTimezone } from "../user-timezone";
+
+let sendToLive2DWindow: (channel: string, payload?: unknown) => void = () => {};
+export function setLive2dWindowSender(sender: typeof sendToLive2DWindow): void {
+  sendToLive2DWindow = sender;
+}
+import { resolveChatContextTimezone } from "../chat-time-context";
+import type { ToolContext } from "./tool-context";
+import { VerificationRunner, resolveBuiltinExecutable } from "./code/verification-runner";
+import { logger, LogTag } from "../logger";
 
 const LOG_PREFIX = "[BuiltinTools]";
+
+/**
+ * 工具侧统一 timezone 注入：index.ts 启动时调 setUserTimezoneConfig。
+ * 任何工具要给模型格式化时间，统一走 `currentUserTimezone()`，禁止各自直接读 profile/Intl。
+ */
+let userTimezoneGetter: (() => string | undefined) | null = null;
+
+export function setUserTimezoneConfig(timezoneGetter: () => string | undefined): void {
+  userTimezoneGetter = timezoneGetter;
+}
+
+/** 当前用户的有效时区（缺/非法时回退 Asia/Shanghai）。统一封装，所有工具复用。 */
+export function currentUserTimezone(): string {
+  const raw = userTimezoneGetter?.();
+  return resolveChatContextTimezone(raw);
+}
 
 // ── 工具 1：fetch_url ─────────────────────────────────────
 // 拉一个 URL 的纯文本 / Markdown 形式的 body，给 agent 读 README 用
@@ -48,7 +71,7 @@ function stripHtml(html: string): string {
   }
 }
 
-async function executeFetchUrl(args: Record<string, unknown>): Promise<string> {
+async function executeFetchUrl(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
   const url = String(args.url || "").trim();
   if (!/^https?:\/\//i.test(url)) {
     return "[错误] url 必须以 http:// 或 https:// 开头";
@@ -58,9 +81,11 @@ async function executeFetchUrl(args: Record<string, unknown>): Promise<string> {
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+  // 组合父 signal 和超时 signal
+  const combinedSignal = ctx?.signal ? AbortSignal.any([ctx.signal, ac.signal]) : ac.signal;
   try {
     const resp = await fetch(url, {
-      signal: ac.signal,
+      signal: combinedSignal,
       headers: {
         "User-Agent": "Mozilla/5.0 (Cyrene Agent) Chrome/120 Safari/537.36",
         Accept: "text/html,text/markdown,text/plain,*/*;q=0.8",
@@ -106,6 +131,8 @@ toolRegistry.register({
     "参数：url (必填，完整 http(s) 地址)，format (可选 markdown|raw，默认 markdown)。",
   enabled: true,
   risk: "network",
+  effectKind: "read" as const,
+  verificationPolicy: "none" as const,
   inputSchema: {
     type: "object",
     properties: {
@@ -167,13 +194,13 @@ function killTree(child: ReturnType<typeof spawn>): void {
   }
 }
 
-function runShellOnce(command: string, args: string[], cwd?: string): Promise<ShellResult> {
+function runShellOnce(command: string, args: string[], cwd?: string, extraEnv?: Record<string, string>): Promise<ShellResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: cwd || undefined,
       shell: false,
       windowsHide: true,
-      env: process.env,
+      env: { ...process.env, ...extraEnv },
       // stdin→/dev/null(NUL)：误启动交互式进程(python/node REPL)时让它读到 EOF 立即退出，
       // 不再卡在"等 stdin 输入"上耗满超时。stdout/stderr 仍 pipe 来收集输出。
       stdio: ["ignore", "pipe", "pipe"],
@@ -231,18 +258,43 @@ async function executeRunShell(args: Record<string, unknown>): Promise<string> {
   const cwd = args.cwd ? String(args.cwd) : undefined;
   if (!cmd) return "[错误] command 不能为空";
 
+  // 系统侧 shell policy 分类（不信任模型 purpose）
+  const { classifyShellPolicy } = require("./shell-execution-policy");
+  const policy = classifyShellPolicy(cmd, cmdArgs);
+
+  if (policy === "blocked") {
+    return JSON.stringify({
+      command: cmd, args: cmdArgs, cwd,
+      exitCode: -1, stdout: "", stderr: "[拒绝] 该命令被系统禁止执行",
+      timedOut: false, passed: false, policy, truncated: false,
+    });
+  }
+
+  if (policy === "workspace_mutation") {
+    return JSON.stringify({
+      command: cmd, args: cmdArgs, cwd,
+      exitCode: -1, stdout: "",
+      stderr: "[拒绝] 该命令可能修改工作区，请使用专用工具：代码修改用 apply_patch/write_file，验证用 run_verification",
+      timedOut: false, passed: false, policy, truncated: false,
+    });
+  }
+
   console.log(LOG_PREFIX, "run_shell:", cmd, JSON.stringify(cmdArgs), cwd ? "cwd=" + cwd : "");
   const result = await runShellOnce(cmd, cmdArgs, cwd);
   console.log(LOG_PREFIX, "run_shell 完成 exitCode=" + result.exitCode + " stdout.len=" + result.stdout.length + " stderr.len=" + result.stderr.length);
 
-  const lines: string[] = [];
-  lines.push("$ " + cmd + (cmdArgs.length ? " " + cmdArgs.join(" ") : ""));
-  if (cwd) lines.push("(cwd: " + cwd + ")");
-  lines.push("exitCode: " + result.exitCode);
-  if (result.stdout) lines.push("--- stdout ---\n" + result.stdout.trimEnd());
-  if (result.stderr) lines.push("--- stderr ---\n" + result.stderr.trimEnd());
-  if (result.truncated) lines.push("[输出已截断]");
-  return lines.join("\n");
+  // 结构化返回（保留 ShellResult 字段，供证据收集器解析）
+  return JSON.stringify({
+    command: cmd,
+    args: cmdArgs,
+    cwd,
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    timedOut: false,  // runShellOnce 超时时通过 kill 处理，此处为正常返回
+    truncated: result.truncated,
+    policy: "read_only",
+  });
 }
 
 toolRegistry.register({
@@ -264,6 +316,7 @@ toolRegistry.register({
     "参数：command (可执行文件名或绝对路径)，args (字符串数组)，cwd (可选工作目录)。",
   enabled: true,
   risk: "shell",
+  effectKind: "unknown" as const,
   inputSchema: {
     type: "object",
     properties: {
@@ -274,6 +327,273 @@ toolRegistry.register({
     required: ["command"],
   },
   execute: executeRunShell,
+});
+
+// ── 工具：run_verification（受限验证工具）─────────────────────
+// 唯一能产生可信 verification evidence 的工具。
+// 只执行预定义的验证命令（typecheck/test/build/lint），不接受任意命令。
+// ledgerPolicy=bypass：不缓存验证结果（相同参数在新 revision 下必须重新执行）。
+toolRegistry.register({
+  id: "run_verification",
+  name: "运行验证",
+  description:
+    "执行代码验证（类型检查/测试/构建/lint）。是唯一能产生可信验证证据的工具。\n\n" +
+    "何时用：\n" +
+    "- 代码修改后需要验证编译是否通过\n" +
+    "- 需要运行测试确认修改正确\n" +
+    "- 需要 lint 检查代码风格\n\n" +
+    "不要用于：\n" +
+    "- 读取文件内容 → read_file\n" +
+    "- 执行任意命令 → run_shell\n" +
+    "- 修改代码 → apply_patch/write_file\n\n" +
+    "参数：verificationType（验证类型：typecheck/test/build/lint），cwd（可选工作目录）。",
+  enabled: true,
+  risk: "shell",
+  effectKind: "verification" as const,
+  ledgerPolicy: "bypass" as const,
+  completionEvidence: [{ kind: "tool_succeeded" }],
+  soulActionLabel: "代码验证",
+  soulProjection: {
+    projector: "entity_detail",
+    source: "trusted_internal",
+    fields: {
+      title: "verificationType",
+      passed: "passed",
+      exitCode: "exitCode",
+      command: "command",
+      durationMs: "durationMs",
+    },
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      verificationType: {
+        type: "string",
+        enum: ["typecheck", "test", "build", "lint"],
+        description: "验证类型：typecheck=类型检查，test=运行测试，build=构建，lint=代码风格检查",
+      },
+      cwd: { type: "string", description: "工作目录绝对路径，可选" },
+    },
+    required: ["verificationType"],
+  },
+  execute: async (args) => {
+    const verificationType = String(args.verificationType || "").trim();
+    const cwd = args.cwd ? String(args.cwd) : undefined;
+
+    if (!verificationType) return JSON.stringify({
+      success: false, errorCode: "INVALID_INPUT", error: "verificationType 不能为空",
+      verificationType: "", command: "", exitCode: -1,
+      stdout: "", stderr: "[错误] verificationType 不能为空",
+      timedOut: false, passed: false, truncated: false, durationMs: 0, retryable: false,
+    });
+
+    // 根据验证类型选择命令（白名单，不接受任意命令）
+    const fs = require("fs");
+    const path = require("path");
+
+    type WorkVerificationCommand = {
+      cmd: string;
+      args: string[];
+      trust: "builtin" | "workspace_script";
+      source: "tsconfig" | "vitest" | "package_script";
+      configPath?: string;
+    };
+    let verificationCommands: Record<string, WorkVerificationCommand>;
+    const actualCwd = cwd || process.cwd();
+
+    if (verificationType === "typecheck") {
+      // 1. 确定 tsconfig 路径
+      let tsconfigPath: string;
+      if (cwd) {
+        const hasMain = fs.existsSync(path.join(cwd, "tsconfig.main.json"));
+        const hasDefault = fs.existsSync(path.join(cwd, "tsconfig.json"));
+        if (hasMain) {
+          tsconfigPath = path.join(cwd, "tsconfig.main.json");
+        } else if (hasDefault) {
+          tsconfigPath = path.join(cwd, "tsconfig.json");
+        } else {
+          return JSON.stringify({
+            success: false, errorCode: "VERIFICATION_CONFIG_NOT_FOUND",
+            error: `cwd 下未找到 tsconfig.main.json 或 tsconfig.json: ${cwd}`,
+            verificationType, command: "", exitCode: -1,
+            stdout: "", stderr: `[错误] 未找到 TypeScript 配置文件: ${cwd}`,
+            timedOut: false, passed: false, truncated: false, durationMs: 0, retryable: false,
+            actualCwd: cwd,
+          });
+        }
+      } else {
+        tsconfigPath = "tsconfig.main.json";
+      }
+
+      // 2. 复用 VerificationRunner 的本地 CLI 解析（禁止 npx / 全局 PATH）
+      if (!resolveBuiltinExecutable("builtin:tsc", actualCwd, tsconfigPath)) {
+        return JSON.stringify({
+          success: false, errorCode: "TYPESCRIPT_NOT_FOUND",
+          error: `本地 TypeScript 未安装: ${actualCwd}`,
+          verificationType, command: "", exitCode: -1,
+          stdout: "", stderr: `[TYPESCRIPT_NOT_FOUND] local typescript CLI not found in ${actualCwd}`,
+          timedOut: false, passed: false, truncated: false, durationMs: 0, retryable: false,
+          actualCwd: cwd,
+        });
+      }
+
+      verificationCommands = {
+        typecheck: {
+          cmd: "builtin:tsc",
+          args: ["-p", tsconfigPath, "--noEmit"],
+          trust: "builtin",
+          source: "tsconfig",
+          configPath: tsconfigPath,
+        },
+      };
+    } else {
+      verificationCommands = {
+        test: {
+          cmd: "builtin:vitest",
+          args: ["--reporter=verbose"],
+          trust: "builtin",
+          source: "vitest",
+        },
+        build: {
+          cmd: process.execPath,
+          args: [path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), "run", "build:main"],
+          trust: "workspace_script",
+          source: "package_script",
+        },
+        lint: {
+          cmd: process.execPath,
+          args: [],
+          trust: "workspace_script",
+          source: "package_script",
+        },
+      };
+    }
+
+    const command = verificationCommands[verificationType];
+    if (!command) return JSON.stringify({
+      success: false, errorCode: "INVALID_INPUT",
+      error: `不支持的验证类型: ${verificationType}，支持: typecheck/test/build/lint`,
+      verificationType, command: "", exitCode: -1,
+      stdout: "", stderr: `[错误] 不支持的验证类型: ${verificationType}`,
+      timedOut: false, passed: false, truncated: false, durationMs: 0, retryable: false,
+    });
+
+    if (verificationType === "test" && !resolveBuiltinExecutable("builtin:vitest", actualCwd)) {
+      return JSON.stringify({
+        success: false, errorCode: "VITEST_NOT_FOUND",
+        error: `本地 Vitest 未安装: ${actualCwd}`,
+        verificationType, command: "", exitCode: -1,
+        stdout: "", stderr: `[VITEST_NOT_FOUND] local vitest CLI not found in ${actualCwd}`,
+        timedOut: false, passed: false, truncated: false, durationMs: 0, retryable: false,
+        actualCwd,
+      });
+    }
+    if (verificationType === "build" && !fs.existsSync(command.args[0])) {
+      return JSON.stringify({
+        success: false, errorCode: "NPM_CLI_NOT_FOUND",
+        error: `本地 npm CLI 不存在: ${command.args[0]}`,
+        verificationType, command: "", exitCode: -1,
+        stdout: "", stderr: `[NPM_CLI_NOT_FOUND] ${command.args[0]}`,
+        timedOut: false, passed: false, truncated: false, durationMs: 0, retryable: false,
+        actualCwd,
+      });
+    }
+    if (verificationType === "lint") {
+      try {
+        const eslintPath = require.resolve("eslint/bin/eslint.js", { paths: [actualCwd] });
+        if (!fs.existsSync(eslintPath) || !path.isAbsolute(eslintPath)) throw new Error("invalid eslint path");
+        command.args = [eslintPath, "src/main", "--max-warnings=0"];
+      } catch {
+        return JSON.stringify({
+          success: false, errorCode: "ESLINT_NOT_FOUND",
+          error: `本地 ESLint 未安装: ${actualCwd}`,
+          verificationType, command: "", exitCode: -1,
+          stdout: "", stderr: `[ESLINT_NOT_FOUND] local eslint CLI not found in ${actualCwd}`,
+          timedOut: false, passed: false, truncated: false, durationMs: 0, retryable: false,
+          actualCwd,
+        });
+      }
+    }
+
+    const resolvedForDisplay = resolveBuiltinExecutable(command.cmd, actualCwd, command.configPath);
+    const displayExecutable = resolvedForDisplay?.executable ?? command.cmd;
+    const displayArgs = [...(resolvedForDisplay?.args ?? []), ...command.args];
+    const startMs = Date.now();
+    const actualCommand = `${displayExecutable} ${displayArgs.join(" ")}`;
+    console.log(LOG_PREFIX, "run_verification:", verificationType, actualCommand, cwd ? "cwd=" + cwd : "");
+
+    // 复用 Code 模式的 VerificationRunner（同一个执行核心）
+    // 旧协议 JSON 输出格式保持不变
+    const runner = new VerificationRunner();
+    try {
+      const result = await runner.runStep({
+        id: `run_verification_${verificationType}`,
+        type: verificationType as any,
+        packageRoot: cwd || process.cwd(),
+        cwd: cwd || process.cwd(),
+        configPath: command.configPath,
+        trust: command.trust,
+        executable: command.cmd,
+        args: command.args,
+        source: command.source,
+      }, {
+        // 仅在工具真实执行时读取宿主档位；模块加载阶段保持 VerificationRunner 纯净。
+        permissionLevel: (await import("../permission")).getCurrentLevel(),
+        signal: undefined,
+      });
+
+      const durationMs = Date.now() - startMs;
+      const passed = result.passed;
+      console.log(LOG_PREFIX, "run_verification 完成:", verificationType,
+        "exitCode=" + result.exitCode, "passed=" + passed, "durationMs=" + durationMs,
+        "stdoutLen=" + result.stdout.length, "stderrLen=" + result.stderr.length);
+
+      // 兼容旧协议 JSON：errorCode 来自 result.errorCode
+      const errorCode = result.errorCode;
+      const isApprovalRequired = errorCode === "VERIFICATION_APPROVAL_REQUIRED";
+      const isTimeout = errorCode === "VERIFICATION_TIMEOUT" || result.timedOut;
+
+      return JSON.stringify({
+        // 旧协议中 success 表示“命令已被 Runner 正常接管”，退出码由 passed 表示。
+        success: !isApprovalRequired && !isTimeout,
+        verificationType,
+        command: actualCommand,
+        actualCwd: cwd || process.cwd(),
+        exitCode: result.exitCode ?? -1,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        spawnError: null,
+        timedOut: result.timedOut,
+        passed,
+        truncated: result.stdout.includes("... (truncated") || result.stderr.includes("... (truncated"),
+        durationMs,
+        errorCode,
+        retryable: isTimeout,
+        ...(isApprovalRequired ? { approvalRequired: true } : {}),
+      });
+    } catch (err) {
+      const durationMs = Date.now() - startMs;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(LOG_PREFIX, "run_verification 失败:", verificationType, "error:", msg);
+      return JSON.stringify({
+        success: false,
+        errorCode: "VERIFICATION_SPAWN_FAILED",
+        error: `命令启动失败: ${msg}`,
+        verificationType,
+        command: actualCommand,
+        actualCwd: cwd || process.cwd(),
+        exitCode: -1,
+        stdout: "",
+        stderr: `[VERIFICATION_SPAWN_FAILED] ${msg}`,
+        spawnError: { code: undefined, message: msg },
+        timedOut: false,
+        passed: false,
+        truncated: false,
+        durationMs,
+        retryable: false,
+      });
+    }
+  },
 });
 
 // ── 工具 3：install_mcp_server ────────────────────────────
@@ -344,6 +664,8 @@ toolRegistry.register({
     "args (字符串数组)，env (键值对，环境变量)，cwd (可选工作目录)。",
   enabled: true,
   risk: "fs-write",
+  effectKind: "mutation" as const,
+  verificationPolicy: "artifact" as const,
   inputSchema: {
     type: "object",
     properties: {
@@ -359,7 +681,7 @@ toolRegistry.register({
   execute: executeInstallMcp,
 });
 
-console.log(LOG_PREFIX, "已注册：fetch_url / run_shell / install_mcp_server");
+logger.info(LogTag.BuiltinTools, "registered: fetch_url / run_shell / install_mcp_server");
 
 // ── 工具 4：weather（天气查询）─────────────────────────────
 // 查指定城市的实时天气。城市参数可选——没传就读用户信息的默认城市。
@@ -379,74 +701,29 @@ let weatherEnabledGetter: (() => boolean) | null = null;
 /** 天气卡片数据回调：工具拿到结构化数据后调这个，由桥层发 Custom 事件给渲染端。 */
 let weatherCardCallback: ((card: WeatherCardData) => void) | null = null;
 
-/** 天气卡片结构化数据（发给渲染端渲染 MBE 卡片用）。 */
+/** 天气卡片结构化数据（发给渲染端渲染 WeatherCard 用）。
+ *  字段与 renderer 侧 weather-types.ts 中的 WeatherData 保持一致。
+ */
 export interface WeatherCardData {
-  city: string;
-  adm: string;
+  source: "open-meteo" | "amap";
+  location: {
+    province: string;
+    city: string;
+  };
+  // Open-Meteo 字段
+  weatherCode?: number;
   temp: number;
-  feelsLike: number;
-  text: string;
-  icon: string;
-  hi?: number;
-  lo?: number;
+  feelsLike?: number;
   humidity: number;
-  windDir: string;
-  windScale: string;
-  precip: number;
-  pressure: number;
-  visibility?: number;
-  uv?: string;
-  aqi?: number;
-  aqiText?: string;
-  source: string;
-  updateTime: string;
-}
-
-/** WMO 天气代码 → emoji 图标。 */
-function weatherIconFromCode(code: number): string {
-  if (code === 0) return "☀️";
-  if (code <= 2) return "⛅";
-  if (code === 3) return "☁️";
-  if (code >= 45 && code <= 48) return "🌫️";
-  if ((code >= 51 && code <= 57) || (code >= 61 && code <= 67)) return "🌧️";
-  if (code >= 71 && code <= 77) return "❄️";
-  if (code >= 80 && code <= 82) return "🌦️";
-  if (code >= 85 && code <= 86) return "🌨️";
-  if (code >= 95) return "⛈️";
-  return "🌤️";
-}
-
-/** 高德天气文字 → emoji 图标。 */
-function weatherIconFromText(text: string): string {
-  if (/晴/.test(text)) return "☀️";
-  if (/雷/.test(text)) return "⛈️";
-  if (/大雨|暴雨/.test(text)) return "🌧️";
-  if (/雨/.test(text)) return "🌦️";
-  if (/大雪|暴雪/.test(text)) return "❄️";
-  if (/雪/.test(text)) return "🌨️";
-  if (/雾|霾/.test(text)) return "🌫️";
-  if (/阴/.test(text)) return "☁️";
-  if (/云|多云/.test(text)) return "⛅";
-  if (/风/.test(text)) return "💨";
-  return "🌤️";
-}
-
-/** AQI → 等级文字 + 颜文字。 */
-function aqiKaomoji(aqi: number): { text: string; kaomoji: string } {
-  if (aqi <= 50) return { text: "优", kaomoji: "(◕‿◕)" };
-  if (aqi <= 100) return { text: "良", kaomoji: "(´ー`)" };
-  if (aqi <= 150) return { text: "轻度污染", kaomoji: "(´-ω-`)" };
-  if (aqi <= 200) return { text: "中度污染", kaomoji: "(；´д`)" };
-  return { text: "重度污染", kaomoji: "(╥﹏╥)" };
-}
-
-/** 紫外线指数 → 文字。 */
-function uvText(uv: number): string {
-  if (uv <= 2) return "弱";
-  if (uv <= 5) return "中等";
-  if (uv <= 7) return "强";
-  if (uv <= 10) return "很强";
-  return "极强";
+  windDeg?: number;
+  windSpeed?: number;
+  precipitation?: number;
+  pressure?: number;
+  // 高德字段
+  weather?: string;
+  windDirection?: string;
+  windPower?: string;
+  reporttime?: string;
 }
 
 /**
@@ -473,7 +750,8 @@ interface OMCity { name: string; latitude: number; longitude: number; country: s
 
 /** Open-Meteo 城市查询（Geocoding API，免费免 key）。 */
 async function omResolveCity(city: string): Promise<OMCity | null> {
-  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh&format=json`;
+  const params = new URLSearchParams({ name: city, count: "1", language: getWeatherLanguage(), format: "json" });
+  const url = `https://geocoding-api.open-meteo.com/v1/search?${params}`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), WEATHER_TIMEOUT_MS);
   try {
@@ -495,12 +773,13 @@ async function omFetchWeather(city: string): Promise<string> {
   if (!loc) {
     return `[错误] 找不到城市"${city}"，请确认城市名（支持中文/拼音）。`;
   }
-  const params = [
+  const currentParams = [
     "temperature_2m", "relative_humidity_2m", "apparent_temperature",
     "precipitation", "weather_code", "wind_speed_10m", "wind_direction_10m",
-    "surface_pressure",
+    "surface_pressure", "uv_index", "visibility",
   ].join(",");
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=${params}`;
+  const dailyParams = ["temperature_2m_max", "temperature_2m_min", "weather_code", "wind_speed_10m_max", "wind_direction_10m_dominant"].join(",");
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=${currentParams}&daily=${dailyParams}&timezone=auto`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), WEATHER_TIMEOUT_MS);
   try {
@@ -511,6 +790,15 @@ async function omFetchWeather(city: string): Promise<string> {
         temperature_2m: number; relative_humidity_2m: number; apparent_temperature: number;
         precipitation: number; weather_code: number; wind_speed_10m: number;
         wind_direction_10m: number; surface_pressure: number;
+        uv_index: number; visibility: number;
+      };
+      daily?: {
+        time: string[];
+        temperature_2m_max: number[];
+        temperature_2m_min: number[];
+        weather_code: number[];
+        wind_speed_10m_max: number[];
+        wind_direction_10m_dominant: number[];
       };
     };
     const c = data.current;
@@ -518,28 +806,41 @@ async function omFetchWeather(city: string): Promise<string> {
     const wmoText = omWeatherCodeText(c.weather_code);
     const windDir = omWindDir(c.wind_direction_10m);
     const adm = loc.admin1 ? `${loc.admin1}` : loc.country;
-    const icon = weatherIconFromCode(c.weather_code);
 
-    // 发送天气卡片数据给渲染端
+    const weatherData = {
+      city: loc.name,
+      region: adm,
+      weather: wmoText,
+      temperature: c.temperature_2m,
+      feelsLike: c.apparent_temperature,
+      humidity: c.relative_humidity_2m,
+      windDirection: windDir,
+      windSpeed: `${c.wind_speed_10m}km/h`,
+      precipitation: c.precipitation,
+      pressure: Math.round(c.surface_pressure),
+      uv: c.uv_index,
+      visibility: Math.round(c.visibility / 1000), // m → km
+      source: "Open-Meteo",
+      updateTime: new Date().toLocaleString(getDateLocale(), { hour: "2-digit", minute: "2-digit", timeZone: currentUserTimezone() }),
+    };
+
+    // 发送天气卡片数据给渲染端（与 renderer 侧 WeatherData 结构对齐）
     if (weatherCardCallback) {
       weatherCardCallback({
-        city: loc.name, adm, temp: c.temperature_2m, feelsLike: c.apparent_temperature,
-        text: wmoText, icon,
-        humidity: c.relative_humidity_2m, windDir, windScale: `${c.wind_speed_10m}km/h`,
-        precip: c.precipitation, pressure: Math.round(c.surface_pressure),
-        source: "Open-Meteo", updateTime: new Date().toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", timeZone: currentUserTimezone() }),
+        source: "open-meteo",
+        location: { province: adm, city: loc.name },
+        weatherCode: c.weather_code,
+        temp: c.temperature_2m,
+        feelsLike: c.apparent_temperature,
+        humidity: c.relative_humidity_2m,
+        windDeg: c.wind_direction_10m,
+        windSpeed: c.wind_speed_10m,
+        precipitation: c.precipitation,
+        pressure: Math.round(c.surface_pressure),
       });
     }
 
-    return [
-      `城市：${loc.name}（${adm}）`,
-      `天气：${wmoText}`,
-      `温度：${c.temperature_2m}°C（体感 ${c.apparent_temperature}°C）`,
-      `风向风速：${windDir} ${c.wind_speed_10m}km/h`,
-      `湿度：${c.relative_humidity_2m}%`,
-      `降水量：${c.precipitation}mm`,
-      `气压：${c.surface_pressure}hPa`,
-    ].join("\n");
+    return JSON.stringify(weatherData);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return "[错误] 天气查询失败：" + msg;
@@ -601,41 +902,50 @@ async function amapFetchWeather(city: string, key: string): Promise<string> {
   if (!district) {
     return `[错误] 找不到城市"${city}"，请确认城市名（支持中文，如"无锡"）。`;
   }
-  const url = `https://restapi.amap.com/v3/weather/weatherInfo?city=${district.adcode}&extensions=base&key=${key}`;
+
+  // 请求实况天气
+  const baseUrl = `https://restapi.amap.com/v3/weather/weatherInfo?city=${district.adcode}&key=${key}&extensions=base`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), WEATHER_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, { signal: ctrl.signal });
-    if (!resp.ok) return `[错误] 天气查询失败：HTTP ${resp.status}`;
-    const data = await resp.json() as { status?: string; lives?: Array<{
+    const baseResp = await fetch(baseUrl, { signal: ctrl.signal });
+    if (!baseResp.ok) return `[错误] 天气查询失败：HTTP ${baseResp.status}`;
+    const baseData = await baseResp.json() as { status?: string; lives?: Array<{
       province: string; city: string; weather: string; temperature: string;
       winddirection: string; windpower: string; humidity: string; reporttime: string;
     }> };
-    if (data.status !== "1" || !data.lives || data.lives.length === 0) {
-      return `[错误] 天气查询失败：高德返回 status=${data.status ?? "?"}`;
+    if (baseData.status !== "1" || !baseData.lives || baseData.lives.length === 0) {
+      return `[错误] 天气查询失败：高德返回 status=${baseData.status ?? "?"}`;
     }
-    const w = data.lives[0];
-    const icon = weatherIconFromText(w.weather);
+    const w = baseData.lives[0];
 
-    // 发送天气卡片数据给渲染端
+    const weatherData = {
+      city: w.city,
+      region: w.province,
+      weather: w.weather,
+      temperature: Number(w.temperature),
+      humidity: Number(w.humidity),
+      windDirection: w.winddirection,
+      windSpeed: `${w.windpower}级`,
+      source: "高德天气",
+      updateTime: w.reporttime.slice(11, 16) || new Date().toLocaleString(getDateLocale(), { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    // 发送天气卡片数据给渲染端（与 renderer 侧 WeatherData 结构对齐）
     if (weatherCardCallback) {
       weatherCardCallback({
-        city: w.city, adm: w.province, temp: Number(w.temperature), feelsLike: Number(w.temperature),
-        text: w.weather, icon,
-        humidity: Number(w.humidity), windDir: w.winddirection, windScale: `${w.windpower}级`,
-        precip: 0, pressure: 0,
-        source: "高德天气", updateTime: w.reporttime.slice(11, 16) || new Date().toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+        source: "amap",
+        location: { province: w.province, city: w.city },
+        weather: w.weather,
+        temp: Number(w.temperature),
+        humidity: Number(w.humidity),
+        windDirection: w.winddirection,
+        windPower: w.windpower,
+        reporttime: w.reporttime,
       });
     }
 
-    return [
-      `城市：${w.city}（${w.province}）`,
-      `天气：${w.weather}`,
-      `温度：${w.temperature}°C`,
-      `风向风速：${w.winddirection}风 ${w.windpower}级`,
-      `湿度：${w.humidity}%`,
-      `发布时间：${w.reporttime}`,
-    ].join("\n");
+    return JSON.stringify(weatherData);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return "[错误] 天气查询失败：" + msg;
@@ -704,6 +1014,8 @@ toolRegistry.register({
     "参数：city（可选，城市名中文或拼音；不传则用用户设置的默认城市）。",
   enabled: true,
   risk: "network",
+  effectKind: "read" as const,
+  verificationPolicy: "none" as const,
   inputSchema: {
     type: "object",
     properties: {
@@ -711,6 +1023,24 @@ toolRegistry.register({
     },
     required: [],
   },
+  soulActionLabel: "查询天气",
+  soulProjection: {
+    projector: "entity_detail",
+    source: "trusted_internal",
+    fields: {
+      title: "city",
+      region: "region",
+      weather: "weather",
+      temperature: "temperature",
+      feelsLike: "feelsLike",
+      humidity: "humidity",
+      windDirection: "windDirection",
+      windSpeed: "windSpeed",
+    },
+  },
+  completionEvidence: [
+    { kind: "tool_succeeded" },
+  ],
   execute: executeWeather,
 });
 
@@ -724,6 +1054,7 @@ const SEARCH_TIMEOUT_MS = 20_000;
 let searchEngineGetter: (() => string) | null = null;
 let searchBochaKeyGetter: (() => string) | null = null;
 let searchTavilyKeyGetter: (() => string) | null = null;
+let searchAnySearchKeyGetter: (() => string) | null = null;
 
 /**
  * index.ts 启动时调用，注入搜索引擎/各源key 的读取器。
@@ -733,10 +1064,12 @@ export function setSearchConfig(
   engineGetter: () => string,
   bochaKeyGetter: () => string,
   tavilyKeyGetter: () => string,
+  anySearchKeyGetter: () => string,
 ): void {
   searchEngineGetter = engineGetter;
   searchBochaKeyGetter = bochaKeyGetter;
   searchTavilyKeyGetter = tavilyKeyGetter;
+  searchAnySearchKeyGetter = anySearchKeyGetter;
 }
 
 interface BochaResult {
@@ -747,15 +1080,44 @@ interface BochaResult {
   siteName?: string;
 }
 
-/** 博查搜索：调 /v1/web-search，返回结构化文本给模型。 */
-async function bochaSearch(query: string, key: string): Promise<string> {
+/** 搜索结果统一结构 */
+interface WebSearchResult {
+  title: string;
+  url: string;
+  snippet: string;
+  source?: string;
+}
+
+/** 搜索输出统一结构（ToolCallResult.output 的 JSON） */
+interface WebSearchOutput {
+  success: true;
+  query: string;
+  resultCount: number;
+  results: WebSearchResult[];
+}
+
+/** snippet 最大长度 */
+const MAX_SNIPPET_LEN = 500;
+/** projection 最大条数 */
+const MAX_PROJECTION_RESULTS = 8;
+
+/** 截断 snippet */
+function truncateSnippet(text: string): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > MAX_SNIPPET_LEN ? clean.slice(0, MAX_SNIPPET_LEN) + "..." : clean;
+}
+
+/** 博查搜索：调 /v1/web-search，返回结构化 JSON。 */
+async function bochaSearch(query: string, key: string, signal?: AbortSignal): Promise<string> {
   const url = "https://api.bochaai.com/v1/web-search";
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  // 组合父 signal 和超时 signal
+  const combinedSignal = signal ? AbortSignal.any([signal, ctrl.signal]) : ctrl.signal;
   try {
     const resp = await fetch(url, {
       method: "POST",
-      signal: ctrl.signal,
+      signal: combinedSignal,
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
@@ -767,46 +1129,45 @@ async function bochaSearch(query: string, key: string): Promise<string> {
       }),
     });
     if (!resp.ok) {
-      return `[错误] 搜索失败：HTTP ${resp.status}`;
+      throw new Error(`HTTP ${resp.status}`);
     }
-    // 博查 API 响应包了一层 { code, data: { webPages: { value: [...] } } }
-    // 兼容旧结构（直接 webPages）和新结构（data.webPages）
     const raw = await resp.json() as {
       webPages?: { value?: BochaResult[] };
       data?: { webPages?: { value?: BochaResult[] } };
     };
-    const results = raw.data?.webPages?.value ?? raw.webPages?.value ?? [];
-    if (results.length === 0) {
-      return `[提示] 搜索"${query}"没有找到结果。`;
-    }
-    // 格式化成模型易读的文本
-    const lines: string[] = [`搜索"${query}"的结果（共 ${results.length} 条）：`, ""];
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      lines.push(`【${i + 1}】${r.name}`);
-      if (r.siteName) lines.push(`  来源：${r.siteName}`);
-      lines.push(`  链接：${r.url}`);
-      lines.push(`  摘要：${r.summary || r.snippet || "（无摘要）"}`);
-      lines.push("");
-    }
-    return lines.join("\n");
+    const bochaResults = raw.data?.webPages?.value ?? raw.webPages?.value ?? [];
+    const results: WebSearchResult[] = bochaResults.map((r) => ({
+      title: r.name,
+      url: r.url,
+      snippet: truncateSnippet(r.summary || r.snippet || ""),
+      ...(r.siteName ? { source: r.siteName } : {}),
+    }));
+    const output: WebSearchOutput = {
+      success: true,
+      query,
+      resultCount: results.length,
+      results,
+    };
+    return JSON.stringify(output);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return "[错误] 搜索失败：" + msg;
+    throw new Error(`搜索失败：${msg}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** Tavily 搜索：调 /search，返回结构化文本给模型。 */
-async function tavilySearch(query: string, key: string): Promise<string> {
+/** Tavily 搜索：调 /search，返回结构化 JSON。 */
+async function tavilySearch(query: string, key: string, signal?: AbortSignal): Promise<string> {
   const url = "https://api.tavily.com/search";
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  // 组合父 signal 和超时 signal
+  const combinedSignal = signal ? AbortSignal.any([signal, ctrl.signal]) : ctrl.signal;
   try {
     const resp = await fetch(url, {
       method: "POST",
-      signal: ctrl.signal,
+      signal: combinedSignal,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         api_key: key,
@@ -816,65 +1177,111 @@ async function tavilySearch(query: string, key: string): Promise<string> {
       }),
     });
     if (!resp.ok) {
-      return `[错误] 搜索失败：HTTP ${resp.status}`;
+      throw new Error(`HTTP ${resp.status}`);
     }
     const data = await resp.json() as {
       answer?: string;
       results?: Array<{ title: string; url: string; content: string }>;
     };
-    const results = data.results ?? [];
-    if (results.length === 0) {
-      return `[提示] 搜索"${query}"没有找到结果。`;
-    }
-    const lines: string[] = [`搜索"${query}"的结果（共 ${results.length} 条）：`, ""];
-    if (data.answer) {
-      lines.push(`摘要：${data.answer}`, "");
-    }
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      lines.push(`【${i + 1}】${r.title}`);
-      lines.push(`  链接：${r.url}`);
-      lines.push(`  摘要：${r.content || "（无摘要）"}`);
-      lines.push("");
-    }
-    return lines.join("\n");
+    const tavilyResults = data.results ?? [];
+    const results: WebSearchResult[] = tavilyResults.map((r) => ({
+      title: r.title,
+      url: r.url,
+      snippet: truncateSnippet(data.answer && r.content ? `${data.answer}\n${r.content}` : r.content || ""),
+    }));
+    const output: WebSearchOutput = {
+      success: true,
+      query,
+      resultCount: results.length,
+      results,
+    };
+    return JSON.stringify(output);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return "[错误] 搜索失败：" + msg;
+    throw new Error(`搜索失败：${msg}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function executeWebSearch(args: Record<string, unknown>): Promise<string> {
+/** AnySearch 搜索：调 /v1/search，返回结构化 JSON。 */
+async function anySearchSearch(query: string, key: string, signal?: AbortSignal): Promise<string> {
+  const url = "https://api.anysearch.com/v1/search";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SEARCH_TIMEOUT_MS);
+  // 组合父 signal 和超时 signal
+  const combinedSignal = signal ? AbortSignal.any([signal, ctrl.signal]) : ctrl.signal;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (key) headers.Authorization = `Bearer ${key}`;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      signal: combinedSignal,
+      headers,
+      body: JSON.stringify({
+        query,
+        max_results: 8,
+      }),
+    });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    const data = await resp.json() as {
+      data: { results?: Array<{ title: string; url: string; content: string; snippet: string }> };
+    };
+    const rawResults = data.data.results ?? [];
+    const results: WebSearchResult[] = rawResults.map((r) => ({
+      title: r.title,
+      url: r.url,
+      snippet: truncateSnippet(r.content || r.snippet || ""),
+    }));
+    const output: WebSearchOutput = {
+      success: true,
+      query,
+      resultCount: results.length,
+      results,
+    };
+    return JSON.stringify(output);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`搜索失败：${msg}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function executeWebSearch(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
   const engine = searchEngineGetter?.() ?? "off";
   if (engine === "off") {
-    return "[提示] 联网搜索未启用。请在 设置 → 插件 → 联网搜索 选择搜索源并填入 Key。";
+    throw new Error("E_SEARCH_NOT_ENABLED");
   }
 
   const query = String(args.query ?? "").trim();
   if (!query) {
-    return "[提示] 请提供搜索关键词。";
+    throw new Error("E_SEARCH_QUERY_EMPTY");
   }
 
   if (engine === "bocha") {
     const key = searchBochaKeyGetter?.() ?? "";
     if (!key) {
-      return "[错误] 还没有配置博查搜索 Key。请在 设置 → 插件 → 联网搜索 填入博查 Key。";
+      throw new Error("E_SEARCH_KEY_MISSING");
     }
-    return bochaSearch(query, key);
+    return bochaSearch(query, key, ctx?.signal);
   }
 
   if (engine === "tavily") {
     const key = searchTavilyKeyGetter?.() ?? "";
     if (!key) {
-      return "[错误] 还没有配置 Tavily 搜索 Key。请在 设置 → 插件 → 联网搜索 填入 Tavily Key。";
+      throw new Error("E_SEARCH_KEY_MISSING");
     }
-    return tavilySearch(query, key);
+    return tavilySearch(query, key, ctx?.signal);
   }
 
-  // 其他搜索引擎暂未接入
-  return `[提示] 搜索引擎"${engine}"暂未接入，目前支持 bocha 和 tavily。`;
+  if (engine === "anySearch") {
+    const key = searchAnySearchKeyGetter?.() ?? "";
+    return anySearchSearch(query, key, ctx?.signal);
+  }
+  throw new Error(`E_SEARCH_ENGINE_NOT_SUPPORTED:${engine}`);
 }
 
 toolRegistry.register({
@@ -887,12 +1294,14 @@ toolRegistry.register({
     "- 用户问的事需要联网才能知道（股价、赛事、最新技术）\n" +
     "- 用户只给关键词，没给具体网址\n\n" +
     "不要用于：\n" +
-    "- 用户已经给了明确网址 → 用 fetch_url\n" +
-    "- 用户问本机文件 → read_file / list_dir\n" +
+    "- 用户已经给了明确网址 -> 用 fetch_url\n" +
+    "- 用户问本机文件 -> read_file / list_dir\n" +
     "- 能凭已有知识直接回答的简单问题\n\n" +
     "参数：query（必填，搜索关键词）。",
   enabled: true,
   risk: "network",
+  effectKind: "read" as const,
+  verificationPolicy: "none" as const,
   inputSchema: {
     type: "object",
     properties: {
@@ -900,6 +1309,27 @@ toolRegistry.register({
     },
     required: ["query"],
   },
+  soulActionLabel: "网络搜索",
+  soulProjection: {
+    projector: "entity_list",
+    source: "external_untrusted",
+    itemsPath: "results",
+    fields: {
+      title: "title",
+      url: "url",
+      snippet: "snippet",
+      source: "source",
+    },
+    maxItems: MAX_PROJECTION_RESULTS,
+  },
+  soulErrorMessages: {
+    E_SEARCH_NOT_ENABLED: "联网搜索未启用",
+    E_SEARCH_KEY_MISSING: "搜索 API Key 未配置",
+    E_SEARCH_QUERY_EMPTY: "搜索关键词为空",
+  },
+  completionEvidence: [
+    { kind: "tool_succeeded" },
+  ],
   execute: executeWebSearch,
 });
 
@@ -907,7 +1337,14 @@ toolRegistry.register({
 // 任务拆解可视化工具。让 Cyrene Agent 能把复杂任务拆成步骤展示给用户。
 // 每次调用整体覆盖当前清单（不是增量）。store 持久化 + 通知主进程转发 CUSTOM 事件。
 
-import { setTodos, getTodos, clearTodos, type TodoItem } from "./todo-store";
+import {
+  setTodos,
+  getTodos,
+  clearTodos,
+  resolveTodoMode,
+  getCurrentTodos,
+  type TodoItem,
+} from "./todo-store";
 
 toolRegistry.register({
   id: "todo_write",
@@ -928,6 +1365,7 @@ toolRegistry.register({
     "完成所有步骤后调一次空列表清空，表示任务结束。",
   enabled: true,
   risk: "safe",
+  effectKind: "external_side_effect" as const,
   inputSchema: {
     type: "object",
     properties: {
@@ -947,16 +1385,22 @@ toolRegistry.register({
     },
     required: ["todos"],
   },
-  execute: async (args) => {
+  needsContext: true,
+  execute: async (args, ctx) => {
     const items = (args.todos || []) as TodoItem[];
+    const mode = resolveTodoMode(ctx?.mode);
+
+    if (!mode) {
+      return "[todo_write] 当前模式不维护任务清单，跳过更新";
+    }
 
     // 空列表 = 清空（任务结束）
     if (items.length === 0) {
-      clearTodos();
+      clearTodos(mode);
       return "[todo_write] 已清空任务清单（任务结束）";
     }
 
-    const state = setTodos(items);
+    const state = setTodos(mode, items);
 
     // 返回给 LLM 的简短摘要，不返回全部内容（避免 token 浪费）
     const counts = items.reduce((acc, t) => {
@@ -964,7 +1408,7 @@ toolRegistry.register({
       return acc;
     }, {} as Record<string, number>);
 
-    return "[todo_write] 已更新任务清单：共 " + items.length + " 项，" +
+    return "[todo_write] 已更新「" + mode + "」任务清单：共 " + items.length + " 项，" +
       "进行中 " + (counts.in_progress || 0) + " / " +
       "已完成 " + (counts.completed || 0) + " / " +
       "待办 " + (counts.pending || 0) +
@@ -973,7 +1417,7 @@ toolRegistry.register({
 });
 
 // 暴露给 index.ts 在 startup 调用，避免 tree-shake 掉
-export { loadTodos, onTodosChange, getTodos as getCurrentTodos } from "./todo-store";
+export { loadTodos, onTodosChange, getCurrentTodos } from "./todo-store";
 
 // ── 工具：ask_user_choice（歧义消解器）─────────────────────
 // 当用户需求模糊（"美观""好看""专业"）时，弹卡片让用户从选项中选择。
@@ -982,6 +1426,10 @@ export { loadTodos, onTodosChange, getTodos as getCurrentTodos } from "./todo-st
 
 import { requestUserChoice, type ChoiceOption } from "../user-choice";
 import { runSubAgent, setDelegateSettings } from "./sub-agent";
+// 显式注册内置子代理 Profile（不依赖模块加载副作用）
+import { registerBuiltInSubAgentProfiles } from "./subagents/init";
+import { parseSubAgentResult } from "./subagents/result-parser";
+registerBuiltInSubAgentProfiles();
 
 export { setDelegateSettings };
 // 把重任务委托给独立 FC 循环执行，子代理有自己的 conversation（用完即弃）。
@@ -1003,6 +1451,8 @@ toolRegistry.register({
     "参数：task（子任务的完整描述，子代理会独立理解并执行）。" ,
   enabled: true,
   risk: "safe",
+  hideInPlanMode: true,  // 子代理走旧 FC Loop，避免在 Plan 步骤里降级
+  deprecated: true,      // 新运行使用 delegate_document，旧入口仅保留兼容
   inputSchema: {
     type: "object",
     properties: {
@@ -1036,7 +1486,7 @@ toolRegistry.register({
   },
 });
 
-console.log(LOG_PREFIX, "已注册：fetch_url / run_shell / install_mcp_server / weather / web_search / ask_user_choice / delegate_task");
+logger.info(LogTag.BuiltinTools, "registered: fetch_url / run_shell / install_mcp_server / weather / web_search / ask_user_choice / delegate_task");
 
 // ── 工具：ask_user_choice（歧义消解器）─────────────────────
 toolRegistry.register({
@@ -1056,6 +1506,8 @@ toolRegistry.register({
     "default（可选，超时时的默认选择值）。",
   enabled: true,
   risk: "safe",
+  effectKind: "read" as const,
+  verificationPolicy: "none" as const,
   inputSchema: {
     type: "object",
     properties: {
@@ -1100,6 +1552,146 @@ toolRegistry.register({
     }
     // 用户自定义输入（value 不在预设选项里）
     return `[ask_user_choice] 用户自定义输入：${userChoice}。请按此要求执行。`;
+  },
+});
+
+// ── 工具：delegate_document（文档子代理入口）─────────────────────
+// 虚拟工具：对 Action Gate 是普通工具，执行时走专用子代理 Executor。
+// 旧 delegate_task 保留为 deprecated 兼容入口，新链路使用 delegate_document。
+toolRegistry.register({
+  id: "delegate_document",
+  name: "委托文档生成",
+  description:
+    "把文档生成任务委托给文档子代理。子代理独立调用 write_word 生成文档，" +
+    "验证文件存在，返回结构化结果（文件路径 + 验证状态 + 内容摘要）。\n\n" +
+    "何时用：\n" +
+    "- 用户要生成 Word 文档（报告/简报/总结等）\n" +
+    "- 需要确认文件已成功生成并验证路径\n\n" +
+    "不要用于：\n" +
+    "- 简单的单步写文件（直接用 write_word）\n" +
+    "- Excel/PDF/Markdown（后续版本支持）\n\n" +
+    "参数：objective（任务目标），filename（.docx 文件名），title（标题），" +
+    "paragraphs（段落数组），style（可选预设风格）。",
+  enabled: true,
+  risk: "safe",
+  capability: "delegate_document",
+  executionKind: "subagent",
+  subAgentProfile: "document",
+  ledgerPolicy: "bypass",
+  effectKind: "mutation" as const,
+  verificationPolicy: "artifact" as const,
+  hideInPlanMode: false,
+  soulActionLabel: "生成文档",
+  soulProjection: {
+    projector: "entity_detail",
+    source: "trusted_internal",
+    fields: {
+      title: "summary",
+      artifactName: "primaryArtifact.name",
+      artifactPath: "primaryArtifact.path",
+      artifactVerified: "primaryArtifact.verified",
+    },
+  },
+  completionEvidence: [{ kind: "tool_succeeded" }],
+  completionEvidenceVerifier: (result) => {
+    try {
+      const parsed = parseSubAgentResult(result.output);
+      return parsed.status === "succeeded"
+        && parsed.artifacts.length > 0
+        && parsed.artifacts.every(a => a.verified)
+        && parsed.artifacts.some(a => !!a.path);
+    } catch {
+      return false;
+    }
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      objective: { type: "string", description: "任务目标描述，如「将新闻资料生成 Word 简报」" },
+      filename: { type: "string", description: "文件名，必须以 .docx 结尾，如 AI新闻简报.docx" },
+      title: { type: "string", description: "文档标题" },
+      paragraphs: {
+        type: "array",
+        description: "段落内容数组，每项是一段文本",
+        items: { type: "string" },
+      },
+      style: {
+        type: "string",
+        description: "预设风格：default(商务) / academic(学术) / clean(极简) / elegant(优雅) / formal(公文)",
+      },
+    },
+    required: ["objective", "filename", "title", "paragraphs"],
+  },
+  // 子代理虚拟工具的 execute 不会被直接调用——executionKind=subagent 时
+  // 主图 execute 节点会走专用 Executor。保留防误调用保护。
+  execute: async () => {
+    throw new Error("SUBAGENT_MUST_USE_SPECIAL_EXECUTOR");
+  },
+});
+
+// ── 工具：delegate_search（搜索子代理入口）─────────────────────
+// 虚拟工具：对 Action Gate 是工具，执行时走搜索子代理 Executor。
+// 与原子 web_search 的区别：
+//   web_search = 一次搜索，返回结果列表
+//   delegate_search = 多来源研究任务，子代理自主搜索+读取+验证+整理
+toolRegistry.register({
+  id: "delegate_search",
+  name: "委托搜索研究",
+  description:
+    "把多来源搜索研究任务委托给搜索子代理。子代理自主执行多轮搜索、读取原网页、" +
+    "验证来源、去重并整理为结构化 findings。\n\n" +
+    "何时用：\n" +
+    "- 需要从多个来源收集和对比信息\n" +
+    "- 需要读取搜索结果中的原网页获取详细内容\n" +
+    "- 需要验证来源、去重和整理精选结果\n" +
+    "- 例如：「调查最近AI框架变化，对比多个来源」\n\n" +
+    "不要用于：\n" +
+    "- 只需要一次简单搜索（直接用 web_search）\n" +
+    "- 只需要读取一个已知网址（直接用 fetch_url）\n" +
+    "- 生成文档（用 delegate_document）\n\n" +
+    "参数：objective（研究目标描述），requiresDeepReading（可选，是否需要读取原网页）。",
+  enabled: true,
+  risk: "safe",
+  capability: "delegate_search",
+  executionKind: "subagent",
+  subAgentProfile: "search",
+  ledgerPolicy: "bypass",
+  effectKind: "read" as const,
+  verificationPolicy: "none" as const,
+  hideInPlanMode: false,
+  soulActionLabel: "搜索研究",
+  soulProjection: {
+    projector: "entity_list",
+    source: "external_untrusted",
+    itemsPath: "findings",
+    fields: {
+      title: "title",
+      content: "content",
+      source: "source",
+    },
+    maxItems: 10,
+  },
+  completionEvidence: [{ kind: "tool_succeeded" }],
+  completionEvidenceVerifier: (result) => {
+    try {
+      const parsed = parseSubAgentResult(result.output);
+      return parsed.status === "succeeded"
+        && parsed.findings.length > 0
+        && parsed.findings.every(f => !!f.source);
+    } catch {
+      return false;
+    }
+  },
+  inputSchema: {
+    type: "object",
+    properties: {
+      objective: { type: "string", description: "研究目标描述，如「调查最近AI框架变化，对比多个来源」" },
+      requiresDeepReading: { type: "boolean", description: "是否需要读取原网页获取详细内容（默认 false）" },
+    },
+    required: ["objective"],
+  },
+  execute: async () => {
+    throw new Error("SUBAGENT_MUST_USE_SPECIAL_EXECUTOR");
   },
 });
 

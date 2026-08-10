@@ -4,6 +4,7 @@ import { parseTurnUnderstanding } from "./schema";
 import { validateUnderstanding } from "./understanding-validator";
 import { perf } from "../perf-trace";
 import { runStructuredOutput, type StructuredRepairContext } from "../orchestrator/structured-output/runner";
+import { debugLog } from "../agent-log";
 import { resolveStructuredOutputProfile } from "../orchestrator/structured-output/profiles";
 import type { StructuredOutputProfile } from "../orchestrator/structured-output/types";
 import type { StructuredOutputRequest } from "../orchestrator/vendors/types";
@@ -83,9 +84,17 @@ function requestForProfile(profile: StructuredOutputProfile): StructuredOutputRe
       strict: true,
     };
   }
-  if (profile.mode === "provider_json_object") return { mode: "json_object" };
+  if (profile.mode === "provider_json_object") {
+    return {
+      mode: "json_object",
+      name: "cita_turn_understanding",
+      schema: TURN_UNDERSTANDING_SCHEMA,
+    };
+  }
   return {
     mode: "prompt_json",
+    name: "cita_turn_understanding",
+    schema: TURN_UNDERSTANDING_SCHEMA,
     sendJsonObjectHint: profile.requestHints.sendJsonObject,
   };
 }
@@ -208,6 +217,7 @@ export class RemoteSemanticEngine implements CitaSemanticEngine {
             text: generated.text,
             finishReason: generated.finishReason,
             refusal: generated.refusal,
+            structuredValue: generated.structuredValue,
           };
         },
         parseSchema: parseTurnUnderstanding,
@@ -226,7 +236,7 @@ export class RemoteSemanticEngine implements CitaSemanticEngine {
           return { status: "accepted", value: validation.understanding };
         },
         recordMetric: (metric) => {
-          console.log(`[StructuredOutput] ${JSON.stringify({
+          debugLog(`[StructuredOutput] ${JSON.stringify({
             provider: profile.provider,
             model: profile.model,
             profile: profile.id,

@@ -11,6 +11,7 @@ import { createAsrSession, requireAsrConfig } from "../asr/asr-service";
 import { synthesizeByEngine } from "../tts/tts-dispatcher";
 import type { TtsEngine } from "../../shared/tts-types";
 import { getAdapter, buildVendorUrlByProvider } from "../orchestrator/vendors";
+import { resolveTimeoutPolicy } from "../runtime-policy";
 import type { ChatMessage } from "../orchestrator/vendors/types";
 import { getActiveCharacter } from "../character/active-character";
 import {
@@ -53,6 +54,7 @@ type CallTtsSettings = {
   ttsMinimaxKey: string;
   ttsMinimaxVoiceId: string;
   ttsMinimaxModel: "speech-2.8-hd" | "speech-2.8-turbo";
+  ttsMinimaxVocalEnhance: boolean;
   ttsSpeed: number;
   ttsVolume: number;
   ttsGptsovitsBaseUrl: string;
@@ -61,6 +63,7 @@ type CallTtsSettings = {
   ttsGptsovitsPromptLang: "auto" | "zh" | "en" | "ja";
   ttsGptsovitsTextLang: "auto" | "zh" | "en" | "ja";
   ttsGptsovitsFormat: "wav" | "mp3";
+  ttsGptsovitsTimeoutMs: number;
   ttsCustomCloudEndpointUrl: string;
   ttsCustomCloudApiKey: string;
   ttsCustomCloudVoiceId: string;
@@ -512,8 +515,14 @@ async function runAgentTurn(userText: string): Promise<string | null> {
       { role: "user", content: userText },
     ];
 
+    // Kimi k2.6 只允许特定 temperature，省略让服务端用默认值
+    const callTemperature = modelSettings.model.match(/^kimi-k2\.6(?:$|-)/i) ? undefined : 0.8;
     const request = adapter.buildRequest(
-      { model: modelSettings.model, messages, temperature: 0.8 },
+      {
+        model: modelSettings.model,
+        messages,
+        ...(callTemperature !== undefined ? { temperature: callTemperature } : {}),
+      },
       {
         provider: modelSettings.provider,
         baseUrl: modelSettings.baseUrl,
@@ -526,7 +535,7 @@ async function runAgentTurn(userText: string): Promise<string | null> {
       method: "POST",
       headers: { ...request.headers, "Content-Type": "application/json" },
       body: request.body,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(resolveTimeoutPolicy({ stage: "call-management" }).totalMs),
     });
 
     if (!httpResponse.ok) {

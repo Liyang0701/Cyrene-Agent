@@ -13,6 +13,7 @@ import type { BotTools } from "./bot-tools";
 import type { GameRecipe } from "./types";
 import { loadGameBotSettings, saveGameBotSettings, type GameBotSettings } from "./settings-store";
 import { listRefs, readRef, refsDirPath } from "./refs-store";
+import { logger, LogTag } from "../logger";
 import { captureScreen } from "./screenshot";
 import * as input from "./input";
 import * as vlm from "./vlm-locator";
@@ -172,6 +173,7 @@ export function initGameBot(): void {
       "无需参数。调用后引擎独立运行，进度实时回传。返回启动结果。",
     enabled: initialSettings.enabled,
     risk: "input-control",
+    effectKind: "external_side_effect" as const,
     inputSchema: { type: "object", properties: {}, required: [] },
     execute: async () => {
       const r = await startGameBot();
@@ -180,5 +182,5 @@ export function initGameBot(): void {
     },
   });
 
-  console.log(LOG, "已初始化：IPC + game_bot_start 工具，可用脚本:", listRecipes().map((r) => r.id).join(", ") || "(无)");
+  logger.info(LogTag.GameBot, "initialized: IPC + game_bot_start tool, scripts:", listRecipes().map((r) => r.id).join(", ") || "(none)");
 }

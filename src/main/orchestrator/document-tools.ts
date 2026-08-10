@@ -1,7 +1,7 @@
 // 文档生成工具 —— 让 Cyrene Agent 能产出可交付物（Excel/Word/PDF/Markdown）。
 //
 // 设计要点：
-// - 所有文档默认存到桌面（app.getPath("desktop")），用户最容易找到
+// - 绑定项目时文档存到该项目根目录；未绑定时才回退到桌面
 // - 支持桌面子目录（如 "test/report.xlsx"），自动创建父目录
 // - 文件名由模型给，强制校验扩展名（防 .exe 等危险后缀）
 // - 返回完整路径给模型，模型可以转述给用户
@@ -11,6 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
 import { toolRegistry } from "./tool-registry";
+import type { ToolContext } from "./tool-context";
 import { containsCjkText, resolveCjkFontPath } from "./pdf-font";
 
 const LOG_PREFIX = "[DocTools]";
@@ -25,18 +26,20 @@ function validateFilename(filename: string, ext: string): string | null {
 }
 
 /**
- * 解析输出路径：filename 可含子目录（如 "test/report.xlsx"），根始终是桌面。
+ * 解析输出路径：filename 可含子目录（如 "test/report.xlsx"）。
+ * 有可信工作区绑定时根目录固定为工作区；否则兼容旧行为写入桌面。
  * 安全校验：禁止 .. 穿越、禁止绝对路径（不能写到桌面之外）。
  * 返回绝对路径，或 null 表示校验失败。
  */
-function resolveOutputPath(filename: string): string | null {
+function resolveOutputPath(filename: string, workspaceRoot?: string): string | null {
   const normalized = path.normalize(filename).replace(/\\/g, "/");
   // 禁止目录穿越和绝对路径
   if (normalized.includes("..") || path.isAbsolute(normalized)) return null;
-  const desktop = app.getPath("desktop");
-  const fullPath = path.join(desktop, normalized);
-  // 最终校验：解析后必须仍在桌面下
-  if (!fullPath.startsWith(desktop)) return null;
+  const outputRoot = path.resolve(workspaceRoot || app.getPath("desktop"));
+  const fullPath = path.resolve(outputRoot, normalized);
+  const relative = path.relative(outputRoot, fullPath);
+  // 最终校验：必须仍在可信工作区/桌面根目录下，不能靠前缀碰撞绕过。
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
   return fullPath;
 }
 
@@ -201,6 +204,9 @@ export function registerDocumentTools(): void {
       "参数：filename（.xlsx 结尾，可含子目录），sheets（工作表数组），style（可选），colors（可选）。",
     enabled: true,
     risk: "fs-write",
+    needsContext: true,
+    effectKind: "mutation" as const,
+    verificationPolicy: "artifact" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -232,10 +238,10 @@ export function registerDocumentTools(): void {
       },
       required: ["filename", "sheets"],
     },
-    execute: async (args) => {
+    execute: async (args, context?: ToolContext) => {
       const filename = validateFilename(String(args.filename || ""), ".xlsx");
       if (!filename) return "[错误] filename 必须是 .xlsx 结尾";
-      const outputPath = resolveOutputPath(filename);
+      const outputPath = resolveOutputPath(filename, context?.resolvedWorkspaceRoot);
       if (!outputPath) return "[错误] 路径不合法（禁止目录穿越或绝对路径）: " + filename;
       const sheets = args.sheets as Array<{
         name: string; headers: string[]; rows: unknown[][];
@@ -379,23 +385,33 @@ export function registerDocumentTools(): void {
       "- 轻量笔记（用 write_markdown）\n" +
       "- 需要复杂排版（页眉页脚/目录/图片/表格）→ 才考虑 invoke_skill(docx)\n\n" +
       "style 可选值（见 skills/docx/styles/catalog.md）：default(商务) / academic(学术) / clean(极简) / elegant(优雅) / formal(公文)。\n" +
-      "参数：filename（.docx 结尾，可含子目录），title（标题），paragraphs（段落数组），style（可选预设风格）。",
+      "参数：filename（只传文件名，如 AI新闻汇总.docx，不要传绝对路径；输出目录由系统固定为桌面），title（标题），paragraphs（段落数组），style（可选预设风格）。",
     enabled: true,
     risk: "fs-write",
+    needsContext: true,
+    effectKind: "mutation" as const,
+    verificationPolicy: "artifact" as const,
+    soulActionLabel: "生成 Word 文档",
+    soulProjection: {
+      projector: "artifact_path",
+      source: "trusted_internal",
+      kind: "docx",
+    },
+    completionEvidence: [{ kind: "tool_succeeded" }],
     inputSchema: {
       type: "object",
       properties: {
-        filename:   { type: "string", description: "文件名，可含子目录如 'test/report.docx'（.docx 结尾）" },
+        filename:   { type: "string", description: "文件名，必须以 .docx 结尾，例如 'AI新闻汇总.docx'。只传文件名，不要传绝对路径或目录。文件默认写入系统指定的桌面目录。" },
         title:      { type: "string", description: "文档标题" },
         paragraphs: { type: "array", description: "段落字符串数组", items: { type: "string" } },
         style:      { type: "string", description: "预设风格：default(商务) / academic(学术) / clean(极简) / elegant(优雅) / formal(公文)" },
       },
       required: ["filename", "title", "paragraphs"],
     },
-    execute: async (args) => {
+    execute: async (args, context?: ToolContext) => {
       const filename = validateFilename(String(args.filename || ""), ".docx");
       if (!filename) return "[错误] filename 必须是 .docx 结尾";
-      const outputPath = resolveOutputPath(filename);
+      const outputPath = resolveOutputPath(filename, context?.resolvedWorkspaceRoot);
       if (!outputPath) return "[错误] 路径不合法（禁止目录穿越或绝对路径）: " + filename;
 
       // 加载风格
@@ -469,6 +485,9 @@ export function registerDocumentTools(): void {
       "参数：filename（.pdf 结尾），title（标题），paragraphs（段落数组）。",
     enabled: true,
     risk: "fs-write",
+    needsContext: true,
+    effectKind: "mutation" as const,
+    verificationPolicy: "artifact" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -478,10 +497,10 @@ export function registerDocumentTools(): void {
       },
       required: ["filename", "title", "paragraphs"],
     },
-    execute: async (args) => {
+    execute: async (args, context?: ToolContext) => {
       const filename = validateFilename(String(args.filename || ""), ".pdf");
       if (!filename) return "[错误] filename 必须是 .pdf 结尾";
-      const outputPath = resolveOutputPath(filename);
+      const outputPath = resolveOutputPath(filename, context?.resolvedWorkspaceRoot);
       if (!outputPath) return "[错误] 路径不合法（禁止目录穿越或绝对路径）: " + filename;
 
       const title = String(args.title || "");
@@ -523,7 +542,7 @@ export function registerDocumentTools(): void {
     id: "write_markdown",
     name: "写 Markdown",
     description:
-      "生成一个 Markdown 文件（.md）保存到桌面。\n\n" +
+      "生成一个 Markdown 文件（.md）。绑定项目时保存到该项目目录；未绑定时保存到桌面。\n\n" +
       "何时用：\n" +
       "- 用户要写笔记/文档\n" +
       "- 需要轻量级文档输出\n" +
@@ -534,6 +553,9 @@ export function registerDocumentTools(): void {
       "参数：filename（.md 结尾），content（markdown 内容字符串）。",
     enabled: true,
     risk: "fs-write",
+    needsContext: true,
+    effectKind: "mutation" as const,
+    verificationPolicy: "artifact" as const,
     inputSchema: {
       type: "object",
       properties: {
@@ -542,10 +564,10 @@ export function registerDocumentTools(): void {
       },
       required: ["filename", "content"],
     },
-    execute: async (args) => {
+    execute: async (args, context?: ToolContext) => {
       const filename = validateFilename(String(args.filename || ""), ".md");
       if (!filename) return "[错误] filename 必须是 .md 结尾";
-      const outputPath = resolveOutputPath(filename);
+      const outputPath = resolveOutputPath(filename, context?.resolvedWorkspaceRoot);
       if (!outputPath) return "[错误] 路径不合法（禁止目录穿越或绝对路径）: " + filename;
 
       const dir = path.dirname(outputPath);

@@ -1,4 +1,13 @@
 // IPC channel names shared between main and renderer
+export interface ScreenshotInsertPayload {
+  mime: "image/png";
+  width: number;
+  height: number;
+  filePath: string;
+  previewUrl: string;
+  hasAnnotations: boolean;
+}
+
 export const IPC = {
   // pet window
   WINDOW_MINIMIZE: "window:minimize",
@@ -23,6 +32,7 @@ export const IPC = {
   CHAT_DOCUMENT_INDEX_PROGRESS: "chat:document-index-progress",
   CHAT_CANCEL_DOCUMENT_INDEX: "chat:cancel-document-index",
   CHAT_CAPTION_IMAGE: "chat:caption-image",
+  CHAT_GET_IMAGE_PREVIEW: "chat:get-image-preview",
   CHAT_GET_IMAGE_SEND_STRATEGY: "chat:get-image-send-strategy",
   // 推理下拉（chat 窗口：原子读 + providerKey 写）
   CHAT_GET_REASONING_STATE: "chat:get-reasoning-state",
@@ -65,10 +75,17 @@ export const IPC = {
   CHARACTER_UNINSTALL: "character:uninstall",
   CHARACTER_ARCHIVE_LIST: "character:archive-list",
   CHARACTER_ARCHIVE_DELETE: "character:archive-delete",
+  SETTINGS_GET_TIMEOUT_SETTINGS: "settings:get-timeout-settings",
+  SETTINGS_SAVE_TIMEOUT_SETTINGS: "settings:save-timeout-settings",
   UI_THEME_GET: "ui-theme:get",
   UI_THEME_CHANGED: "ui-theme:changed",
+  UI_THEME_RADIUS_GET: "ui-theme-radius:get",
+  UI_THEME_RADIUS_CHANGED: "ui-theme-radius:changed",
+  UI_WINDOW_CORNER_RADIUS_GET: "ui-window-corner-radius:get",
+  UI_WINDOW_CORNER_RADIUS_CHANGED: "ui-window-corner-radius:changed",
   UI_FONT_GET: "ui-font:get",
   UI_FONT_CHANGED: "ui-font:changed",
+  CHAT_TYPOGRAPHY_CHANGED: "chat-typography:changed",
   SETTINGS_PICK_UI_FONT: "settings:pick-ui-font",
   SETTINGS_IMPORT_UI_FONT: "settings:import-ui-font",
   SETTINGS_RESET_UI_FONT: "settings:reset-ui-font",
@@ -81,6 +98,8 @@ export const IPC = {
   SETTINGS_SET_PET_ALWAYS_ON_TOP: "settings:set-pet-always-on-top",
   SETTINGS_SET_PET_VISIBLE: "settings:set-pet-visible",
   SETTINGS_SET_PET_ZOOM: "settings:set-pet-zoom",
+  // debugging
+  SETTINGS_OPEN_CHROME_GPU: "settings:open-chrome-gpu",
   // main → pet window：推送当前 zoom 因子，渲染进程据此重算 scale
   PET_ZOOM: "pet:zoom",
   SETTINGS_PREVIEW_RUNTIME_SYNC: "settings:preview-runtime-sync",
@@ -93,24 +112,61 @@ export const IPC = {
   CHATS_GET_PAGE: "chats:get-page",
   CHATS_CREATE: "chats:create",
   CHATS_APPEND: "chats:append",
+  CHATS_SET_MESSAGE_TTS_CACHE: "chats:set-message-tts-cache",
   CHATS_REPLACE_MESSAGES: "chats:replace-messages",
   CHATS_REPLACE_TAIL: "chats:replace-tail",
   CHATS_RENAME: "chats:rename",
   CHATS_DELETE: "chats:delete",
+  CHATS_SET_PINNED: "chats:set-pinned",
   CHATS_OPEN_FOLDER: "chats:open-folder",
+  CHATS_OPEN_WORKSPACE: "chats:open-workspace",
   CHATS_MIGRATE_LEGACY: "chats:migrate-legacy",
   // 任意会话变动后 main → 所有渲染窗口 broadcast，触发列表/标题刷新
   CHATS_CHANGED: "chats:changed",
-  // 设置中心 → main：要求打开聊天窗口并加载指定 sessionId
-  CHATS_OPEN_IN_CHAT_WINDOW: "chats:open-in-chat-window",
-  // main → 聊天窗口：要求切到指定 sessionId（窗口已存在时用）
-  CHATS_SWITCH_SESSION: "chats:switch-session",
+  // 状态栏 → main：要求打开/复用 reactChatWindow 并加载指定 sessionId
+  CHATS_OPEN_IN_REACT_WINDOW: "chats:open-in-react-window",
+  // main → reactChatWindow：要求切到指定 sessionId（窗口已存在时用）
+  CHATS_REACT_SWITCH_SESSION: "chats:react-switch-session",
+  // reactChatWindow → main：ChatPage 已挂好 IPC 监听，允许 flush pending sessionId
+  CHATS_REACT_READY: "chats:react-ready",
   // 聊天窗口 → main：声明当前活跃 sessionId（用于设置面板"删除当前会话"时差异化提示）
   CHATS_SET_ACTIVE_SESSION: "chats:set-active-session",
   // renderer → main: 查询当前活跃 sessionId（设置面板初次打开时用）
   CHATS_GET_ACTIVE_SESSION: "chats:get-active-session",
   // main → 所有窗口：活跃 sessionId 变化时广播
   CHATS_ACTIVE_SESSION_CHANGED: "chats:active-session-changed",
+
+  // 对话工作区绑定
+  // renderer → main：设置当前对话的工作区目录
+  CHATS_SET_WORKSPACE: "chats:set-workspace",
+  // renderer → main：获取当前对话的工作区绑定
+  CHATS_GET_WORKSPACE: "chats:get-workspace",
+  // renderer → main：清除当前对话的工作区绑定
+  CHATS_CLEAR_WORKSPACE: "chats:clear-workspace",
+  // renderer → main：打开文件夹选择器
+  CHATS_PICK_WORKSPACE_FOLDER: "chats:pick-workspace-folder",
+  // renderer → main：为 Learn 模式初始化工作区结构（只创建缺失文件）
+  CHATS_INIT_LEARN_WORKSPACE: "chats:init-learn-workspace",
+  // main → 所有窗口：工作区绑定变更广播
+  CHATS_WORKSPACE_CHANGED: "chats:workspace-changed",
+  // Code 会话级 Cline plan/act 模式
+  CHATS_SET_CODE_MODE: "chats:set-code-mode",
+
+  // Code run 状态查询
+  CODE_RUN_GET: "code:run:get",
+  CODE_RUN_GET_ACTIVE: "code:run:get-active",
+  CODE_RUN_LIST: "code:run:list",
+  // Code 验证审批
+  CODE_VERIFICATION_GET_PENDING: "code:verification:get-pending",
+  CODE_VERIFICATION_APPROVE: "code:verification:approve",
+  CODE_VERIFICATION_REJECT: "code:verification:reject",
+  // main → renderer：验证审批广播
+  CODE_VERIFICATION_APPROVAL_REQUESTED: "code:verification:approval-requested",
+  // Code / Cline AskQuestionExecutor bridge
+  CODE_ASK_GET_PENDING: "code:ask:get-pending",
+  CODE_ASK_RESPOND: "code:ask:respond",
+  CODE_ASK_CANCEL: "code:ask:cancel",
+  CODE_SESSION_NEW_TASK: "code:session:new-task",
 
 // sticker manager window
 	  STICKERS_MINIMIZE: "stickers:minimize",
@@ -153,6 +209,7 @@ export const IPC = {
   USER_SAVE_PROFILE: "user:save-profile",
   USER_UPLOAD_AVATAR: "user:upload-avatar",
   USER_GET_AVATAR: "user:get-avatar",
+  USER_PROFILE_CHANGED: "user:profile-changed",
   USER_AVATAR_CHANGED: "user:avatar-changed",
 
   // memory panel
@@ -160,6 +217,12 @@ export const IPC = {
   MEMORY_PANEL_DELETE_IMPORTED_DOC: "memory-panel:delete-imported-doc",
   MEMORY_PANEL_SAVE_L0: "memory-panel:save-l0",
   MEMORY_PANEL_SAVE_L1: "memory-panel:save-l1",
+  MEMORY_EXPORT_OBSIDIAN_VAULT: "memory:export-obsidian-vault",
+  OBSIDIAN_VAULT_BIND: "obsidian-vault:bind",
+  OBSIDIAN_VAULT_UNBIND: "obsidian-vault:unbind",
+  OBSIDIAN_VAULT_GET_CONFIG: "obsidian-vault:get-config",
+  OBSIDIAN_VAULT_SET_AUTO_SYNC: "obsidian-vault:set-auto-sync",
+  OBSIDIAN_VAULT_SYNC_NOW: "obsidian-vault:sync-now",
 
   // MCP server management
   MCP_ADD_SERVER: "mcp:add-server",
@@ -208,6 +271,9 @@ export const IPC = {
   TTS_AUDIO_CHUNK: "tts:audio-chunk",             // main → 渲染端：推一段音频 base64
   TTS_STREAM_END: "tts:stream-end",               // main → 渲染端：流式结束（含 cacheKey）
   TTS_STREAM_ERROR: "tts:stream-error",           // main → 渲染端：流式错误
+  TTS_SESSION_START: "tts:session-start",
+  TTS_SESSION_CANCEL: "tts:session-cancel",
+  TTS_SESSION_EVENT: "tts:session-event",
   TTS_SAVE_SETTINGS: "tts:save-settings",   // 保存 TTS 配置
   TTS_LOAD_SETTINGS: "tts:load-settings",   // 加载 TTS 配置
   TTS_PICK_AUDIO: "tts:pick-audio",         // 选择音频文件（dialog）
@@ -312,17 +378,10 @@ export const IPC = {
   // screenshot
   SCREENSHOT_START: "screenshot:start",
   SCREENSHOT_SAVE_TEMP: "screenshot:save-temp",
-  SCREENSHOT_OVERLAY_READY: "screenshot:overlay-ready",
-  SCREENSHOT_DATA: "screenshot:data",
-  SCREENSHOT_RENDERED: "screenshot:rendered",
-  SCREENSHOT_REGION: "screenshot:region",
-  SCREENSHOT_CANCEL: "screenshot:cancel",
   SCREENSHOT_INSERT: "screenshot:insert",
   SCREENSHOT_HOTKEY_CAPTURE_START: "screenshot:hotkey-capture-start",
   SCREENSHOT_HOTKEY_CAPTURE_END: "screenshot:hotkey-capture-end",
-  // 屏幕流架构（v2）
-  SCREENSHOT_START_SESSION: "screenshot:start-session",
-  SCREENSHOT_FRAME_READY: "screenshot:frame-ready",
-  SCREENSHOT_CONFIRM: "screenshot:confirm",
-  SCREENSHOT_SHOWN: "screenshot:shown",
+
+  // TODO 卡片：初始加载当前状态（常驻需求）
+  TODOS_GET_CURRENT: "todos:get-current",
 } as const;

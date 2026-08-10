@@ -125,14 +125,14 @@ describe("OpenAICompatAdapter", () => {
     expect(JSON.parse(req.body).tool_choice).toBe("auto");
   });
 
-  test("maps a must-call intent to named OpenAI tool_choice when supported", () => {
-    const adapter = new OpenAICompatAdapter("test-openai", capability);
+  test("maps a must-call intent to named OpenAI tool_choice when reasoning is off", () => {
+    const adapter = new OpenAICompatAdapter("qwen", { ...capability, id: "qwen" });
     const req = adapter.buildRequest({
-      model: "m",
+      model: "qwen3-7b",
       messages: [{ role: "user", content: "搜歌" }],
       tools: [{ name: "music_search", description: "搜索", parameters: { type: "object" } }],
       toolChoiceIntent: { mode: "must_call", toolName: "music_search" },
-    }, { provider: "p", baseUrl: "https://e.test/v1", model: "m", apiKey: "sk-test" });
+    }, { provider: "qwen", baseUrl: "https://e.test/v1", model: "qwen3-7b", apiKey: "sk-test", reasoning: { mode: "off" } });
 
     expect(JSON.parse(req.body).tool_choice).toEqual({
       type: "function",
@@ -266,6 +266,27 @@ describe("OpenAICompatAdapter", () => {
       data: JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 20 } }),
     });
     expect(chunk?.usage).toEqual({ input: 10, output: 20 });
+  });
+
+  test("parseStreamEvent: usage 与空 delta 同一事件时不会丢失", () => {
+    const adapter = new OpenAICompatAdapter("test-openai", capability);
+    const chunk = adapter.parseStreamEvent({
+      eventType: "data",
+      data: JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 7 } }),
+    });
+    expect(chunk).toMatchObject({ usage: { input: 3, output: 7 }, finishReason: "stop" });
+  });
+
+  test("parseStreamEvent: thinking 兼容字段与协议内 error", () => {
+    const adapter = new OpenAICompatAdapter("test-openai", capability);
+    expect(adapter.parseStreamEvent({
+      eventType: "data",
+      data: JSON.stringify({ choices: [{ delta: { thinking: "MiniMax thinking" } }] }),
+    })?.deltaThinking).toBe("MiniMax thinking");
+    expect(adapter.parseStreamEvent({
+      eventType: "data",
+      data: JSON.stringify({ error: { message: "bad stream" } }),
+    })?.error).toBe("bad stream");
   });
 
   test("parseResponse: 同时返回 reasoning_content 与 content → assistantMessage 双字段", () => {

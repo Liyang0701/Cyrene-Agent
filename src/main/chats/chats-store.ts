@@ -11,7 +11,7 @@
 //   后续 list 直接返回缓存的 deep clone；任何写操作后同步刷新缓存；
 // - 删除文件夹整体可移植：用户拷贝角色 chats/ 到新机器即可恢复。
 
-import { shell } from "electron";
+import { app, shell } from "electron";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
@@ -21,17 +21,39 @@ import {
   type ChatSession,
   type ChatSessionMeta,
   type ChatSessionPurpose,
+  type CodeSessionMetadata,
+  type ConversationMode,
 } from "../../shared/chat-types";
 import { requireActiveCharacterState } from "../character/character-state";
 
 const SESSIONS_SUBDIR = "sessions";
 const INDEX_FILE = "index.json";
+const LEGACY_MIGRATION_PROJECT_NAME = "迁移文件夹";
 
 let rootDir = "";
 let sessionsDir = "";
 let indexPath = "";
 let indexCache: ChatSessionMeta[] = [];
 let initialized = false;
+
+function isConversationMode(value: unknown): value is ConversationMode {
+  return value === "chat" || value === "work" || value === "code"
+    || value === "learn" || value === "daily";
+}
+
+function inferLegacyMode(purpose: ChatSessionPurpose | undefined): ConversationMode {
+  return purpose === "proactive-chat" ? "chat" : "work";
+}
+
+function legacyMigrationBinding(): ConversationWorkspaceBinding {
+  const workspaceRoot = path.join(app.getPath("userData"), LEGACY_MIGRATION_PROJECT_NAME);
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  return {
+    workspaceRoot,
+    displayName: LEGACY_MIGRATION_PROJECT_NAME,
+    boundAt: Date.now(),
+  };
+}
 
 function ensureDirs(): void {
   if (!fs.existsSync(rootDir)) fs.mkdirSync(rootDir, { recursive: true });
@@ -50,10 +72,12 @@ function readIndexFromDisk(): ChatSessionMeta[] {
     const raw = fs.readFileSync(indexPath, "utf8");
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is ChatSessionMeta => {
-      if (!item || typeof item !== "object") return false;
+    let migrated = false;
+    const normalized: ChatSessionMeta[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
       const meta = item as Partial<ChatSessionMeta>;
-      return (
+      const valid = (
         typeof meta.id === "string" &&
         typeof meta.title === "string" &&
         typeof meta.createdAt === "number" &&
@@ -61,7 +85,41 @@ function readIndexFromDisk(): ChatSessionMeta[] {
         typeof meta.messageCount === "number" &&
         (meta.purpose === undefined || meta.purpose === "proactive-chat")
       );
-    });
+      if (!valid) continue;
+      const session = readSessionFile(meta.id!);
+      const indexedMode = meta.mode;
+      const mode = isConversationMode(indexedMode)
+        ? indexedMode
+        : session?.mode ?? inferLegacyMode(meta.purpose);
+      const workspaceRoot = typeof meta.workspaceRoot === "string"
+        ? meta.workspaceRoot
+        : session?.workspaceBinding?.workspaceRoot;
+      const workspaceDisplayName = typeof meta.workspaceDisplayName === "string"
+        ? meta.workspaceDisplayName
+        : session?.workspaceBinding?.displayName;
+      const pinned = Boolean(meta.pinned ?? session?.pinned);
+      if (
+        mode !== indexedMode
+        || workspaceRoot !== meta.workspaceRoot
+        || workspaceDisplayName !== meta.workspaceDisplayName
+        || pinned !== meta.pinned
+      ) migrated = true;
+      normalized.push({
+        id: meta.id!,
+        title: meta.title!,
+        identityId: meta.identityId ?? null,
+        createdAt: meta.createdAt!,
+        updatedAt: meta.updatedAt!,
+        messageCount: meta.messageCount!,
+        purpose: meta.purpose,
+        mode,
+        workspaceRoot,
+        workspaceDisplayName,
+        pinned,
+      });
+    }
+    if (migrated) atomicWriteJson(indexPath, normalized);
+    return normalized;
   } catch (err) {
     console.warn("[chats-store] index.json 解析失败，重置为空:", err);
     return [];
@@ -87,6 +145,10 @@ function readSessionFile(id: string): ChatSession | null {
     if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.messages)) {
       return null;
     }
+    // 旧会话迁移：无 mode 字段时根据 purpose 推断
+    if (!isConversationMode(parsed.mode)) {
+      parsed.mode = inferLegacyMode(parsed.purpose);
+    }
     return parsed;
   } catch (err) {
     console.warn("[chats-store] session 文件解析失败:", id, err);
@@ -98,6 +160,50 @@ function writeSessionFile(session: ChatSession): void {
   atomicWriteJson(sessionPath(session.id), session);
 }
 
+/**
+ * 旧版会话没有 mode，也没有项目路径。升级时统一归入 Daily，并绑定到
+ * userData/迁移文件夹。旧版本曾把无模式会话回填成未绑定路径的 Work，
+ * 因此这里同时识别“无合法 mode”和“Work 但无 workspaceBinding”两种形态。
+ * 新版 Work 创建流程要求绑定路径，所以有明确项目的会话不会被误迁移。
+ */
+function migrateUnclassifiedLegacySessions(): void {
+  if (!fs.existsSync(indexPath)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8")) as unknown;
+    if (!Array.isArray(parsed)) return;
+    let binding: ConversationWorkspaceBinding | null = null;
+    let changed = false;
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const meta = item as Partial<ChatSessionMeta>;
+      if (typeof meta.id !== "string" || meta.purpose === "proactive-chat") continue;
+      const filePath = sessionPath(meta.id);
+      if (!fs.existsSync(filePath)) continue;
+      let session: ChatSession;
+      try {
+        session = JSON.parse(fs.readFileSync(filePath, "utf8")) as ChatSession;
+      } catch {
+        continue;
+      }
+      if (!session || !Array.isArray(session.messages)) continue;
+      const needsMigration = !isConversationMode(session.mode)
+        || (session.mode === "work" && !session.workspaceBinding);
+      if (!needsMigration) continue;
+      binding ??= legacyMigrationBinding();
+      session.mode = "daily";
+      session.workspaceBinding = { ...binding };
+      writeSessionFile(session);
+      meta.mode = "daily";
+      meta.workspaceRoot = binding.workspaceRoot;
+      meta.workspaceDisplayName = binding.displayName;
+      changed = true;
+    }
+    if (changed) atomicWriteJson(indexPath, parsed);
+  } catch (err) {
+    console.warn("[chats-store] 旧会话迁移失败，保留原数据:", err);
+  }
+}
+
 function metaFromSession(session: ChatSession): ChatSessionMeta {
   return {
     id: session.id,
@@ -107,6 +213,10 @@ function metaFromSession(session: ChatSession): ChatSessionMeta {
     updatedAt: session.updatedAt,
     messageCount: session.messages.length,
     purpose: session.purpose,
+    mode: isConversationMode(session.mode) ? session.mode : inferLegacyMode(session.purpose),
+    workspaceRoot: session.workspaceBinding?.workspaceRoot,
+    workspaceDisplayName: session.workspaceBinding?.displayName,
+    pinned: session.pinned,
   };
 }
 
@@ -139,6 +249,7 @@ export function initialize(options?: { rootDir?: string }): void {
   sessionsDir = path.join(rootDir, SESSIONS_SUBDIR);
   indexPath = path.join(rootDir, INDEX_FILE);
   ensureDirs();
+  migrateUnclassifiedLegacySessions();
   indexCache = readIndexFromDisk();
   initialized = true;
 }
@@ -147,9 +258,18 @@ export function getRootDir(): string {
   return rootDir;
 }
 
-export function listSessions(): ChatSessionMeta[] {
-  // 返回深拷贝，避免外部修改影响缓存
-  return indexCache.map((m) => ({ ...m }));
+export function listSessions(options?: { mode?: ConversationMode }): ChatSessionMeta[] {
+  // 返回深拷贝，避免外部修改影响缓存；置顶项优先，其余按 updatedAt 倒序
+  const sessions = options?.mode
+    ? indexCache.filter((session) => session.mode === options.mode)
+    : indexCache;
+  return [...sessions]
+    .sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      return b.updatedAt - a.updatedAt;
+    })
+    .map((m) => ({ ...m }));
 }
 
 export function getSession(id: string): ChatSession | null {
@@ -179,9 +299,11 @@ export function createSession(opts?: {
   identityId?: string | null;
   initialMessages?: ChatMessage[];
   purpose?: ChatSessionPurpose;
+  mode?: ConversationMode;
 }): ChatSession {
   const now = Date.now();
   const messages = opts?.initialMessages ?? [];
+  const mode = opts?.mode ?? (opts?.purpose === "proactive-chat" ? "chat" : "work");
   const session: ChatSession = {
     id: randomUUID(),
     title: opts?.title?.trim() || (messages.length > 0 ? deriveTitle(messages) : "新对话"),
@@ -192,6 +314,8 @@ export function createSession(opts?: {
     schemaVersion: CHAT_SCHEMA_VERSION,
     purpose: opts?.purpose,
     titleIsCustom: opts?.purpose ? true : undefined,
+    mode,
+    ...(mode === "code" ? { codeSession: { clineMode: "act", tasks: [] } } : {}),
   };
   writeSessionFile(session);
   upsertMeta(metaFromSession(session));
@@ -234,6 +358,44 @@ export function appendMessage(id: string, message: ChatMessage): ChatSession | n
   return session;
 }
 
+/** 持久化 Code/Cline 的宿主会话元数据；Conversation mode 始终保持不变。 */
+export function updateCodeSession(
+  sessionId: string,
+  patch: Partial<CodeSessionMetadata>,
+): ChatSession | null {
+  const session = readSessionFile(sessionId);
+  if (!session || session.mode !== "code") return null;
+  const current: CodeSessionMetadata = session.codeSession ?? { clineMode: "act", tasks: [] };
+  session.codeSession = {
+    ...current,
+    ...patch,
+    tasks: patch.tasks ? [...patch.tasks] : current.tasks,
+  };
+  session.updatedAt = Date.now();
+  writeSessionFile(session);
+  upsertMeta(metaFromSession(session));
+  return session;
+}
+
+/** 仅回写模型消息的 TTS 缓存引用，不改变会话的业务修改时间。 */
+export function setMessageTtsCacheKey(
+  id: string,
+  messageId: string,
+  cacheKey: string,
+  converterVersion: string,
+): ChatSession | null {
+  if (!/^(minimax|gptsovits|custom-cloud|mimo|mossland)-[a-f0-9]{64}$/.test(cacheKey)) return null;
+  if (!/^[a-z\d][a-z\d._-]{0,63}$/i.test(converterVersion)) return null;
+  const session = readSessionFile(id);
+  if (!session) return null;
+  const message = session.messages.find((item) => item.id === messageId && item.role === "model");
+  if (!message) return null;
+  message.ttsCacheKey = cacheKey;
+  message.ttsCacheVersion = converterVersion;
+  writeSessionFile(session);
+  return session;
+}
+
 // 批量覆盖整个 messages 数组（聊天窗口流式结束/清空/错误等场景用）。
 // updatedAt 一并刷新；用户没手动改名时根据新内容重新派生。
 export function replaceMessages(id: string, messages: ChatMessage[]): ChatSession | null {
@@ -273,6 +435,15 @@ export function renameSession(id: string, title: string): ChatSession | null {
   return session;
 }
 
+export function setSessionPinned(id: string, pinned: boolean): ChatSession | null {
+  const session = readSessionFile(id);
+  if (!session) return null;
+  session.pinned = Boolean(pinned);
+  writeSessionFile(session);
+  upsertMeta(metaFromSession(session));
+  return session;
+}
+
 export function deleteSession(id: string): boolean {
   const filePath = sessionPath(id);
   let fileExisted = false;
@@ -306,15 +477,61 @@ export function migrateLegacyMessages(messages: ChatMessage[]): ChatSession | nu
     (m) => m && (m.role === "user" || m.role === "model") && typeof m.content === "string" && m.content.trim(),
   );
   if (cleaned.length === 0) return null;
-  return createSession({
+  const session = createSession({
     title: "历史对话",
     identityId: null,
     initialMessages: cleaned,
+    mode: "daily",
   });
+  return setWorkspaceBinding(session.id, legacyMigrationBinding());
 }
 
 // 在系统文件管理器中打开存储目录。
 export async function openStorageFolder(): Promise<void> {
   ensureDirs();
   await shell.openPath(rootDir);
+}
+
+// ── 对话工作区绑定 ────────────────────────────────────────
+
+import type { ConversationWorkspaceBinding } from "../../shared/chat-types";
+
+/**
+ * 设置对话的工作区绑定。
+ * 返回更新后的 session，失败返回 null。
+ */
+export function setWorkspaceBinding(
+  sessionId: string,
+  binding: ConversationWorkspaceBinding,
+): ChatSession | null {
+  const session = readSessionFile(sessionId);
+  if (!session) return null;
+  session.workspaceBinding = binding;
+  session.updatedAt = Date.now();
+  writeSessionFile(session);
+  upsertMeta(metaFromSession(session));
+  return session;
+}
+
+/**
+ * 获取对话的工作区绑定。
+ * 未绑定返回 undefined。
+ */
+export function getWorkspaceBinding(sessionId: string): ConversationWorkspaceBinding | undefined {
+  const session = readSessionFile(sessionId);
+  return session?.workspaceBinding;
+}
+
+/**
+ * 清除对话的工作区绑定。
+ * 返回更新后的 session，失败返回 null。
+ */
+export function clearWorkspaceBinding(sessionId: string): ChatSession | null {
+  const session = readSessionFile(sessionId);
+  if (!session) return null;
+  session.workspaceBinding = undefined;
+  session.updatedAt = Date.now();
+  writeSessionFile(session);
+  upsertMeta(metaFromSession(session));
+  return session;
 }

@@ -2203,7 +2203,7 @@ export function createDefaultCharacterRuntime(
       },
     ],
     content: {
-      identity: "prompts/identity.md",
+      identity: "prompts/chat_identity.md",
       soul: "prompts/soul.md",
       avatar: "assets/icon-presets/cyrene-sun.png",
       canonQuotes: "prompts/canon_quotes.md",
